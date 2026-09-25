@@ -1,0 +1,9 @@
+# Engedélyező lista: CSAK a projekt fájljai kerülhetnek verziókezelés alá.
+# A munkamappa alapból a szkript mappája, így ide dolgozói iratok (PDF, fotó,
+# iktato-naplo.csv) is kerülhetnek — azok SOHA nem mehetnek fel a repóba.
+*
+!.gitignore
+!pdf-muhely.py
+!attekinto-szabalyok.json
+!iktato-doktipusok.json
+!kepek-pdf-terv.md
