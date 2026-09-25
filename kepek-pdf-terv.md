@@ -316,12 +316,12 @@ A **8., 9., 13. és 16.** kérdés érdemi válasza nélkül nem érdemes elkezd
 - **Iktató:** Utótag mező; felülírásnál nincs előzetes `os.remove` (így ha a forrás maga a cél, akkor sem vész el — ezen az úton megy a helyben tömörítés); a helyben felülírt fájl visszavonása le van tiltva.
 - **Áttekintő:** két hibajavítás — a Beállítások mentése megtartja a `header_lines`-t; az oszlophatár húzása nem vált rendezést. Frissítés fülváltáskor. A fotószabály szövegei (tooltip, hiánylista, összegzés). **Rögzített fejléc** (a „hdr” címkéjű elemek görgetéskor a látható rész tetejére kerülnek, a sorok fölé); **egy kattintás kijelöl, dupla kattintás / Enter nyit meg**.
 - **`attekinto.py`:** kivezetve — minden funkciója (és az önteszt) a műhelyben van; a régi fájl az 5 MB-os logikát és a javításokat nem tartalmazza, ne fusson párhuzamosan (ugyanazt a szabályfájlt írja).
-- **Képek → PDF fül:** bélyegképrács vonszolásos sorrendezéssel (beszúrási jel, automatikus görgetés), ↺/↻, törlés (Delete), 3 előbeállítás, szürkeárnyalat, A4-illesztés / lap = kép; a kész PDF → Iktató.
+- **Képek → PDF fül:** bélyegképrács vonszolásos sorrendezéssel (beszúrási jel, automatikus görgetés), ↺/↻, törlés (Delete), 3 előbeállítás, szürkeárnyalat, A4-illesztés / lap = kép; a kész PDF → Iktató. **Többes kijelölés** (Ctrl+kattintás: be/ki, Shift+kattintás: tartomány, mint az Intézőben); **„Kijelöltekből PDF”**: csak a kijelölt képekből, rácssorrendben készül külön PDF, a lista megmarad a következő köteghez. A ↺/↻ és a törlés minden kijelöltre hat. **Nagyító** (dupla kattintás egy bélyegképen): külön, nem modális ablak, görgő = nagyítás a kurzor körül (felső határ a natív felbontás), húzás = mozgatás, ←/→ = lapozás a rács sorrendjében (a nagyítás és a nézet megmarad, a kijelölés követi), dupla kattintás = illesztés.
 - **Önteszt:** `python pdf-muhely.py --test` → 51/51 (az Áttekintő 35 tesztje + 16 új).
 
 ### 11.4 Szándékos egyszerűsítések (később bővíthető)
 
 - Többoldalas TIFF-ből csak az 1. oldal kerül be (naplósor jelzi).
-- Vonszolás: egyszerre egy elem; nincs többes kijelölés és billentyűs léptetés.
+- Vonszolás: egyszerre egy elem (a többes kijelölés nem mozog blokkban); nincs billentyűs léptetés.
 - A tömörítés a főszálon fut (néhány másodperc, a felület addig áll).
 - HEIC nem támogatott (a MuPDF nem olvassa) — ha kell, `pillow-heif`.
