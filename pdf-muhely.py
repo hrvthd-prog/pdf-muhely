@@ -16,7 +16,9 @@ import sys
 import json
 import math
 import shutil
+import ctypes
 import locale
+import inspect
 import datetime
 import traceback
 import subprocess
@@ -80,6 +82,28 @@ def open_checked(path: str):
 CLEAN_META = {"producer": "pdf-muhely", "creator": "", "title": "",
               "author": "", "subject": "", "keywords": ""}
 
+VERZIO_FILE = "verzio.json"          # a tools/verzio.py írja minden commitnál
+
+
+def app_version() -> str:
+    """„v1.4 (2026-09-25)” — a szkript melletti verzio.json-ból; git nem kell hozzá."""
+    try:
+        with open(os.path.join(script_dir(), VERZIO_FILE), encoding="utf-8") as f:
+            v = json.load(f)
+        return f"v{v['verzio']} ({v['datum']})"
+    except Exception:
+        return "ismeretlen verzió"
+
+
+def missing_features() -> list:
+    """A PyMuPDF azon képességei, amelyek ezen a gépen hiányoznak (régi verzió)."""
+    out = []
+    if not hasattr(pymupdf.Document, "rewrite_images"):
+        out.append("PDF-tömörítés 5 MB alá (Document.rewrite_images)")
+    if "jpg_quality" not in inspect.signature(pymupdf.Pixmap.tobytes).parameters:
+        out.append("Képek → PDF, JPEG-minőség (Pixmap.tobytes jpg_quality)")
+    return out
+
 # ponytail: tizedes 5 MB (5 000 000 bájt) — szigorúbb az 5 MiB-nál, így a portál
 # bármelyiket érti is alatta, átmegy. Ha kiderül, hogy MiB, lazítható 5 * 1024 * 1024-re.
 UPLOAD_LIMIT = 5_000_000
@@ -98,15 +122,18 @@ def size_note(path: str) -> str:
     return f"⚠ {mb(n)} — a feltöltési korlát {mb(UPLOAD_LIMIT)}, tömöríteni kell (Iktatóban iktatáskor)"
 
 
-def shrink_pdf(data: bytes, limit: int = UPLOAD_LIMIT):
+def shrink_steps(data: bytes, limit: int = UPLOAD_LIMIT):
     """A beágyazott képek újratömörítése egyre erősebb lépcsőkön, amíg a PDF
     a korlát alá nem fér. A szöveg és a vektoros tartalom érintetlen marad.
-    -> (PDF-bájtok, (DPI, minőség) | None) — None: így sem fért be, ilyenkor
-    a legkisebb változat jön vissza."""
+    Generátor: minden lépcső ELŐTT (DPI, minőség)-et ad — így a felület a
+    lépcsők között frissülhet. A végeredmény a StopIteration értéke:
+    (PDF-bájtok, (DPI, minőség) | None) — None: így sem fért be, ilyenkor a
+    legkisebb változat jön vissza."""
     if not hasattr(pymupdf.Document, "rewrite_images"):
         raise RuntimeError("A tömörítéshez újabb PyMuPDF kell (rewrite_images).")
     best = data
     for dpi, q in SHRINK_STEPS:
+        yield dpi, q
         doc = pymupdf.open("pdf", data)
         try:
             doc.rewrite_images(dpi_threshold=dpi + 10, dpi_target=dpi, quality=q)
@@ -118,6 +145,39 @@ def shrink_pdf(data: bytes, limit: int = UPLOAD_LIMIT):
         if len(out) <= limit:
             return out, (dpi, q)
     return best, None
+
+
+def shrink_pdf(data: bytes, limit: int = UPLOAD_LIMIT):
+    """shrink_steps egyben, felület nélkül (öntesztekhez)."""
+    g = shrink_steps(data, limit)
+    try:
+        while True:
+            next(g)
+    except StopIteration as s:
+        return s.value
+
+
+def shrink_later(widget, data: bytes, on_done, on_step=None):
+    """shrink_steps after()-láncban: lépcsőnként egy kör, közben a felület él.
+    on_step(dpi, q) a lépcső előtt; on_done(bájtok, lépcső | None, hiba | None).
+    ponytail: egy lépcsőn belül (nagy fájlnál 1–3 s) a felület még áll — teljesen
+    csak külön folyamatban lehetne, az a PyMuPDF miatt jóval bonyolultabb."""
+    g = shrink_steps(data)
+
+    def tick():
+        try:
+            dpi, q = next(g)
+        except StopIteration as s:
+            on_done(*s.value, None)
+            return
+        except Exception as e:
+            on_done(None, None, e)
+            return
+        if on_step:
+            on_step(dpi, q)
+        widget.after(1, tick)          # a lépcső munkája a KÖVETKEZŐ next()-ben fut
+
+    widget.after(1, tick)
 
 
 def write_pdf_verified(data: bytes, dst: str, pages: int):
@@ -910,6 +970,7 @@ DOC_TYPES_DEFAULT = [
 ]
 SUFFIX = "aláírt"
 LOG_NAME = "iktato-naplo.csv"
+BACKUP_DIR = ".eredeti"                    # felülírt példányok a dolgozó mappáján belül
 TYPES_FILE = "iktato-doktipusok.json"      # a szkript mappájában
 
 TILE_W, TILE_H, GAP = 150, 52, 10
@@ -1261,6 +1322,7 @@ class IktatoTab(ttk.Frame):
         self._panning = None
         self._hot = None
         self._job = None
+        self._busy = False               # tömörítés fut: új iktatás és visszavonás vár
 
         self.doc_type = tk.StringVar(value="")
         self.suffix = tk.StringVar(value=SUFFIX)
@@ -1285,7 +1347,7 @@ class IktatoTab(ttk.Frame):
         self.cbo = ttk.Combobox(bar, textvariable=self.doc_type,
                                 values=self.types, state="readonly", width=42)
         self.cbo.pack(side="left", padx=6)
-        self.cbo.bind("<<ComboboxSelected>>", lambda e: self._update_name())
+        self.cbo.bind("<<ComboboxSelected>>", lambda e: self._type_chosen())
         ttk.Button(bar, text="Típusok…", width=10,
                    command=self._edit_types).pack(side="left")
         ttk.Label(bar, text="Utótag:").pack(side="left", padx=(12, 4))
@@ -1687,6 +1749,9 @@ class IktatoTab(ttk.Frame):
         cur = self.canvas.find_withtag("current")
         if cur and "cbtn" in self.canvas.gettags(cur[0]):
             return                       # a vászongombot ne vonszoljuk
+        if self._busy:
+            self._info("Előbb várd meg a folyamatban lévő tömörítést.", warn=True)
+            return
         x1, y1, x2, y2 = self.prev_box
         if not (x1 <= e.x <= x2 and y1 <= e.y <= y2):
             return
@@ -1748,6 +1813,17 @@ class IktatoTab(ttk.Frame):
         except Exception:
             pass
 
+    def _type_chosen(self):
+        """Az utótag a doktípusból: a DocGen-ből készülő (aláírandó) iratnál
+        „aláírt”, a többinél (útlevél, igazolások) üres. Az Áttekintő szabályai
+        tudják, melyik melyik; ismeretlen típusnál az utótag marad, ami volt."""
+        att = getattr(self.app, "tabs", {}).get("Áttekintő")
+        if att and self.doc_type.get():
+            r, _ = match_rule(target_name("X", self.doc_type.get()), att.rules)
+            if r:
+                self.suffix.set(SUFFIX if r.generated else "")
+        self._update_name()
+
     def _update_name(self, hover=None):
         dt = self.doc_type.get()
         if not dt:
@@ -1775,14 +1851,15 @@ class IktatoTab(ttk.Frame):
             return
 
         folder = os.path.join(self.parent_dir, dir_name)
-        name = target_name(dir_name, self.doc_type.get(), self.suffix.get())
-        collision = overwritten = False
-        size = os.path.getsize(src)
+        job = dict(src=src, dir_name=dir_name, doc_type=self.doc_type.get(),
+                   name=target_name(dir_name, self.doc_type.get(), self.suffix.get()),
+                   size=os.path.getsize(src), collision=False, overwritten=False,
+                   backup=None, shrunk=None)
         shrink = False
-        if size > UPLOAD_LIMIT:
+        if job["size"] > UPLOAD_LIMIT:
             shrink = messagebox.askyesnocancel(
                 "5 MB feletti fájl",
-                f"{os.path.basename(src)}: {mb(size)}\n"
+                f"{os.path.basename(src)}: {mb(job['size'])}\n"
                 f"A feltöltési korlát {mb(UPLOAD_LIMIT)}.\n\n"
                 "Tömörítsem iktatás előtt? (A forrásfájl változatlan marad.)\n\n"
                 "Igen = tömörítve · Nem = változatlanul · Mégse = megszakítás")
@@ -1790,47 +1867,88 @@ class IktatoTab(ttk.Frame):
                 self._info("Megszakítva — nem történt másolás.")
                 return
         try:
-            if os.path.exists(os.path.join(folder, name)):
-                choice = self._ask_collision(name)
+            if os.path.exists(os.path.join(folder, job["name"])):
+                choice = self._ask_collision(job["name"])
                 if choice == "cancel":
                     self._info("Megszakítva — nem történt másolás.")
                     return
                 if choice == "new":
-                    name, collision = unique_name(folder, name)
+                    job["name"], job["collision"] = unique_name(folder, job["name"])
                 else:                     # felülírás: előzetes törlés NINCS, az os.replace
-                    overwritten = True    # atomi — így akkor sem vész el, ha a forrás maga a cél
-            dst = os.path.join(folder, name)
-            check_path_len(dst)
+                    job["overwritten"] = True   # atomi; az előző példány a .eredeti\-be kerül
+            job["dst"] = os.path.join(folder, job["name"])
+            check_path_len(job["dst"])
+            if job["overwritten"]:
+                job["backup"] = self._backup_existing(job["dst"])
             if shrink:
-                self._info("Tömörítés…")
-                self.update_idletasks()
-                new_size, step = self._shrink_verified(src, dst)
-            else:
-                self._copy_verified(src, dst)
+                with open(src, "rb") as f:
+                    data = f.read()
+                self._busy = True
+                shrink_later(self, data,
+                             on_step=lambda dpi, q: self._info(
+                                 f"Tömörítés… {dpi} DPI, Q{q} (a lépcsők között a felület él)"),
+                             on_done=lambda out, step, err: self._shrink_done(job, out, step, err))
+                return
+            self._copy_verified(src, job["dst"])
         except Exception as e:
-            traceback.print_exc()
-            self._log(src, dir_name, name, "HIBA: " + str(e)[:120])
-            self._info(f"Hiba: {type(e).__name__}: {e}", warn=True)
-            messagebox.showerror("A másolás nem sikerült",
-                                 f"{type(e).__name__}: {e}")
+            self._copy_failed(job, e)
             return
+        self._copied(job)
 
-        self.last_copy = (src, dst)
-        result = "UTKOZES-UJ NEV" if collision else ("FELULIRVA" if overwritten else "OK")
-        if shrink:
-            result += f" TOMORITVE {mb(size)}->{mb(new_size)}"
+    def _shrink_done(self, job, data, step, err):
+        """A lépcsőzetes tömörítés vége: ellenőrzött kiírás, majd a szokásos lezárás."""
+        self._busy = False
+        try:
+            if err:
+                raise err
+            d = pymupdf.open(job["src"])
+            pages = d.page_count
+            d.close()
+            write_pdf_verified(data, job["dst"], pages)
+        except Exception as e:
+            self._copy_failed(job, e)
+            return
+        job["shrunk"] = (len(data), step)
+        self._copied(job)
+
+    def _copy_failed(self, job, e):
+        traceback.print_exception(e)
+        if job["backup"] and os.path.exists(job["backup"]):
+            try:
+                os.remove(job["backup"])        # a cél érintetlen maradt, a másolat felesleges
+            except OSError:
+                pass
+        self._log(job["src"], job["dir_name"], job["name"], "HIBA: " + str(e)[:120],
+                  job["doc_type"])
+        self._info(f"Hiba: {type(e).__name__}: {e}", warn=True)
+        messagebox.showerror("A másolás nem sikerült", f"{type(e).__name__}: {e}")
+
+    def _copied(self, job):
+        src, name = job["src"], job["name"]
+        self.last_copy = (src, job["dst"], job["backup"])
+        result = "UTKOZES-UJ NEV" if job["collision"] else \
+            ("FELULIRVA" if job["overwritten"] else "OK")
+        if job["backup"]:
+            result += " (elozo: " + BACKUP_DIR + ")"
+        if job["shrunk"]:
+            new_size, step = job["shrunk"]
+            result += f" TOMORITVE {mb(job['size'])}->{mb(new_size)}"
             if step is None:
                 messagebox.showwarning(
                     "Tömörítés",
                     f"A legerősebb tömörítés után is {mb(new_size)} maradt — "
                     f"a feltöltési korlát ({mb(UPLOAD_LIMIT)}) fölött.\n\n"
                     "Érdemes kevesebb oldalra bontani (Szétvágás fül).")
-        self._log(src, dir_name, name, result)
-        self.queue.pop(self.idx)
+        self._log(src, job["dir_name"], name, result, job["doc_type"])
+        if src in self.queue:                # tömörítés közben a sor mozoghatott
+            i = self.queue.index(src)
+            self.queue.pop(i)
+            if i < self.idx:
+                self.idx -= 1
         self.idx = min(self.idx, max(0, len(self.queue) - 1))
         self.page_no = 0
         self._render_preview()           # a nézet marad, ahol volt
-        if collision:
+        if job["collision"]:
             self._info("⚠ ÜTKÖZÉS: a mappában már volt ilyen nevű fájl — "
                        "az új példány neve: " + name, warn=True)
             messagebox.showwarning(
@@ -1838,8 +1956,20 @@ class IktatoTab(ttk.Frame):
                 "A mappában már volt ilyen nevű fájl.\n\n"
                 "Az új példány neve:\n" + name)
         else:
-            self._info(f"✔ {dir_name} → {name}" + (" (felülírva)" if overwritten else "") +
-                       (f" · tömörítve: {mb(size)} → {mb(new_size)}" if shrink else ""), ok=True)
+            self._info(f"✔ {job['dir_name']} → {name}" +
+                       (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
+                       (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
+                        if job["shrunk"] else ""), ok=True)
+
+    def _backup_existing(self, dst):
+        """Felülírás előtt az előző példány másolata a dolgozó mappájában a
+        .eredeti\\ almappába kerül — a ponttal kezdődő mappát az Áttekintő és az
+        Iktató is kihagyja. -> a másolat útja"""
+        d = os.path.join(os.path.dirname(dst), BACKUP_DIR)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, unique_name(d, os.path.basename(dst))[0])
+        shutil.copy2(dst, path)
+        return path
 
     def _ask_collision(self, name):
         """new | overwrite | cancel — alapértelmezés az új név."""
@@ -1856,7 +1986,8 @@ class IktatoTab(ttk.Frame):
         ttk.Label(win, text=name, foreground=COL_WARN).pack(anchor="w", padx=14)
         ttk.Label(win, wraplength=420, justify="left",
                   text="Az Új néven gomb a meglévőt meghagyja, és (2), (3) … "
-                       "sorszámmal menti az újat. A felülírás visszavonhatatlan."
+                       "sorszámmal menti az újat. Felülírásnál az előző példány a "
+                       "mappa .eredeti almappájába kerül, és a Visszavonás visszahozza."
                   ).pack(anchor="w", padx=14, pady=8)
 
         row = ttk.Frame(win)
@@ -1914,27 +2045,22 @@ class IktatoTab(ttk.Frame):
                     pass
             raise
 
-    def _shrink_verified(self, src, dst):
-        """Tömörítés .part néven, ellenőrzés, majd atomi átnevezés. -> (méret, lépcső)"""
-        with open(src, "rb") as f:
-            data, step = shrink_pdf(f.read())
-        d = pymupdf.open(src)
-        pages = d.page_count
-        d.close()
-        write_pdf_verified(data, dst, pages)
-        return len(data), step
-
     def _undo(self):
+        if self._busy:
+            self._info("Előbb várd meg a folyamatban lévő tömörítést.", warn=True)
+            return
         if not self.last_copy:
             self._info("Nincs mit visszavonni.", warn=True)
             return
-        src, dst = self.last_copy
-        if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
-            self._info("Helyben felülírt fájl nem vonható vissza (az eredeti nincs meg).",
-                       warn=True)
-            return
+        src, dst, backup = self.last_copy
         try:
-            if os.path.exists(dst):
+            if backup and os.path.exists(backup):
+                os.replace(backup, dst)             # felülírás volt: az előző példány vissza
+            elif os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
+                self._info("Helyben felülírt fájl nem vonható vissza (az eredeti nincs meg).",
+                           warn=True)
+                return
+            elif os.path.exists(dst):
                 os.remove(dst)
         except OSError as e:
             self._info(f"A visszavonás nem sikerült: {e}", warn=True)
@@ -1944,11 +2070,12 @@ class IktatoTab(ttk.Frame):
             self.queue.insert(self.idx, src)       # vissza a sorba
             self._render_preview()
         self._log(src, os.path.basename(os.path.dirname(dst)),
-                  os.path.basename(dst), "VISSZAVONVA")
-        self._info(f"Visszavonva: {os.path.basename(dst)} törölve.")
+                  os.path.basename(dst), "VISSZAVONVA" + (" (elozo visszaallitva)" if backup else ""))
+        self._info(f"Visszavonva: {os.path.basename(dst)} " +
+                   ("— az előző példány visszaállítva." if backup else "törölve."))
 
     # ---------------- napló és üzenet ----------------
-    def _log(self, src, folder, name, result):
+    def _log(self, src, folder, name, result, doc_type=None):
         path = os.path.join(self.parent_dir, LOG_NAME)
         new = not os.path.exists(path)
         try:
@@ -1958,7 +2085,8 @@ class IktatoTab(ttk.Frame):
                     w.writerow(["időbélyeg", "forrás", "célmappa", "célfájl",
                                 "doktípus", "eredmény"])
                 w.writerow([datetime.datetime.now().isoformat(timespec="seconds"),
-                            src, folder, name, self.doc_type.get(), result])
+                            src, folder, name,
+                            self.doc_type.get() if doc_type is None else doc_type, result])
         except OSError:
             pass                        # a napló sosem állítja meg a munkát
 
@@ -2297,6 +2425,13 @@ class PersonRow:
     def to_obtain(self) -> list:
         return [r.name for r in self._req()
                 if not r.generated and not self.docs[r.id].pdf]
+
+    @property
+    def duplicates(self) -> list:
+        """Irattípusok, amelyekhez több PDF is van — feltöltéskor melyik a jó?
+        -> [(típusnév, [fájlok])]"""
+        return [(r.name, self.docs[r.id].pdf) for r in self.rules
+                if len(self.docs[r.id].pdf) > 1]
 
     @property
     def ambiguous_files(self) -> list:
@@ -2944,9 +3079,11 @@ class AttekintoTab(ttk.Frame):
         nof = sum(1 for r in self.rows if not r.photos)
         big = sum(1 for r in self.rows if r.big)
         morep = sum(1 for r in self.rows if len(r.photos) > 1)
+        dup = sum(1 for r in self.rows if r.duplicates)
         sub = sum(r.subdirs for r in self.rows)
         extra = f" · {sub} almappa" if sub else ""
         extra += f" · {big} mappában 5 MB feletti PDF" if big else ""
+        extra += f" · {dup} mappában több PDF ugyanahhoz" if dup else ""
         extra += f" · {morep} mappában az arcképen kívül más kép is" if morep else ""
         self.summary.set(f"{n} dolgozó · {ok} beadható · {n - ok} hiányos · "
                          f"{pr} nyomtatandó · {amb} kétes · "
@@ -3107,6 +3244,8 @@ class AttekintoTab(ttk.Frame):
                 fill = {"P": C_P, "DP": C_DP, "D": C_D, "?": C_AMB}.get(txt, C_NONE)
                 if txt == "·":
                     fill = base
+                if st and len(st.pdf) > 1:
+                    txt, fill = f"{txt}×{len(st.pdf)}", C_AMB    # melyik a jó?
                 if st and any(p in row.big for p in st.pdf):
                     txt, fill = txt + "!", C_BIG      # 5 MB fölött: nem feltölthető
                 c.create_rectangle(xs[j] + 1, y + 1, xs[j] + rule.width - 1,
@@ -3488,6 +3627,8 @@ class AttekintoTab(ttk.Frame):
             if r.big:
                 L.append("    tömöríteni:  " +
                          ", ".join(f'„{f}" ({mb(n)})' for f, n in r.big.items()))
+            for name, files in r.duplicates:
+                L.append(f"    több PDF:    {name} — " + ", ".join(f'„{f}"' for f in files))
             if not r.photos:
                 L.append("    arckép hiányzik")
             elif len(r.photos) > 1:
@@ -3503,6 +3644,8 @@ class AttekintoTab(ttk.Frame):
                 extra += f"   ⚠ {len(r.photos)} kép (csak az arckép maradhat)"
             if r.big:
                 extra += f"   ⚠ {len(r.big)} db 5 MB feletti PDF"
+            if r.duplicates:
+                extra += "   ⚠ több PDF: " + ", ".join(n for n, _ in r.duplicates)
             L.append(f"{r.name} …… {r.ready_required}/{nreq} kötelező · "
                      f"{r.ready_optional}/{nopt} ajánlott{extra}")
         return "\n".join(L)
@@ -4125,25 +4268,40 @@ class ImagesToPdfTab(ttk.Frame):
             out.set_metadata(dict(CLEAN_META, title=os.path.splitext(os.path.basename(dst))[0]))
             data = out.tobytes(garbage=4, deflate=True)
             out.close()
-            if len(data) > UPLOAD_LIMIT:
-                self._write_log(f"{mb(len(data))} — a feltöltési korlát ({mb(UPLOAD_LIMIT)}) "
-                                "fölött, tömörítés…")
-                self.update_idletasks()
-                data, step = shrink_pdf(data)
+        except Exception as e:
+            if not out.is_closed:
+                out.close()
+            self._failed(e)
+            return
+        if len(data) <= UPLOAD_LIMIT:
+            self._save(dst, pages, data)
+            return
+        self._write_log(f"{mb(len(data))} — a feltöltési korlát ({mb(UPLOAD_LIMIT)}) "
+                        "fölött, tömörítés…")
+        shrink_later(self, data,
+                     on_step=lambda dpi, q: self._write_log(f"  lépcső: {dpi} DPI, Q{q}"),
+                     on_done=lambda d, step, err: self._save(dst, pages, d, step, err, True))
+
+    def _save(self, dst, pages, data, step=None, err=None, shrunk=False):
+        try:
+            if err:
+                raise err
+            if shrunk:
                 self._write_log(f"  → {mb(len(data))}" + (f" ({step[0]} DPI, Q{step[1]})" if step
                                                           else " — a legerősebb lépcsővel sem fért be!"))
             write_pdf_verified(data, dst, pages)
         except Exception as e:
-            traceback.print_exc()
-            if not out.is_closed:
-                out.close()
-            self._done(f"Hiba: {type(e).__name__}: {e}")
-            messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
+            self._failed(e)
             return
         self._done(f"\n{os.path.basename(dst)} kész – {pages} oldal, {mb(len(data))} {size_note(dst)}")
         ikt = self.app.tabs["Iktató"]
         ikt._enqueue([dst])
         self.app.nb.select(ikt)
+
+    def _failed(self, e):
+        traceback.print_exception(e)
+        self._done(f"Hiba: {type(e).__name__}: {e}")
+        messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
 
     def _done(self, msg):
         self._b = None
@@ -4157,7 +4315,7 @@ class ImagesToPdfTab(ttk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("PDF Műhely – offline")
+        self.title(f"PDF Műhely – offline · {app_version()}")
         self.geometry("1200x840")
         self.minsize(960, 680)
         self.folder = tk.StringVar(value=script_dir())
@@ -4188,6 +4346,18 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self._status, relief="sunken", anchor="w").pack(
             fill="x", side="bottom")
         self.refresh_all()
+        self.after(300, self._check_deps)
+
+    def _check_deps(self):
+        """Régi PyMuPDF-nél indításkor szól, nem munka közben dob hibát."""
+        miss = missing_features()
+        if miss:
+            messagebox.showwarning(
+                "Régi PyMuPDF",
+                f"A telepített PyMuPDF ({pymupdf.VersionBind}) túl régi, ezek nem működnek:\n"
+                "  • " + "\n  • ".join(miss) +
+                "\n\nA többi funkció használható. Frissítés parancssorból:\n"
+                "  pip install -U pymupdf")
 
     def _pick_folder(self):
         d = filedialog.askdirectory(title="Munkamappa", initialdir=self.folder.get())
@@ -4225,7 +4395,7 @@ class App(tk.Tk):
         ikt.filter_text.set(who)
         if path:
             ikt._enqueue([path])
-        ikt._update_name()
+        ikt._type_chosen()
         self.nb.select(ikt)
 
     def goto_arckep(self, folder):
@@ -4340,8 +4510,17 @@ def _selftest() -> int:
            not rb.beadhato and rb.ready_required == 5 and big.endswith(next(iter(rb.big))),
            (rb.ready_required, list(rb.big)))
         open(os.path.join(who, "Teszt Elek Útlevél.pdf"), "w").close()
-        ck("mellette egy korlát alatti útlevél -> beadható",
-           scan(td, RULES, 1)[0].beadhato)
+        rd = scan(td, RULES, 1)[0]
+        ck("mellette egy korlát alatti útlevél -> beadható", rd.beadhato)
+        ck("két útlevél-PDF -> „több PDF” jelzés",
+           [n for n, _ in rd.duplicates] == ["Útlevél"], rd.duplicates)
+        os.makedirs(os.path.join(who, BACKUP_DIR))
+        open(os.path.join(who, BACKUP_DIR, "Teszt Elek Előzetes megállapodás aláírt.pdf"),
+             "w").close()
+        re_ = scan(td, RULES, 1)[0]
+        ck(f"a {BACKUP_DIR} mappát nem látja (se irat, se almappa)",
+           len(re_.docs["elozetes"].pdf) == 1 and re_.subdirs == 1,
+           (re_.docs["elozetes"].pdf, re_.subdirs))
 
     print("IKTATÓ-TÍPUS ↔ ÁTTEKINTŐ-SZABÁLY")
     for t in DOC_TYPES_DEFAULT:
@@ -4359,12 +4538,23 @@ def _selftest() -> int:
         pg.insert_image(pg.rect, stream=noisy.tobytes("jpeg", jpg_quality=95))
     raw = doc.tobytes(garbage=4, deflate=True)
     doc.close()
-    small, step = shrink_pdf(raw)
+    ck("a PyMuPDF minden szükséges képessége megvan", not missing_features(),
+       (pymupdf.VersionBind, missing_features()))
+    seen = []
+    g = shrink_steps(raw)
+    try:
+        while True:
+            seen.append(next(g))
+    except StopIteration as s:
+        small, step = s.value
     chk = pymupdf.open("pdf", small)
     ck("tömörítés a korlát alá, oldalszám marad",
        len(raw) > UPLOAD_LIMIT >= len(small) and chk.page_count == 2 and step,
        f"{mb(len(raw))} -> {mb(len(small))}, {step}")
     chk.close()
+    ck("lépcsőnként halad, és megáll, amint befért", seen[-1] == step and len(seen) <= 4, seen)
+    ck("ha már az első lépcső elég, ott megáll",
+       shrink_pdf(small, limit=len(small))[1] == SHRINK_STEPS[0])
     with tempfile.TemporaryDirectory() as td:
         dst = os.path.join(td, "x.pdf")
         try:
@@ -4411,4 +4601,12 @@ def _selftest() -> int:
 if __name__ == "__main__":
     if "--test" in sys.argv:
         sys.exit(_selftest())
+    # Éles szöveg 125–150%-os Windows-skálázásnál: a GDI-skálázás a Tk szövegét és
+    # vonalait a valódi felbontáson rajzolja, a pixelméretek (elrendezés) maradnak.
+    # ponytail: a képeket (bélyegkép, előnézet, nagyító) a Windows továbbra is
+    # nagyítja; teljes DPI-tudatossághoz minden pixelméretet skálázni kellene.
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-5))
+    except Exception:
+        pass                    # régebbi Windows: marad a sima (elmosódó) skálázás
     App().mainloop()

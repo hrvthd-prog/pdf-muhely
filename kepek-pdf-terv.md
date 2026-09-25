@@ -317,11 +317,22 @@ A **8., 9., 13. és 16.** kérdés érdemi válasza nélkül nem érdemes elkezd
 - **Áttekintő:** két hibajavítás — a Beállítások mentése megtartja a `header_lines`-t; az oszlophatár húzása nem vált rendezést. Frissítés fülváltáskor. A fotószabály szövegei (tooltip, hiánylista, összegzés). **Rögzített fejléc** (a „hdr” címkéjű elemek görgetéskor a látható rész tetejére kerülnek, a sorok fölé); **egy kattintás kijelöl, dupla kattintás / Enter nyit meg**. **Vízszintes görgetés** a sáv húzásán túl: Shift+görgő és touchpad-söprés a táblán, görgő a vízszintes sávon; ←/→ esetén a kurzor oszlopa mindig látszik (`_col_span`). **„Fejléc sorai” (1–4)** a Beállítások → Megjelenés fülön — eddig csak a JSON-ban volt állítható, és az 1 sor miatt lettek túl szélesek az oszlopok.
 - **`attekinto.py`:** kivezetve — minden funkciója (és az önteszt) a műhelyben van; a régi fájl az 5 MB-os logikát és a javításokat nem tartalmazza, ne fusson párhuzamosan (ugyanazt a szabályfájlt írja).
 - **Képek → PDF fül:** bélyegképrács vonszolásos sorrendezéssel (beszúrási jel, automatikus görgetés), ↺/↻, törlés (Delete), 3 előbeállítás, szürkeárnyalat, A4-illesztés / lap = kép; a kész PDF → Iktató. **Többes kijelölés** (Ctrl+kattintás: be/ki, Shift+kattintás: tartomány, mint az Intézőben); **„Kijelöltekből PDF”**: csak a kijelölt képekből, rácssorrendben készül külön PDF, a lista megmarad a következő köteghez. A ↺/↻ és a törlés minden kijelöltre hat. **Nagyító** (dupla kattintás egy bélyegképen): külön, nem modális ablak, görgő = nagyítás a kurzor körül (felső határ a natív felbontás), húzás = mozgatás, ←/→ = lapozás a rács sorrendjében (a nagyítás és a nézet megmarad, a kijelölés követi), dupla kattintás = illesztés.
-- **Önteszt:** `python pdf-muhely.py --test` → 51/51 (az Áttekintő 35 tesztje + 16 új).
+- **Önteszt:** `python pdf-muhely.py --test` (az Áttekintő 35 tesztjéből indult).
+
+### 11.5 Második kör (2026-09-25): biztonság, kényelem, karbantartás
+
+- **`.eredeti\` mentés:** Iktatóban felülírás előtt az előző példány a dolgozó mappájában a `.eredeti\` almappába kerül (a ponttal kezdődő mappát az Áttekintő és az Iktató kihagyja); a **Visszavonás** ezt állítja vissza. Addig a helyben tömörítés az egyetlen példányt írta felül.
+- **Több PDF ugyanahhoz a típushoz:** az Áttekintőben `P×2` (a hiánylistában „több PDF”) — eddig egyetlen „P” volt, és dupla kattintásra a `(2)`-es nyílt meg.
+- **Utótag a doktípusból:** a DocGen-ből készülő (generated) típusnál „aláírt”, a többinél üres — az Áttekintő szabályaiból, új beállítás nélkül.
+- **Éles szöveg 125%-os skálázásnál:** GDI-skálázás (`SetProcessDpiAwarenessContext(-5)`), egy sor; lemérve, hogy a Tk szövege éles lesz. A képeket a Windows továbbra is nagyítja — teljes DPI-tudatossághoz minden pixelméretet skálázni kellene, azt nem érte meg.
+- **Lépcsőzetes tömörítés:** `shrink_steps` generátor + `shrink_later` after()-lánc; a lépcsők között a felület él, közben az Iktató foglalt (új iktatás, visszavonás vár). Egy lépcsőn belül még áll — teljesen csak külön folyamatban lehetne.
+- **Verziózás és frissítés a DocGen sémájával:** `fő.al` (`verzio.json`, pre-/post-commit hook, annotált tag), `tools/kiadas.py` (tesztek + klón-próba + főverzió), `tools/frissit.vbs` (ZIP-ből, sosem töröl; a beállításfájlokat csak akkor hozza létre, ha még nincsenek). Induláskor ellenőrzi a PyMuPDF képességeit.
+- **Tesztek a repóban:** `test/run-all.py` — önteszt, `test/verzio.py`, `test/frissit.py`, `test/gui.py`. README és CLAUDE.md.
+- **Nem készült el (a felhasználó döntése):** a portálpróba az 5 MB értelmezéséről, és az elvárt oldalszám ellenőrzése.
 
 ### 11.4 Szándékos egyszerűsítések (később bővíthető)
 
 - Többoldalas TIFF-ből csak az 1. oldal kerül be (naplósor jelzi).
 - Vonszolás: egyszerre egy elem (a többes kijelölés nem mozog blokkban); nincs billentyűs léptetés.
-- A tömörítés a főszálon fut (néhány másodperc, a felület addig áll).
+- A tömörítés lépcsőnként fut; egy lépcsőn belül (nagy fájlnál 1–3 s) a felület még áll.
 - HEIC nem támogatott (a MuPDF nem olvassa) — ha kell, `pillow-heif`.

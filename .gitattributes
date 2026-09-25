@@ -1,0 +1,8 @@
+# A .vbs fájlok UTF-16 LE kódolásúak (a Windows Script Host csak így olvassa
+# helyesen az ékezeteket). A git ne nyúljon a sorvégekhez és ne próbálja
+# szövegként átalakítani őket – az tönkretenné a kódolást.
+*.vbs -text
+
+# A git hookok shell-szkriptek: CRLF sorvéggel a `#!/bin/sh` sor használhatatlan
+# lesz („bad interpreter"), és a hook némán nem fut le.
+tools/hooks/* text eol=lf
