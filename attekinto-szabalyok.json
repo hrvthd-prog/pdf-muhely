@@ -1,0 +1,150 @@
+{
+  "rules": [
+    {
+      "id": "forma",
+      "name": "Aláírt formanyomtatvány",
+      "short": "Forma",
+      "all_of": [],
+      "any_of": [
+        "formanyomtatvany"
+      ],
+      "required": true,
+      "generated": true,
+      "width": 138
+    },
+    {
+      "id": "elozetes",
+      "name": "Előzetes megállapodás",
+      "short": "Előz",
+      "all_of": [],
+      "any_of": [
+        "elozetes megallapodas",
+        "elozetes probaido",
+        "elozetes"
+      ],
+      "required": true,
+      "generated": true,
+      "width": 159
+    },
+    {
+      "id": "elismer",
+      "name": "Nyilatkozat feltöltött dokumentumok elismeréséről",
+      "short": "Elism",
+      "all_of": [],
+      "any_of": [
+        "elismeres",
+        "elfogado"
+      ],
+      "required": true,
+      "generated": true,
+      "width": 260
+    },
+    {
+      "id": "hozzaj",
+      "name": "Egyoldalú hozzájárulási nyilatkozat",
+      "short": "Hozzá",
+      "all_of": [],
+      "any_of": [
+        "hozzajarulasi",
+        "hozzajarulas"
+      ],
+      "required": true,
+      "generated": true,
+      "width": 212
+    },
+    {
+      "id": "meghat",
+      "name": "Meghatalmazás",
+      "short": "Megh",
+      "all_of": [],
+      "any_of": [
+        "meghatalmazas"
+      ],
+      "required": true,
+      "generated": true,
+      "width": 230
+    },
+    {
+      "id": "utlevel",
+      "name": "Útlevél",
+      "short": "Útl",
+      "all_of": [],
+      "any_of": [
+        "utlevel",
+        "passport"
+      ],
+      "required": true,
+      "generated": false,
+      "width": 209
+    },
+    {
+      "id": "szallv",
+      "name": "Nyilatkozat szálláshely változatlanságáról",
+      "short": "SzVált",
+      "all_of": [
+        "szallashely",
+        "valtozatlansag"
+      ],
+      "any_of": [],
+      "required": false,
+      "generated": true,
+      "width": 62
+    },
+    {
+      "id": "szalli",
+      "name": "Szálláshely-igazolás",
+      "short": "SzIg",
+      "all_of": [],
+      "any_of": [
+        "szallashely igazolas",
+        "szallasado"
+      ],
+      "required": false,
+      "generated": false,
+      "width": 56
+    },
+    {
+      "id": "vegzett",
+      "name": "Végzettséget igazoló okirat",
+      "short": "Végz",
+      "all_of": [],
+      "any_of": [
+        "vegzettseg",
+        "diploma",
+        "bizonyitvany"
+      ],
+      "required": false,
+      "generated": false,
+      "width": 109
+    },
+    {
+      "id": "nav",
+      "name": "NAV jövedelemigazolás",
+      "short": "NAV",
+      "all_of": [],
+      "any_of": [
+        "re:\\bnav\\b",
+        "jovedelemigazolas nav"
+      ],
+      "required": false,
+      "generated": false,
+      "width": 56
+    },
+    {
+      "id": "munkalt",
+      "name": "Hat havi munkáltatói jövedelemigazolás",
+      "short": "Munk",
+      "all_of": [],
+      "any_of": [
+        "munkaltatoi"
+      ],
+      "required": false,
+      "generated": false,
+      "width": 56
+    }
+  ],
+  "name_width": 200,
+  "scan_depth": 1,
+  "row_height": 24,
+  "header_lines": 1
+}
