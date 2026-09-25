@@ -2407,7 +2407,7 @@ class SettingsDialog(tk.Toplevel):
         self.base = settings        # a dialógusban nem szereplő kulcsok (header_lines) innen jönnek
         self.rules = rules_from(settings)
         self.gen = {k: settings[k] for k in
-                    ("name_width", "scan_depth", "row_height")}
+                    ("name_width", "scan_depth", "row_height", "header_lines")}
         self.cur = None
 
         self.v_name = tk.StringVar()
@@ -2420,6 +2420,7 @@ class SettingsDialog(tk.Toplevel):
         self.v_depth = tk.IntVar(value=self.gen["scan_depth"])
         self.v_namew = tk.IntVar(value=self.gen["name_width"])
         self.v_rowh = tk.IntVar(value=self.gen["row_height"])
+        self.v_hdrl = tk.IntVar(value=self.gen["header_lines"])
         self.v_probe = tk.StringVar(
             value="X Y Előzetes próbaidő nélkül_ukran_alairt.pdf")
         self.probe_out = tk.StringVar(value="")
@@ -2543,11 +2544,19 @@ class SettingsDialog(tk.Toplevel):
                                                padx=8, pady=6)
         ttk.Spinbox(d, from_=16, to=48, textvariable=self.v_rowh,
                     width=6).grid(row=1, column=1, sticky="w")
+        ttk.Label(d, text="Fejléc sorai:").grid(row=2, column=0, sticky="w",
+                                                padx=8, pady=6)
+        ttk.Spinbox(d, from_=1, to=4, textvariable=self.v_hdrl,
+                    width=6).grid(row=2, column=1, sticky="w")
         ttk.Label(d, foreground=C_MUTED, justify="left", wraplength=700,
-                  text="Az oszlopszélesség a táblázatban is állítható: húzd az "
+                  text="Fejléc sorai: ennyi sorba törhet az irattípus teljes neve. "
+                       "Több sorral az oszlopok keskenyebbre húzhatók, így kevesebbet "
+                       "kell vízszintesen görgetni.\n"
+                       "Az oszlopszélesség a táblázatban is állítható: húzd az "
                        "oszlophatárt a fejlécben, vagy Ctrl+← / Ctrl+→ a "
-                       "kijelölt oszlopon."
-                  ).grid(row=2, column=0, columnspan=2, sticky="w", padx=8,
+                       "kijelölt oszlopon. Vízszintes görgetés: Shift+görgő, "
+                       "touchpad-söprés vagy görgő a vízszintes sávon."
+                  ).grid(row=3, column=0, columnspan=2, sticky="w", padx=8,
                          pady=(0, 8))
 
         foot = ttk.Frame(self)
@@ -2702,7 +2711,8 @@ class SettingsDialog(tk.Toplevel):
                  rules=[asdict(r) for r in self.rules],
                  name_width=int(self.v_namew.get()),
                  scan_depth=int(self.v_depth.get()),
-                 row_height=int(self.v_rowh.get()))
+                 row_height=int(self.v_rowh.get()),
+                 header_lines=max(1, min(4, int(self.v_hdrl.get()))))
         self.on_save(s)
         self.destroy()
 
@@ -2781,6 +2791,10 @@ class AttekintoTab(ttk.Frame):
         hsb.grid(row=1, column=1, sticky="ew")
         grid.rowconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
+        # Windowson a touchpad oldalirányú söprése is Shift+görgőként érkezik
+        for w, seq in ((hsb, "<MouseWheel>"), (hsb, "<Shift-MouseWheel>"),
+                       (self.c_name, "<Shift-MouseWheel>"), (self.c_data, "<Shift-MouseWheel>")):
+            w.bind(seq, self._hwheel)
 
         for c in (self.c_name, self.c_data):
             c.bind("<MouseWheel>", self._wheel)
@@ -2833,6 +2847,11 @@ class AttekintoTab(ttk.Frame):
         self.c_name.yview_scroll(d, "units")
         self.c_data.yview_scroll(d, "units")
         self._pin_all()
+        return "break"
+
+    def _hwheel(self, e):
+        """Vízszintes görgetés; a Dolgozó oszlop fix, csak az adatok gördülnek."""
+        self.c_data.xview_scroll(-1 if e.delta > 0 else 1, "units")
         return "break"
 
     # ---------------- rögzített fejléc ----------------
@@ -3142,15 +3161,7 @@ class AttekintoTab(ttk.Frame):
                 self.c_data.focus_get() is self.c_data:
             i = min(self.cur_r, len(self.view_rows) - 1)
             y = self.hdr_h + i * rh
-            j = self.cur_c - 1
-            if j < len(cols):
-                cx, cw = xs[j], cols[j].width
-            elif j == len(cols):
-                cx, cw = x_photo, W_SMALL
-            elif j == len(cols) + 1:
-                cx, cw = x_extra, W_SMALL
-            else:
-                cx, cw = x_ready, W_READY
+            (cx, cw), _ = self._col_span(self.cur_c - 1)
             c.create_rectangle(cx + 1, y + 1, cx + cw - 1, y + rh - 1,
                                outline=C_CUR, width=2)
 
@@ -3286,6 +3297,22 @@ class AttekintoTab(ttk.Frame):
             frac = max(0.0, (y + rh - vis) / max(1, h))
             self.c_data.yview_moveto(frac)
             self.c_name.yview_moveto(frac)
+        if self.cur_c > 0:                 # vízszintesen is kövesse (a névoszlop fix)
+            (cx, cw), total = self._col_span(self.cur_c - 1)
+            left, visw = self.c_data.canvasx(0), self.c_data.winfo_width()
+            if cx < left:
+                self.c_data.xview_moveto(cx / total)
+            elif cx + cw > left + visw:
+                self.c_data.xview_moveto((cx + cw - visw) / total)
+
+    def _col_span(self, j):
+        """A j. adatoszlop (0 = első irattípus; utána Kép, Melléklet, Kötelező)
+        -> ((bal szél, szélesség), a tábla teljes szélessége)."""
+        cols = self._cols()
+        xs, x = self._xs(cols)
+        spans = [(xs[k], r.width) for k, r in enumerate(cols)] + \
+                [(x, W_SMALL), (x + W_SMALL, W_SMALL), (x + 2 * W_SMALL, W_READY)]
+        return spans[min(j, len(spans) - 1)], x + 2 * W_SMALL + W_READY
 
     def _activate(self):
         """Enter/Space/dupla kattintás: a kurzor alatti cella megnyitása."""
