@@ -1,0 +1,6 @@
+#!/bin/sh
+# A most született commit megjelölése a verziószámmal: v1.4 (annotált tag —
+# a `git push --follow-tags` csak ezt viszi fel).
+# Feltöltés: git push --follow-tags
+
+python tools/verzio.py --tagel

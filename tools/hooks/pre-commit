@@ -1,0 +1,14 @@
+#!/bin/sh
+# Alverzió léptetése minden commitnál — a verzió így ugyanabban a commitban
+# van, amelyiket jelöli. Részletek: tools/verzio.py
+#
+# Rebase és merge közben kihagyjuk: ott minden újrajátszott commit átírná a
+# verzio.json-t, és az garantált ütközés.
+
+git_dir=$(git rev-parse --git-dir)
+if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] || [ -f "$git_dir/MERGE_HEAD" ]; then
+  exit 0
+fi
+
+python tools/verzio.py --leptet || exit 1
+git add verzio.json

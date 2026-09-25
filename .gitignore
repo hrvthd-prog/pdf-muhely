@@ -1,9 +1,21 @@
 # Engedélyező lista: CSAK a projekt fájljai kerülhetnek verziókezelés alá.
 # A munkamappa alapból a szkript mappája, így ide dolgozói iratok (PDF, fotó,
-# iktato-naplo.csv) is kerülhetnek — azok SOHA nem mehetnek fel a repóba.
+# iktato-naplo.csv, .eredeti\) is kerülhetnek — azok SOHA nem mehetnek fel a repóba.
+# Új projektfájlt ide fel kell venni; a tools/klon-proba.py szól, ha kimaradt.
 *
 !.gitignore
+!.gitattributes
+!README.md
+!CLAUDE.md
 !pdf-muhely.py
+!verzio.json
 !attekinto-szabalyok.json
 !iktato-doktipusok.json
 !kepek-pdf-terv.md
+!tools/
+!tools/*.py
+!tools/*.vbs
+!tools/hooks/
+!tools/hooks/*
+!test/
+!test/*.py
