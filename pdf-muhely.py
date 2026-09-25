@@ -3606,12 +3606,128 @@ def add_image_page(out, jpeg, w, h, dpi, fit_a4):
     page.insert_image(page.rect, stream=jpeg)      # arányt tart, középre tesz
 
 
-@dataclass
+@dataclass(eq=False)             # azonosság szerint hashel: a kijelölés halmaz
 class ImgItem:
     path: str
     rot: int = 0                 # felhasználói forgatás: 0 / 90 / 180 / 270
     thumb: object = None         # tk.PhotoImage, ha már elkészült
     bad: str = ""                # hibaüzenet, ha a kép nem olvasható
+
+
+class ImageViewer(tk.Toplevel):
+    """Nagyított előnézet a sorrendezéshez — nem modális, közben a rácsban lehet
+    vonszolni. A nagyítás az illesztéshez képest értendő, lapozáskor a nézettel
+    együtt megmarad; felső határa a kép natív felbontása."""
+
+    HINT = ("görgő: nagyítás · húzás: mozgatás · ←/→: előző/következő · "
+            "dupla kattintás: illesztés · Esc: bezárás")
+
+    def __init__(self, tab):
+        super().__init__(tab)
+        self.tab = tab
+        self.transient(tab.winfo_toplevel())
+        h = int(self.winfo_screenheight() * 0.8)
+        self.geometry(f"{int(h * 0.85)}x{h}")
+        self.c = tk.Canvas(self, bg=COL_CANVAS, highlightthickness=0)
+        self.c.pack(fill="both", expand=True)
+        ttk.Label(self, text=self.HINT, anchor="center").pack(fill="x", pady=2)
+        self.item = self.doc = self.photo = None
+        self.zk = None               # nagyítás az illesztéshez képest; None = illesztve
+        self.W = self.H = 1          # a görgethető terület mérete
+        self._want = self._at = self._job = None
+        c = self.c
+        c.bind("<Configure>", lambda e: self._later(self._render))
+        c.bind("<MouseWheel>", self._wheel)
+        c.bind("<ButtonPress-1>", lambda e: c.scan_mark(e.x, e.y))
+        c.bind("<B1-Motion>", lambda e: c.scan_dragto(e.x, e.y, gain=1))
+        c.bind("<Double-Button-1>", lambda e: self._fit())
+        self.bind("<Left>", lambda e: self._step(-1))
+        self.bind("<Right>", lambda e: self._step(1))
+        self.bind("<Escape>", lambda e: self.close())
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _later(self, fn, ms=40):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(ms, lambda: (setattr(self, "_job", None), fn()))
+
+    def show(self, item, keep_view=False):
+        view = (self.c.xview()[0], self.c.yview()[0]) if keep_view else None
+        if self.doc:
+            self.doc.close()
+        self.item = item
+        try:
+            self.doc = pymupdf.open(item.path)
+        except Exception:
+            self.doc = None
+        self._render()
+        if view:
+            self.c.xview_moveto(view[0])
+            self.c.yview_moveto(view[1])
+        self.tab.sel, self.tab.anchor = {item}, item      # a rácsban is ez legyen kijelölve
+        self.tab._redraw()
+        self.lift()
+        self.focus_set()
+
+    def _render(self):
+        c = self.c
+        cw, ch = max(100, c.winfo_width()), max(100, c.winfo_height())
+        c.delete("all")
+        items = self.tab.items
+        pos = f"{items.index(self.item) + 1}/{len(items)}" if self.item in items else "–"
+        name = os.path.basename(self.item.path)
+        if not self.doc:
+            self.W, self.H = cw, ch
+            c.configure(scrollregion=(0, 0, cw, ch))
+            c.create_text(cw / 2, ch / 2, text="⚠ nem olvasható", fill="#e8e8e8",
+                          font=("Segoe UI", 12))
+            self.title(f"{pos} · {name}")
+            return
+        page, rot = self.doc[0], self.item.rot
+        r = page.rect
+        pw, ph = (r.height, r.width) if rot in (90, 270) else (r.width, r.height)
+        fz = fit_zoom(pw, ph, cw, ch)
+        info = page.get_image_info()
+        native = max(info[0]["width"], info[0]["height"]) / max(r.width, r.height) if info else fz
+        k = 1.0 if self.zk is None else max(1.0, min(max(1.0, native / fz), self.zk))
+        self.zk = None if k <= 1.0 else k
+        z = fz * k
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(z, z).prerotate(rot))
+        self.photo = tkimg(pix, "ppm")
+        self.W, self.H = max(cw, pix.width), max(ch, pix.height)
+        c.create_image(self.W / 2, self.H / 2, image=self.photo)
+        c.configure(scrollregion=(0, 0, self.W, self.H))
+        self.title(f"{pos} · {name} · " + ("illesztve" if self.zk is None else f"{k:.1f}×"))
+
+    def _wheel(self, e):
+        """A görgetés összegyűlik, és egyszerre renderelődik (nagy képnél lassú)."""
+        self._want = (self._want or self.zk or 1.0) * (ZOOM_STEP if e.delta > 0 else 1 / ZOOM_STEP)
+        self._at = (e.x, e.y)
+        self._later(self._apply_zoom)
+        return "break"
+
+    def _apply_zoom(self):
+        c, (ex, ey) = self.c, self._at
+        fx, fy = c.canvasx(ex) / self.W, c.canvasy(ey) / self.H    # ez marad a kurzor alatt
+        self.zk, self._want = self._want, None
+        self._render()
+        c.xview_moveto((fx * self.W - ex) / self.W)
+        c.yview_moveto((fy * self.H - ey) / self.H)
+
+    def _fit(self):
+        self.zk = None
+        self._render()
+
+    def _step(self, d):
+        items = self.tab.items
+        if self.item in items and 0 <= items.index(self.item) + d < len(items):
+            self.show(items[items.index(self.item) + d], keep_view=True)
+
+    def close(self):
+        if self.doc:
+            self.doc.close()
+        self.tab.viewer = None
+        self.destroy()
 
 
 class ImagesToPdfTab(ttk.Frame):
@@ -3625,7 +3741,8 @@ class ImagesToPdfTab(ttk.Frame):
         self.folder = script_dir()
         self.last_dir = None
         self.items = []
-        self.sel = None
+        self.sel = set()             # kijelölt ImgItem-ek (a sorrendezés nem érinti)
+        self.anchor = None           # a Shift+kattintásos tartomány kiinduló eleme
         self.preset = tk.IntVar(value=0)
         self.gray = tk.BooleanVar(value=False)
         self.fit_a4 = tk.BooleanVar(value=True)
@@ -3633,6 +3750,7 @@ class ImagesToPdfTab(ttk.Frame):
         self._drag = None            # (index, kezdő x, kezdő y)
         self._thumb_job = None
         self._b = None               # a futó feldolgozás állapota
+        self.viewer = None           # a nyitott nagyító ablak (ImageViewer), ha van
         self._build()
         self._redraw()
 
@@ -3656,8 +3774,12 @@ class ImagesToPdfTab(ttk.Frame):
         sb.pack(side="right", fill="y")
         self.canvas.bind("<Configure>", lambda e: self._redraw())
         self.canvas.bind("<ButtonPress-1>", self._press)
+        # külön binding modifikátoronként (mint az Arckép fülön), nem a state-bit
+        self.canvas.bind("<Control-ButtonPress-1>", self._press_ctrl)
+        self.canvas.bind("<Shift-ButtonPress-1>", self._press_shift)
         self.canvas.bind("<B1-Motion>", self._motion)
         self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Double-Button-1>", self._open_viewer)
         self.canvas.bind("<Delete>", lambda e: self._remove())
         self.canvas.bind("<MouseWheel>", lambda e: (
             self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), "break")[1])
@@ -3676,9 +3798,12 @@ class ImagesToPdfTab(ttk.Frame):
         run.pack(fill="x", padx=8, pady=4)
         self.pb = ttk.Progressbar(run, mode="determinate")
         self.pb.pack(side="left", fill="x", expand=True)
-        self.btn = ttk.Button(run, text="PDF készítése → Iktató…", command=self._run)
-        self.btn.pack(side="left", padx=8)
-        ttk.Button(run, text="Mégsem", command=self._cancel).pack(side="left")
+        self.btns = [ttk.Button(run, text="Mindből PDF → Iktató…", command=self._run),
+                     ttk.Button(run, text="Kijelöltekből PDF → Iktató…",
+                                command=lambda: self._run(only_sel=True))]
+        for b in self.btns:
+            b.pack(side="left", padx=(8, 0))
+        ttk.Button(run, text="Mégsem", command=self._cancel).pack(side="left", padx=8)
 
         self.log = tk.Text(self, height=5, wrap="none", state="disabled", bg="#f7f7f7")
         self.log.pack(fill="x", padx=8, pady=(0, 8))
@@ -3716,25 +3841,40 @@ class ImagesToPdfTab(ttk.Frame):
         self._thumbs()
 
     def _rotate(self, d):
-        if self.sel is None:
-            return
-        it = self.items[self.sel]
-        it.rot = (it.rot + d) % 360
-        it.thumb = None
+        for it in self.sel:
+            it.rot = (it.rot + d) % 360
+            it.thumb = None
         self._redraw()
         self._thumbs()
+        if self.viewer and self.viewer.item in self.sel:
+            self.viewer._render()
 
     def _remove(self):
-        if self.sel is None or self._b:
+        if not self.sel or self._b:
             return
-        self.items.pop(self.sel)
-        self.sel = min(self.sel, len(self.items) - 1) if self.items else None
+        self.items = [it for it in self.items if it not in self.sel]
+        self.sel, self.anchor = set(), None
         self._redraw()
+        self._close_viewer_if_gone()
 
     def _clear(self):
         if not self._b:
-            self.items, self.sel = [], None
+            self.items, self.sel, self.anchor = [], set(), None
             self._redraw()
+            self._close_viewer_if_gone()
+
+    def _close_viewer_if_gone(self):
+        if self.viewer and self.viewer.item not in self.items:
+            self.viewer.close()
+
+    def _open_viewer(self, e):
+        """Dupla kattintás egy bélyegképen: nagyított előnézet."""
+        i, _, _ = self._hit_item(e)
+        if i is not None:
+            if not self.viewer:
+                self.viewer = ImageViewer(self)
+            self.viewer.show(self.items[i])
+        return "break"
 
     # ---------------- bélyegképek ----------------
     def _thumbs(self):
@@ -3772,7 +3912,7 @@ class ImagesToPdfTab(ttk.Frame):
         c.delete("all")
         for i, it in enumerate(self.items):
             x, y = self._xy(i)
-            hot = i == self.sel
+            hot = it in self.sel
             c.create_rectangle(x, y, x + CELL_W, y + CELL_H,
                                fill=COL_TILE_BG_HOT if hot else COL_TILE_BG,
                                outline=COL_TILE_LINE_HOT if hot else COL_TILE_LINE,
@@ -3793,9 +3933,12 @@ class ImagesToPdfTab(ttk.Frame):
             c.create_text(max(200, c.winfo_width()) / 2, 80, fill="#e8e8e8", justify="center",
                           font=("Segoe UI", 11),
                           text="Nincs kép.\nAdj hozzá képeket vagy egy mappát — a sorrend "
-                               "vonszolással állítható.")
+                               "vonszolással állítható.\nCtrl+kattintás: több kép kijelölése · "
+                               "Shift+kattintás: tartomány · dupla kattintás: nagyítás")
         bad = sum(1 for it in self.items if it.bad)
-        self.info.set(f"{n} kép" + (f" · {bad} nem olvasható (kimarad)" if bad else ""))
+        self.info.set(f"{n} kép · {len(self.sel)} kijelölve (Ctrl/Shift+kattintás) · "
+                      "dupla kattintás: nagyítás" +
+                      (f" · {bad} nem olvasható (kimarad)" if bad else ""))
 
     # ---------------- vonszolás ----------------
     def _index_at(self, x, y):
@@ -3812,12 +3955,38 @@ class ImagesToPdfTab(ttk.Frame):
         col = max(0, min(c, round((x - GAP) / (CELL_W + GAP))))
         return max(0, min(len(self.items), row * c + col))
 
-    def _press(self, e):
+    def _hit_item(self, e):
+        """(index | None, x, y) a kattintás helyén, vászonkoordinátában."""
         self.canvas.focus_set()
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
-        self.sel = self._index_at(x, y)
-        self._drag = (self.sel, x, y) if self.sel is not None and not self._b else None
+        return self._index_at(x, y), x, y
+
+    def _press(self, e):
+        """Sima kattintás: csak ez az egy kép lesz kijelölve (és vonszolható)."""
+        i, x, y = self._hit_item(e)
+        self.sel = {self.items[i]} if i is not None else set()
+        self.anchor = self.items[i] if i is not None else None
+        self._drag = (i, x, y) if i is not None and not self._b else None
         self._redraw()
+
+    def _press_ctrl(self, e):
+        """Ctrl+kattintás: a kép ki-/bekapcsolása a kijelölésben."""
+        i, _, _ = self._hit_item(e)
+        if i is not None:
+            self.sel ^= {self.items[i]}
+            self.anchor = self.items[i]
+            self._redraw()
+        return "break"
+
+    def _press_shift(self, e):
+        """Shift+kattintás: a kiinduló elemtől eddig minden kép."""
+        i, _, _ = self._hit_item(e)
+        if i is None:
+            return "break"
+        a = self.items.index(self.anchor) if self.anchor in self.items else i
+        self.sel = set(self.items[min(a, i):max(a, i) + 1])
+        self._redraw()
+        return "break"
 
     def _motion(self, e):
         if not self._drag:
@@ -3860,16 +4029,19 @@ class ImagesToPdfTab(ttk.Frame):
             return
         j = s - 1 if s > i else s
         self.items.insert(j, self.items.pop(i))
-        self.sel = j
         self._redraw()
 
     # ---------------- feldolgozás ----------------
-    def _run(self):
+    def _run(self, only_sel=False):
+        """only_sel: csak a kijelölt képekből, a rácsbeli sorrendjükben — külön PDF."""
         if self._b:
             return
-        todo = [it for it in self.items if not it.bad]
+        todo = [it for it in self.items if not it.bad and (not only_sel or it in self.sel)]
         if not todo:
-            messagebox.showwarning("Nincs kép", "Adj hozzá legalább egy olvasható képet.")
+            messagebox.showwarning(
+                "Nincs kép",
+                "Jelölj ki legalább egy olvasható képet (Ctrl+kattintás, Shift+kattintás)."
+                if only_sel else "Adj hozzá legalább egy olvasható képet.")
             return
         first = todo[0].path
         dst = filedialog.asksaveasfilename(
@@ -3886,7 +4058,8 @@ class ImagesToPdfTab(ttk.Frame):
         self.log.delete("1.0", tk.END)
         self.log.configure(state="disabled")
         self.pb.configure(maximum=len(todo), value=0)
-        self.btn.state(["disabled"])
+        for b in self.btns:
+            b.state(["disabled"])
         self.after(1, self._step)
 
     def _cancel(self):
@@ -3947,7 +4120,8 @@ class ImagesToPdfTab(ttk.Frame):
 
     def _done(self, msg):
         self._b = None
-        self.btn.state(["!disabled"])
+        for b in self.btns:
+            b.state(["!disabled"])
         self._write_log(msg)
         self.app.status(msg.strip())
 
