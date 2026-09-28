@@ -624,8 +624,10 @@ class PlacerTab(ttk.Frame):
             page = out[self.page_no]
             rot = page.rotation
             target = rect * page.derotation_matrix if rot else rect
+            # Az előnézet (y lefelé) pozitív szöge óramutató szerinti, a show_pdf_page-é
+            # (PDF-tér, y felfelé) ellentétes – ezért kivonjuk, különben ±90° 180°-ot tévedne.
             page.show_pdf_page(target, self.imgpdf, 0,
-                               rotate=float(self.angle.get()) + rot, keep_proportion=True)
+                               rotate=rot - float(self.angle.get()), keep_proportion=True)
             if not self.raster.get():
                 out.save(dst, garbage=4, deflate=True)
                 return

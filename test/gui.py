@@ -315,6 +315,48 @@ try:
     pump(0.1)
     ck("Delete: a kijelölt törlődik", len(kt.items) == n_before - 1)
 
+    print("ARCKÉP ELHELYEZÉS")
+    pl = app.tabs["Arckép elhelyezés"]
+    app.nb.select(pl)
+    arc = os.path.join(TMP, "arc.png")              # álló kép, felső negyede piros
+    P.Pixmap(P.csRGB, 100, 200, bytes((255, 0, 0) * 5000 + (0, 0, 255) * 15000), False).save(arc)
+
+    def red_side(pix, x0, y0, x1, y1):             # a doboz melyik szélén piros a kép?
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        pr = {"fent": (mx, y0 + (y1 - y0) * .1), "jobb": (x0 + (x1 - x0) * .9, my),
+              "lent": (mx, y0 + (y1 - y0) * .9), "bal": (x0 + (x1 - x0) * .1, my)}
+        return [k for k, (x, y) in pr.items()
+                if pix.pixel(int(x), int(y))[0] > 200 and pix.pixel(int(x), int(y))[2] < 80]
+
+    shown = []                                      # az előnézetbe ténylegesen rajzolt pixmap
+    tkimg0 = pm.tkimg
+    pm.tkimg = lambda pix, fmt: (shown.append(pix), tkimg0(pix, fmt))[1]
+    got = []
+    for page_rot in (0, 90):
+        lap = os.path.join(TMP, f"lap{page_rot}.pdf")
+        d = P.open()
+        d.new_page(width=595, height=842).set_rotation(page_rot)
+        d.save(lap)
+        d.close()
+        pl._open_pdf(lap)
+        pl._load_img(arc)
+        pump(0.2)
+        for ang in (90, -90, 180):
+            pl.angle.set(ang)
+            pl._render_photo()
+            prev = red_side(shown[-1], 0, 0, pl.pw_px, pl.ph_px)
+            kesz = os.path.join(TMP, "kesz.pdf")
+            pl._write(kesz)
+            d = P.open(kesz)
+            bw, bh = pl.pw_px / pl.zoom, pl.ph_px / pl.zoom
+            outp = red_side(d[0].get_pixmap(), pl.cx_pt - bw / 2, pl.cy_pt - bh / 2,
+                            pl.cx_pt + bw / 2, pl.cy_pt + bh / 2)
+            d.close()
+            got.append((page_rot, ang, prev, outp))
+    pm.tkimg = tkimg0
+    ck("forgatott arckép: a mentett PDF = előnézet (lapforgatással is)",
+       all(p == o and len(p) == 1 for _, _, p, o in got), got)
+
     print("TÖMÖRÍTÉS KÉPEKBŐL")
     kt._clear()
     kt.fit_a4.set(True)
