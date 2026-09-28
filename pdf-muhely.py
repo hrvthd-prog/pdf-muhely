@@ -1093,6 +1093,43 @@ def check_path_len(full: str):
         raise ValueError(f"Túl hosszú útvonal ({len(full)} karakter):\n{full}")
 
 
+# ── iktatómag: az Iktató és a kötegelt iktatás közös lépései ────────────────
+def backup_existing(dst: str) -> str:
+    """Felülírás előtt az előző példány másolata a dolgozó mappájában a
+    .eredeti\\ almappába kerül — a ponttal kezdődő mappát az Áttekintő és az
+    Iktató is kihagyja. -> a másolat útja"""
+    d = os.path.join(os.path.dirname(dst), BACKUP_DIR)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, unique_name(d, os.path.basename(dst))[0])
+    shutil.copy2(dst, path)
+    return path
+
+
+def undo_copy(dst: str, backup):
+    """Egy iktatás visszavonása: felülírásnál az előző példány visszakerül,
+    különben a cél törlődik. OSError-t dob, ha nem sikerül."""
+    if backup and os.path.exists(backup):
+        os.replace(backup, dst)
+    elif os.path.exists(dst):
+        os.remove(dst)
+
+
+def log_row(parent: str, src: str, folder: str, name: str, doc_type: str, result: str):
+    """Egy sor az iktato-naplo.csv-be (a munkamappában)."""
+    path = os.path.join(parent, LOG_NAME)
+    new = not os.path.exists(path)
+    try:
+        with open(path, "a", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f, delimiter=";")
+            if new:
+                w.writerow(["időbélyeg", "forrás", "célmappa", "célfájl",
+                            "doktípus", "eredmény"])
+            w.writerow([datetime.datetime.now().isoformat(timespec="seconds"),
+                        src, folder, name, doc_type, result])
+    except OSError:
+        pass                        # a napló sosem állítja meg a munkát
+
+
 # ── csempeelrendezés ────────────────────────────────────────────────────────
 def ring_metrics(cw, ch, tw=TILE_W, th=TILE_H, gap=GAP):
     """Hány csempe fér ki, és hol kezdődik a jobb oszlop / az alsó sor.
@@ -1881,7 +1918,7 @@ class IktatoTab(ttk.Frame):
             job["dst"] = os.path.join(folder, job["name"])
             check_path_len(job["dst"])
             if job["overwritten"]:
-                job["backup"] = self._backup_existing(job["dst"])
+                job["backup"] = backup_existing(job["dst"])
             if shrink:
                 with open(src, "rb") as f:
                     data = f.read()
@@ -1962,16 +1999,6 @@ class IktatoTab(ttk.Frame):
                        (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
                        (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
                         if job["shrunk"] else ""), ok=True)
-
-    def _backup_existing(self, dst):
-        """Felülírás előtt az előző példány másolata a dolgozó mappájában a
-        .eredeti\\ almappába kerül — a ponttal kezdődő mappát az Áttekintő és az
-        Iktató is kihagyja. -> a másolat útja"""
-        d = os.path.join(os.path.dirname(dst), BACKUP_DIR)
-        os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, unique_name(d, os.path.basename(dst))[0])
-        shutil.copy2(dst, path)
-        return path
 
     def _ask_collision(self, name):
         """new | overwrite | cancel — alapértelmezés az új név."""
@@ -2055,15 +2082,13 @@ class IktatoTab(ttk.Frame):
             self._info("Nincs mit visszavonni.", warn=True)
             return
         src, dst, backup = self.last_copy
+        in_place = os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst))
+        if in_place and not (backup and os.path.exists(backup)):
+            self._info("Helyben felülírt fájl nem vonható vissza (az eredeti nincs meg).",
+                       warn=True)
+            return
         try:
-            if backup and os.path.exists(backup):
-                os.replace(backup, dst)             # felülírás volt: az előző példány vissza
-            elif os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
-                self._info("Helyben felülírt fájl nem vonható vissza (az eredeti nincs meg).",
-                           warn=True)
-                return
-            elif os.path.exists(dst):
-                os.remove(dst)
+            undo_copy(dst, backup)
         except OSError as e:
             self._info(f"A visszavonás nem sikerült: {e}", warn=True)
             return
@@ -2078,19 +2103,8 @@ class IktatoTab(ttk.Frame):
 
     # ---------------- napló és üzenet ----------------
     def _log(self, src, folder, name, result, doc_type=None):
-        path = os.path.join(self.parent_dir, LOG_NAME)
-        new = not os.path.exists(path)
-        try:
-            with open(path, "a", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f, delimiter=";")
-                if new:
-                    w.writerow(["időbélyeg", "forrás", "célmappa", "célfájl",
-                                "doktípus", "eredmény"])
-                w.writerow([datetime.datetime.now().isoformat(timespec="seconds"),
-                            src, folder, name,
-                            self.doc_type.get() if doc_type is None else doc_type, result])
-        except OSError:
-            pass                        # a napló sosem állítja meg a munkát
+        log_row(self.parent_dir, src, folder, name,
+                self.doc_type.get() if doc_type is None else doc_type, result)
 
     def _info(self, txt, warn=False, ok=False):
         self.msg.set(txt)
@@ -4594,6 +4608,34 @@ def _selftest() -> int:
            pg.rect.width > pg.rect.height and
            out.xref_stream_raw(pg.get_images()[0][0]) == jpeg)
         out.close()
+
+    print("IKTATÓMAG")
+    with tempfile.TemporaryDirectory() as td:
+        who = os.path.join(td, "Kiss Anna")
+        os.makedirs(who)
+        dst = os.path.join(who, "Kiss Anna Útlevél.pdf")
+        with open(dst, "w") as f:
+            f.write("régi")
+        bak = backup_existing(dst)
+        ck("felülírás előtt: másolat a .eredeti\\-ben",
+           bak == os.path.join(who, BACKUP_DIR, "Kiss Anna Útlevél.pdf") and
+           open(bak).read() == "régi", bak)
+        with open(dst, "w") as f:
+            f.write("új")
+        undo_copy(dst, bak)
+        ck("visszavonás felülírás után: a régi visszaállt, a másolat eltűnt",
+           open(dst).read() == "régi" and not os.path.exists(bak))
+        undo_copy(dst, None)
+        ck("visszavonás új fájlnál: a cél törlődik", not os.path.exists(dst))
+        for r in ("OK", "VISSZAVONVA"):
+            log_row(td, "forras.pdf", "Kiss Anna", "Kiss Anna Útlevél.pdf", "Útlevél", r)
+        with open(os.path.join(td, LOG_NAME), encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f, delimiter=";"))
+        ck("napló: egy fejléc, soronként egy iktatás",
+           len(rows) == 3 and rows[0][0] == "időbélyeg" and
+           [r[5] for r in rows[1:]] == ["OK", "VISSZAVONVA"], rows)
+        log_row(os.path.join(td, "nincs"), "x", "y", "z", "t", "OK")
+        ck("hibás naplóhely nem dob kivételt", True)
 
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")

@@ -335,3 +335,7 @@ Minden kérdés eldőlt (14. fejezet), nincs függő tétel.
 | **F6** | *(opcionális)* Iktató: többoldalas PDF-nél „Szétosztás…” gomb, ami az Összeállítóban nyitja meg, a dolgozóval együtt | ~15 sor |
 
 Nettó ~+280 sor, kevesebb az eredeti ~550-nél, mert a régi Szétvágás és a régi kimeneti út törlődik.
+
+### 14.4 Megvalósítás
+
+**F0 — kész (2026-09-28).** Modulszintű iktatómag a `check_path_len` mellett: `backup_existing(dst)`, `undo_copy(dst, backup)`, `log_row(parent, src, folder, name, doc_type, result)`. Az Iktató ezeket hívja; a `_log` vékony burok maradt, mert a doktípus alapértéke (a legördülő aktuális értéke) Iktató-specifikus. Eltérés a 6. fejezettől: az `undo_copy` nem kapja meg a forrást. A „helyben felülírt fájl nem vonható vissza” szabály csak az Iktatóban fordulhat elő (ott lehet a forrás maga a cél), ezért ott maradt. Önteszt: +5 (IKTATÓMAG), a GUI-teszt Iktató-része változatlanul zöld.
