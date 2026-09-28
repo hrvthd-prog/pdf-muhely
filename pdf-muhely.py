@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 PDF Műhely – egyesített offline eszköztár.
-Fülek: Arckép elhelyezés | Összefűzés | Képek → PDF | Szétvágás | Raszterizálás |
-       Iktató | Áttekintő
+Fülek: Arckép elhelyezés | Összefűzés | Összeállító | Raszterizálás | Iktató |
+       Áttekintő
 Függőség: pymupdf (a tkinter a Python része). Semmilyen hálózati műveletet nem végez.
 
 Öntesztek GUI nélkül:  python pdf-muhely.py --test
@@ -101,7 +101,7 @@ def missing_features() -> list:
     if not hasattr(pymupdf.Document, "rewrite_images"):
         out.append("PDF-tömörítés 5 MB alá (Document.rewrite_images)")
     if "jpg_quality" not in inspect.signature(pymupdf.Pixmap.tobytes).parameters:
-        out.append("Képek → PDF, JPEG-minőség (Pixmap.tobytes jpg_quality)")
+        out.append("Összeállító (képoldalak), JPEG-minőség (Pixmap.tobytes jpg_quality)")
     return out
 
 # ponytail: tizedes 5 MB (5 000 000 bájt) — szigorúbb az 5 MiB-nál, így a portál
@@ -218,7 +218,7 @@ def rasterize_doc(doc, dpi: int, pages=None):
 class FileList(ttk.Frame):
     """Listbox + görgetősáv + Frissítés/Tallózás gombpár."""
 
-    def __init__(self, master, title, exts, on_pick, height=7, multi=False):
+    def __init__(self, master, title, exts, on_pick, height=7):
         super().__init__(master)
         self.exts, self.on_pick, self.folder = exts, on_pick, script_dir()
         self._ok = False
@@ -227,8 +227,7 @@ class FileList(ttk.Frame):
         box.pack(fill="both", expand=True)
         inner = ttk.Frame(box)
         inner.pack(fill="both", expand=True, padx=6, pady=6)
-        self.lb = tk.Listbox(inner, height=height, exportselection=False,
-                             selectmode="extended" if multi else "browse")
+        self.lb = tk.Listbox(inner, height=height, exportselection=False, selectmode="browse")
         sb = ttk.Scrollbar(inner, orient="vertical", command=self.lb.yview)
         self.lb.configure(yscrollcommand=sb.set)
         self.lb.pack(side="left", fill="both", expand=True)
@@ -239,7 +238,6 @@ class FileList(ttk.Frame):
         row.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Button(row, text="Frissítés", command=self.refresh).pack(side="left")
         ttk.Button(row, text="Tallózás…", command=self._browse).pack(side="left", padx=6)
-        self.extra = row
 
     def set_folder(self, folder):
         self.folder = folder
@@ -263,13 +261,6 @@ class FileList(ttk.Frame):
 
     def selected_paths(self):
         return [os.path.join(self.folder, n) for n in self.selected_names()]
-
-    def all_paths(self):
-        return [os.path.join(self.folder, f) for f in list_files(self.folder, self.exts)]
-
-    def select_all(self):
-        if self._ok:
-            self.lb.selection_set(0, tk.END)
 
     def _select(self, _e=None):
         if self._ok and self.on_pick:
@@ -756,130 +747,6 @@ class MergeTab(ttk.Frame):
         self.app.refresh_all()
 
 
-# ───────────────────────────── 3. fül: szétvágás ─────────────────────────────
-class SplitTab(ttk.Frame):
-    def __init__(self, master, app):
-        super().__init__(master)
-        self.app = app
-        self.folder = script_dir()
-        self.dry = tk.BooleanVar(value=False)
-        self.force = tk.BooleanVar(value=False)
-        self._build()
-
-    def _build(self):
-        top = ttk.Frame(self)
-        top.pack(fill="both", expand=True, padx=10, pady=10)
-        self.files = FileList(top, "Szétvágandó PDF-ek (több is kijelölhető)",
-                              (".pdf",), None, height=8, multi=True)
-        self.files.pack(fill="both", expand=True)
-        ttk.Button(self.files.extra, text="Mind kijelöl",
-                   command=self.files.select_all).pack(side="left", padx=4)
-
-        opt = ttk.Frame(top)
-        opt.pack(fill="x", pady=8)
-        ttk.Checkbutton(opt, text="Próbafutás (csak megmutatja, mi történne)",
-                        variable=self.dry).pack(side="left")
-        ttk.Checkbutton(opt, text="Létező fájlok felülírása",
-                        variable=self.force).pack(side="left", padx=16)
-        ttk.Button(opt, text="Szétvágás…", command=self._run).pack(side="right")
-
-        self.log = tk.Text(top, height=12, wrap="none", state="disabled", bg="#f7f7f7")
-        self.log.pack(fill="both", expand=True)
-
-    def set_folder(self, folder):
-        self.folder = folder
-        self.files.set_folder(folder)
-
-    def _write_log(self, txt):
-        self.log.configure(state="normal")
-        self.log.insert(tk.END, txt + "\n")
-        self.log.see(tk.END)
-        self.log.configure(state="disabled")
-        self.update_idletasks()
-
-    def _run(self):
-        paths = self.files.selected_paths() or self.files.all_paths()
-        if not paths:
-            messagebox.showwarning("Nincs fájl", "Nincs szétvágható PDF.")
-            return
-        outdir = filedialog.askdirectory(title="Kimeneti mappa", initialdir=self.folder)
-        if not outdir:
-            return
-        self.log.configure(state="normal")
-        self.log.delete("1.0", tk.END)
-        self.log.configure(state="disabled")
-
-        total_all = done_all = 0
-        try:
-            for src_path in paths:
-                t, k = self._split_one(src_path, outdir)
-                total_all += t
-                done_all += k
-        except Exception as e:
-            traceback.print_exc()
-            messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
-            return
-
-        if self.dry.get():
-            self._write_log(f"\n[PRÓBAFUTÁS] {len(paths)} fájl, összesen {total_all} "
-                            f"külön PDF készülne itt: {outdir}")
-        else:
-            ok = done_all == total_all
-            self._write_log(f"\nKész: {done_all}/{total_all} oldal, kimenet: {outdir} "
-                            f"[{'OK' if ok else 'ELTÉRÉS!'}]")
-            self.app.status(f"Szétvágva: {done_all} oldal")
-
-    def _split_one(self, src_path, outdir):
-        src = open_checked(src_path)
-        total = src.page_count
-        width = max(3, len(str(total)))
-        stem = safe_stem(os.path.splitext(os.path.basename(src_path))[0])
-        target = os.path.join(outdir, stem)
-        self._write_log(f"\n{os.path.basename(src_path)}: {total} oldal -> {stem}\\")
-
-        if self.dry.get():
-            for i in (1, total):
-                self._write_log(f"    pl. {stem}_{i:0{width}d}.pdf")
-            src.close()
-            return total, 0
-
-        os.makedirs(target, exist_ok=True)
-        if not self.force.get():
-            exists = [f"{stem}_{i:0{width}d}.pdf" for i in range(1, total + 1)
-                      if os.path.exists(os.path.join(target, f"{stem}_{i:0{width}d}.pdf"))]
-            if exists:
-                src.close()
-                raise RuntimeError(f"{len(exists)} fájl már létezik itt: {target}\n"
-                                   f"első: {exists[0]}\nKapcsold be a felülírást.")
-
-        done = 0
-        for i in range(total):
-            one = pymupdf.open()
-            one.insert_pdf(src, from_page=i, to_page=i)
-            one.set_metadata(dict(CLEAN_META,
-                                  title=f"{os.path.splitext(os.path.basename(src_path))[0]} - {i+1}. oldal"))
-            one.save(os.path.join(target, f"{stem}_{i+1:0{width}d}.pdf"), garbage=4, deflate=True)
-            one.close()
-            done += 1
-            if total > 50 and (i + 1) % 50 == 0:
-                self._write_log(f"    ... {i+1}/{total}")
-        src.close()
-
-        bad, big = [], 0
-        for i in range(1, total + 1):
-            p = os.path.join(target, f"{stem}_{i:0{width}d}.pdf")
-            d = pymupdf.open(p)
-            if d.page_count != 1:
-                bad.append(os.path.basename(p))
-            d.close()
-            big += os.path.getsize(p) > UPLOAD_LIMIT
-        if bad:
-            raise RuntimeError(f"nem 1 oldalas darab(ok): {', '.join(bad[:5])}")
-        self._write_log(f"    {done}/{total} oldal kiírva [OK]" +
-                        (f"  ⚠ {big} darab {mb(UPLOAD_LIMIT)} feletti" if big else ""))
-        return total, done
-
-
 # ──────────────────────────── 4. fül: raszterizálás ────────────────────────────
 class RasterTab(ttk.Frame):
     def __init__(self, master, app):
@@ -1128,6 +995,13 @@ def log_row(parent: str, src: str, folder: str, name: str, doc_type: str, result
                         src, folder, name, doc_type, result])
     except OSError:
         pass                        # a napló sosem állítja meg a munkát
+
+
+def worker_dirs(parent: str) -> list:
+    """A munkamappa dolgozói mappái (a ponttal kezdődők nélkül), magyar sorrendben.
+    OSError-t dob, ha a mappa nem olvasható."""
+    return hu_sorted([d for d in os.listdir(parent)
+                      if os.path.isdir(os.path.join(parent, d)) and not d.startswith(".")])
 
 
 # ── csempeelrendezés ────────────────────────────────────────────────────────
@@ -1483,13 +1357,10 @@ class IktatoTab(ttk.Frame):
 
     def _scan_dirs(self):
         try:
-            names = [d for d in os.listdir(self.parent_dir)
-                     if os.path.isdir(os.path.join(self.parent_dir, d))
-                     and not d.startswith(".")]
+            self.dirs = worker_dirs(self.parent_dir)
         except OSError as e:
-            names = []
+            self.dirs = []
             self._info(f"A mappa nem olvasható: {e}", warn=True)
-        self.dirs = hu_sorted(names)
         self._relayout()
 
     def _visible_dirs(self):
@@ -1603,7 +1474,11 @@ class IktatoTab(ttk.Frame):
                       text=f"{os.path.basename(path)} · {mb(size)}" +
                            ("  ⚠ korlát fölött — iktatáskor tömöríthető" if big else ""),
                       font=("Segoe UI", 8), tags=("preview",))
-        self._btn(cx, y2 - 12, "📂  Tallózás…", self._browse_files)
+        if self.page_count > 1:      # kötegből több irat: az Összeállítóban
+            self._btn(cx - 75, y2 - 12, "📂  Tallózás…", self._browse_files)
+            self._btn(cx + 85, y2 - 12, "✂  Szétosztás…", self._to_composer)
+        else:
+            self._btn(cx, y2 - 12, "📂  Tallózás…", self._browse_files)
         self._update_name()
 
     def _btn(self, cx, cy, text, cmd):
@@ -1772,6 +1647,12 @@ class IktatoTab(ttk.Frame):
     def _step_tilepage(self, d):
         self.page += d
         self._relayout()
+
+    def _to_composer(self):
+        """Többoldalas köteg: az Összeállítóba (oldalanként címkézhető), a sorból ki."""
+        path = self.queue[self.idx]
+        self._drop_current()
+        self.app.goto_composer(path, self.filter_text.get())
 
     def _drop_current(self):
         if not self.queue:
@@ -1977,7 +1858,7 @@ class IktatoTab(ttk.Frame):
                     "Tömörítés",
                     f"A legerősebb tömörítés után is {mb(new_size)} maradt — "
                     f"a feltöltési korlát ({mb(UPLOAD_LIMIT)}) fölött.\n\n"
-                    "Érdemes kevesebb oldalra bontani (Szétvágás fül).")
+                    "Érdemes kevesebb oldalra bontani (Összeállító fül).")
         self._log(src, job["dir_name"], name, result, job["doc_type"])
         if src in self.queue:                # tömörítés közben a sor mozoghatott
             i = self.queue.index(src)
@@ -3367,7 +3248,7 @@ class AttekintoTab(ttk.Frame):
             if 0 <= rest < W_SMALL:
                 self._show_tip(e.x_root, e.y_root,
                                "Képek száma a mappában — csak EGY, az arckép\n"
-                               "maradhat; minden más fotó PDF-be (Képek → PDF)",
+                               "maradhat; minden más fotó PDF-be (Összeállító)",
                                ("h", "photo"))
                 return
             if W_SMALL <= rest < 2 * W_SMALL:
@@ -3649,7 +3530,7 @@ class AttekintoTab(ttk.Frame):
                 L.append("    arckép hiányzik")
             elif len(r.photos) > 1:
                 L.append(f"    {len(r.photos)} kép — csak az arckép maradhat, "
-                         "a többi PDF-be (Képek → PDF)")
+                         "a többi PDF-be (Összeállító)")
             L.append("")
 
         L.append(f"╔═ BEADHATÓ ({len(good)}) " + "═" * 44)
@@ -3750,32 +3631,39 @@ class AttekintoTab(ttk.Frame):
 
 
 
-# ─────────────────────────── 7. fül: képek → pdf ───────────────────────────
-# Fotókból / szkennelt képekből EGY tömörített PDF. A névadás nem itt történik:
-# a kész PDF az Iktató várólistájába kerül, ott kap nevet és helyet.
+# ──────────────────────────── 7. fül: összeállító ────────────────────────────
+# Képekből és PDF-kötegekből iratok egy lépésben. Az oldalak doktípus-címkét
+# kapnak; egy irat = az azonos címkéjű oldalak a rács sorrendjében. Az Iktatás a
+# dolgozó mappájába írja őket az Iktató közös magjával (név, ütközés, .eredeti,
+# napló, 5 MB). A döntések: szetvago-terv.md, 14. fejezet.
 THUMB = 160                                   # bélyegkép befoglaló mérete (px)
 CELL_W, CELL_H = THUMB + 16, THUMB + 34       # csempe: kép + fájlnév
 PRESETS = (("Irodai · 200 DPI", 200, 75),     # (felirat, DPI, JPEG-minőség)
            ("Archív · 300 DPI", 300, 85),
            ("E-mail · 150 DPI", 150, 65))
 A4_LONG_IN = 842 / 72                         # az A4 hosszabb oldala hüvelykben
+SRC_EXT = IMG_EXT + (".pdf",)
+PANEL_W = 300                                 # a jobb oldali panel szélessége
+LABEL_COLORS = ("#1e6fd9", "#d9480f", "#2b8a3e", "#ae3ec9", "#c77700", "#0b7285",
+                "#c2255c", "#5c940d", "#364fc7", "#862e9c", "#495057")
+COL_NOLABEL = "#868e96"                       # a palettán már nem szereplő típus
 
 
-def image_page_jpeg(path, rot, dpi, quality, gray):
-    """Egy kép -> (JPEG-bájtok, szélesség px, magasság px, oldalszám).
+def image_page_jpeg(path, rot, dpi, quality, gray, page=0):
+    """Egy képoldal -> (JPEG-bájtok, szélesség px, magasság px).
     A hosszabb oldal legfeljebb dpi × A4 hosszabb oldala; nagyítás soha.
     Az EXIF-forgatást a MuPDF magától alkalmazza, a `rot` a felhasználói ráadás."""
     src = pymupdf.open(path)
     try:
-        page = src[0]
-        info = page.get_image_info()
+        pg = src[page]
+        info = pg.get_image_info()
         native = max(info[0]["width"], info[0]["height"]) if info else \
-            max(page.rect.width, page.rect.height)
-        z = min(native, dpi * A4_LONG_IN) / max(page.rect.width, page.rect.height)
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(z, z).prerotate(rot))
+            max(pg.rect.width, pg.rect.height)
+        z = min(native, dpi * A4_LONG_IN) / max(pg.rect.width, pg.rect.height)
+        pix = pg.get_pixmap(matrix=pymupdf.Matrix(z, z).prerotate(rot))
         if gray:
             pix = pymupdf.Pixmap(pymupdf.csGRAY, pix)
-        return pix.tobytes("jpeg", jpg_quality=quality), pix.width, pix.height, src.page_count
+        return pix.tobytes("jpeg", jpg_quality=quality), pix.width, pix.height
     finally:
         src.close()
 
@@ -3792,22 +3680,103 @@ def add_image_page(out, jpeg, w, h, dpi, fit_a4):
     page.insert_image(page.rect, stream=jpeg)      # arányt tart, középre tesz
 
 
+def add_item_page(out, it, dpi, quality, gray, fit_a4, srcs):
+    """Az elem oldala az `out` végére. A PDF-oldal veszteségmentesen megy át (a
+    képei bájtra azonosak, a forgatás csak /Rotate); a kép újrakódolva.
+    `srcs`: a már megnyitott forrás-PDF-ek (útvonal -> dokumentum)."""
+    if not it.path.lower().endswith(".pdf"):
+        jpeg, w, h = image_page_jpeg(it.path, it.rot, dpi, quality, gray, it.page)
+        add_image_page(out, jpeg, w, h, dpi, fit_a4)
+        return
+    if it.path not in srcs:
+        srcs[it.path] = open_checked(it.path)
+    out.insert_pdf(srcs[it.path], from_page=it.page, to_page=it.page)
+    if it.rot:                      # a bélyegképpel azonos irány: óramutató szerint
+        pg = out[-1]
+        pg.set_rotation((pg.rotation + it.rot) % 360)
+
+
+def page_ranges(nums) -> str:
+    """Oldalindexek (0-tól) -> „1-3,5” (1-től), a megadott sorrendben."""
+    out, start = [], None
+    for i, n in enumerate(nums):
+        start = n if start is None else start
+        if i + 1 == len(nums) or nums[i + 1] != n + 1:
+            out.append(str(start + 1) if start == n else f"{start + 1}-{n + 1}")
+            start = None
+    return ",".join(out)
+
+
+def source_desc(items) -> str:
+    """A napló „forrás” mezője: fájlonként, PDF-nél az oldalakkal."""
+    by = {}
+    for it in items:
+        by.setdefault(it.path, []).append(it.page)
+    return "; ".join(p + (f" [{page_ranges(n)}]" if p.lower().endswith(".pdf") else "")
+                     for p, n in by.items())
+
+
+def palette_types(ikt_types, rules) -> list:
+    """A típuspaletta: az Iktató típusai és az Áttekintő nem DocGen-szabályai, az
+    Áttekintő oszlopsorrendjében (a kötelezők elöl); a szabályra nem illeszkedő
+    saját típusok a végén. -> [(típusnév, szabály | None)]"""
+    out, used = [], set()
+    for r in rules:
+        t = next((t for t in ikt_types
+                  if match_rule(target_name("X", t), rules) == (r, False)), None)
+        if t:
+            out.append((t, r))
+            used.add(t)
+        elif not r.generated:
+            out.append((r.name, r))
+    return out + [(t, None) for t in ikt_types if t not in used]
+
+
+def resolve_worker(text: str, dirs: list):
+    """A Dolgozó mező szövegéből a mappa: pontos (ékezet- és kisbetű-független)
+    egyezés, vagy az egyetlen részegyezés. -> (mappa | None, találatok)"""
+    f = strip_accents(text.strip())
+    if not f:
+        return None, list(dirs)
+    hits = [d for d in dirs if f in strip_accents(d)]
+    exact = [d for d in hits if strip_accents(d) == f]
+    one = exact if len(exact) == 1 else hits if len(hits) == 1 else []
+    return (one[0] if one else None), hits
+
+
 @dataclass(eq=False)             # azonosság szerint hashel: a kijelölés halmaz
 class PageItem:
     path: str                    # kép vagy PDF
     page: int = 0                # oldalszám a fájlban (képnél 0)
     rot: int = 0                 # felhasználói forgatás: 0 / 90 / 180 / 270
     thumb: object = None         # tk.PhotoImage, ha már elkészült
-    bad: str = ""                # hibaüzenet, ha a kép nem olvasható
+    bad: str = ""                # hibaüzenet, ha az oldal nem olvasható
+    doc: object = None           # OutDoc — a címke; None: kimarad
+
+    def paged(self) -> bool:
+        """PDF-oldal vagy többoldalas kép egy oldala: a névhez az oldalszám is kell."""
+        return bool(self.page) or self.path.lower().endswith(".pdf")
+
+    def label(self) -> str:
+        n = os.path.basename(self.path)
+        return f"{self.page + 1}. o. · {n}" if self.paged() else n
 
 
-class ImageViewer(tk.Toplevel):
-    """Nagyított előnézet a sorrendezéshez — nem modális, közben a rácsban lehet
-    vonszolni. A nagyítás az illesztéshez képest értendő, lapozáskor a nézettel
-    együtt megmarad; felső határa a kép natív felbontása."""
+@dataclass(eq=False)
+class OutDoc:
+    """Egy kimeneti irat címkéje. Az oldalait nem tároljuk: a rács azon elemei,
+    amelyeken ez a címke van, a rács sorrendjében — így nem csúszhat el."""
+    doc_type: str
+    suffix: str
 
-    HINT = ("görgő: nagyítás · húzás: mozgatás · ←/→: előző/következő · "
-            "dupla kattintás: illesztés · Esc: bezárás")
+
+class PageViewer(tk.Toplevel):
+    """Nagyított előnézet — nem modális, közben a rácsban lehet vonszolni, és a
+    számbillentyű itt is címkéz. A nagyítás az illesztéshez képest értendő,
+    lapozáskor a nézettel együtt megmarad; képnél a felső határa a natív felbontás."""
+
+    HINT = ("1–9: címke és tovább · görgő: nagyítás · húzás: mozgatás · "
+            "←/→: előző/következő · dupla kattintás: illesztés · Esc: bezárás")
 
     def __init__(self, tab):
         super().__init__(tab)
@@ -3831,6 +3800,7 @@ class ImageViewer(tk.Toplevel):
         self.bind("<Left>", lambda e: self._step(-1))
         self.bind("<Right>", lambda e: self._step(1))
         self.bind("<Escape>", lambda e: self.close())
+        self.bind("<Key>", lambda e: self.tab._key(e, self.item))
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     def _later(self, fn, ms=40):
@@ -3862,7 +3832,9 @@ class ImageViewer(tk.Toplevel):
         c.delete("all")
         items = self.tab.items
         pos = f"{items.index(self.item) + 1}/{len(items)}" if self.item in items else "–"
-        name = os.path.basename(self.item.path)
+        name = self.item.label()
+        if self.item.doc:
+            name += f" · {self.item.doc.doc_type}"
         if not self.doc:
             self.W, self.H = cw, ch
             c.configure(scrollregion=(0, 0, cw, ch))
@@ -3875,7 +3847,10 @@ class ImageViewer(tk.Toplevel):
         pw, ph = (r.height, r.width) if rot in (90, 270) else (r.width, r.height)
         fz = fit_zoom(pw, ph, cw, ch)
         info = page.get_image_info()
-        native = max(info[0]["width"], info[0]["height"]) / max(r.width, r.height) if info else fz
+        if info and not self.item.path.lower().endswith(".pdf"):
+            native = max(info[0]["width"], info[0]["height"]) / max(r.width, r.height)
+        else:
+            native = ZOOM_MAX        # PDF-oldal: a vektoros tartalom tetszőlegesen nagyítható
         k = 1.0 if self.zk is None else max(1.0, min(max(1.0, native / fz), self.zk))
         self.zk = None if k <= 1.0 else k
         z = fz * k
@@ -3917,42 +3892,59 @@ class ImageViewer(tk.Toplevel):
         self.destroy()
 
 
-class ImagesToPdfTab(ttk.Frame):
-    """Bélyegképrács vonszolásos sorrendezéssel. Szálak nincsenek: a bélyegképek
-    és a feldolgozás is after()-láncban, képenként futnak, így a felület élő marad
-    (és a PyMuPDF szálbiztonsága sem kérdés)."""
+class ComposerTab(ttk.Frame):
+    """Összeállító: képek és PDF-oldalak bélyegképrácsa doktípus-címkékkel, és
+    kötegelt iktatás. Szálak nincsenek: a bélyegképek és az iktatás is
+    after()-láncban, oldalanként futnak, így a felület élő marad (és a PyMuPDF
+    szálbiztonsága sem kérdés)."""
 
     def __init__(self, master, app):
         super().__init__(master)
         self.app = app
-        self.folder = script_dir()
-        self.last_dir = None
+        self.folder = script_dir()   # munkamappa: a dolgozói mappák szülője
+        self.last_dir = None         # ahonnan legutóbb forrást adtunk hozzá
         self.items = []
         self.sel = set()             # kijelölt PageItem-ek (a sorrendezés nem érinti)
         self.anchor = None           # a Shift+kattintásos tartomány kiinduló eleme
+        self.dirs = []               # dolgozói mappák
+        self.who = None              # a Dolgozó mezőből feloldott mappanév
+        self.palette = []            # [(típus, szabály | None)] — sorszám = billentyű
+        self.docs = {}               # típus -> OutDoc
+        self.cur_doc = None          # a Kimenet listában kijelölt irat
+        self.last_batch = None       # az utolsó iktatás, a visszavonáshoz
         self.preset = tk.IntVar(value=0)
         self.gray = tk.BooleanVar(value=False)
         self.fit_a4 = tk.BooleanVar(value=True)
+        self.who_text = tk.StringVar(value="")
+        self.who_msg = tk.StringVar(value="")
+        self.suffix = tk.StringVar(value="")
+        self.out_info = tk.StringVar(value="")
         self.info = tk.StringVar(value="")
+        self._quiet = False          # az Utótag mező programból íródik
         self._drag = None            # (index, kezdő x, kezdő y)
         self._thumb_job = None
-        self._b = None               # a futó feldolgozás állapota
-        self.viewer = None           # a nyitott nagyító ablak (ImageViewer), ha van
+        self._b = None               # a futó iktatás állapota
+        self.viewer = None           # a nyitott nagyító ablak (PageViewer), ha van
         self._build()
         self._redraw()
 
     def _build(self):
-        bar = ttk.Frame(self)
+        right = ttk.Frame(self, width=PANEL_W)
+        right.pack(side="right", fill="y", padx=(0, 8), pady=8)
+        right.pack_propagate(False)
+        left = ttk.Frame(self)
+        left.pack(side="left", fill="both", expand=True)
+
+        bar = ttk.Frame(left)
         bar.pack(fill="x", padx=8, pady=(8, 4))
-        ttk.Button(bar, text="Képek hozzáadása…", command=self._add_files).pack(side="left")
+        ttk.Button(bar, text="PDF / kép hozzáadása…", command=self._add_files).pack(side="left")
         ttk.Button(bar, text="Mappa hozzáadása…", command=self._add_dir).pack(side="left", padx=4)
         ttk.Button(bar, text="↺", width=3, command=lambda: self._rotate(-90)).pack(side="left", padx=(16, 2))
         ttk.Button(bar, text="↻", width=3, command=lambda: self._rotate(90)).pack(side="left")
         ttk.Button(bar, text="Kijelölt törlése", command=self._remove).pack(side="left", padx=(16, 4))
         ttk.Button(bar, text="Mind törlése", command=self._clear).pack(side="left")
-        ttk.Label(bar, textvariable=self.info).pack(side="right")
 
-        grid = ttk.Frame(self)
+        grid = ttk.Frame(left)
         grid.pack(fill="both", expand=True, padx=8, pady=4)
         self.canvas = tk.Canvas(grid, bg=COL_CANVAS, highlightthickness=0, takefocus=1)
         sb = ttk.Scrollbar(grid, orient="vertical", command=self.canvas.yview)
@@ -3968,35 +3960,77 @@ class ImagesToPdfTab(ttk.Frame):
         self.canvas.bind("<ButtonRelease-1>", self._release)
         self.canvas.bind("<Double-Button-1>", self._open_viewer)
         self.canvas.bind("<Delete>", lambda e: self._remove())
+        self.canvas.bind("<Key>", self._key)
         self.canvas.bind("<MouseWheel>", lambda e: (
             self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"), "break")[1])
+        ttk.Label(left, textvariable=self.info).pack(fill="x", padx=8)
 
-        opt = ttk.Frame(self)
+        opt = ttk.Frame(left)
         opt.pack(fill="x", padx=8, pady=4)
-        ttk.Label(opt, text="Minőség:").pack(side="left")
-        for i, (label, _d, _q) in enumerate(PRESETS):
-            ttk.Radiobutton(opt, text=label, value=i, variable=self.preset).pack(side="left", padx=4)
+        ttk.Label(opt, text="Képoldalak:").pack(side="left")
+        pc = ttk.Combobox(opt, state="readonly", width=17, values=[p[0] for p in PRESETS])
+        pc.current(self.preset.get())
+        pc.bind("<<ComboboxSelected>>", lambda e: self.preset.set(pc.current()))
+        pc.pack(side="left", padx=4)
         ttk.Checkbutton(opt, text="Szürkeárnyalatos",
                         variable=self.gray).pack(side="left", padx=(16, 0))
-        ttk.Checkbutton(opt, text="A4-es lapra illesztve (különben lap = kép)",
+        ttk.Checkbutton(opt, text="A4-re illesztve (különben lap = kép)",
                         variable=self.fit_a4).pack(side="left", padx=16)
 
-        run = ttk.Frame(self)
+        run = ttk.Frame(left)
         run.pack(fill="x", padx=8, pady=4)
         self.pb = ttk.Progressbar(run, mode="determinate")
         self.pb.pack(side="left", fill="x", expand=True)
-        self.btns = [ttk.Button(run, text="Mindből PDF → Iktató…", command=self._run),
-                     ttk.Button(run, text="Kijelöltekből PDF → Iktató…",
-                                command=lambda: self._run(only_sel=True))]
-        for b in self.btns:
-            b.pack(side="left", padx=(8, 0))
         ttk.Button(run, text="Mégsem", command=self._cancel).pack(side="left", padx=8)
 
-        self.log = tk.Text(self, height=5, wrap="none", state="disabled", bg="#f7f7f7")
+        self.log = tk.Text(left, height=5, wrap="none", state="disabled", bg="#f7f7f7")
         self.log.pack(fill="x", padx=8, pady=(0, 8))
 
-    def set_folder(self, folder):
-        self.folder = folder         # a képek külön mappából jönnek — a lista marad
+        # ── jobb oldali panel: dolgozó, típuspaletta, kimenet ──
+        w = ttk.LabelFrame(right, text="Dolgozó (kötegenként egy)")
+        w.pack(fill="x")
+        self.who_cb = ttk.Combobox(w, textvariable=self.who_text, postcommand=self._fill_who)
+        self.who_cb.pack(fill="x", padx=6, pady=(6, 2))
+        self.who_cb.bind("<Return>", lambda e: self._who_enter())
+        self.who_cb.bind("<<ComboboxSelected>>", lambda e: self.canvas.focus_set())
+        self.who_text.trace_add("write", lambda *a: self._who_changed())
+        self.who_lbl = ttk.Label(w, textvariable=self.who_msg)
+        self.who_lbl.pack(anchor="w", padx=6, pady=(0, 6))
+
+        p = ttk.LabelFrame(right, text="Doktípus — kattintás vagy számbillentyű")
+        p.pack(fill="x", pady=8)
+        self.pal = tk.Listbox(p, height=11, activestyle="none", exportselection=False,
+                              font=("Segoe UI", 9), highlightthickness=0, borderwidth=0)
+        self.pal.pack(fill="x", padx=6, pady=(6, 2))
+        self.pal.bind("<ButtonRelease-1>", self._pal_click)
+        row = ttk.Frame(p)
+        row.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Button(row, text="0 · címke le", command=lambda: self._label(None)).pack(side="left")
+        ttk.Button(row, text="Típusok…", command=self._edit_types).pack(side="right")
+
+        o = ttk.LabelFrame(right, text="Kimenet")
+        o.pack(fill="both", expand=True)
+        go = ttk.Frame(o)                  # alulra: kis ablakban is látsszon
+        go.pack(side="bottom", fill="x", padx=6, pady=(2, 6))
+        self.btn_go = ttk.Button(go, text="Iktatás", command=self._iktat)
+        self.btn_go.pack(side="left", fill="x", expand=True)
+        ttk.Button(go, text="Visszavonás", command=self._undo).pack(side="left", padx=(6, 0))
+        ttk.Label(o, textvariable=self.out_info, foreground=COL_WARN,
+                  wraplength=PANEL_W - 24).pack(side="bottom", anchor="w", padx=6)
+        sf = ttk.Frame(o)
+        sf.pack(side="bottom", fill="x", padx=6, pady=2)
+        ttk.Label(sf, text="Utótag:").pack(side="left")
+        self.suffix_ent = ttk.Entry(sf, textvariable=self.suffix, width=14, state="disabled")
+        self.suffix_ent.pack(side="left", padx=4)
+        ttk.Label(sf, text="(a kijelölt iraté)", foreground="#555").pack(side="left")
+        self.suffix.trace_add("write", lambda *a: self._suffix_changed())
+        self.tree = ttk.Treeview(o, columns=("name", "n", "note"), show="", height=4,
+                                 selectmode="browse")
+        self.tree.column("name", width=170, stretch=True)
+        self.tree.column("n", width=40, anchor="e", stretch=False)
+        self.tree.column("note", width=64, stretch=False)
+        self.tree.pack(fill="both", expand=True, padx=6, pady=(6, 2))
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._doc_selected())
 
     def _write_log(self, txt):
         self.log.configure(state="normal")
@@ -4004,28 +4038,206 @@ class ImagesToPdfTab(ttk.Frame):
         self.log.see(tk.END)
         self.log.configure(state="disabled")
 
+    # ---------------- munkamappa, dolgozó, paletta ----------------
+    def set_folder(self, folder):
+        self.folder = folder         # a források külön mappából jönnek — a lista marad
+        self.refresh()
+
+    def refresh(self):
+        """Dolgozói mappák és típuspaletta újra — mappaváltáskor és fülváltáskor
+        (közben új dolgozói mappa vagy doktípus jöhetett)."""
+        try:
+            self.dirs = worker_dirs(self.folder)
+        except OSError:
+            self.dirs = []
+        ikt, att = self.app.tabs["Iktató"], self.app.tabs["Áttekintő"]
+        self.palette = palette_types(ikt.types, att.rules)
+        self.pal.delete(0, tk.END)
+        for i, (t, _r) in enumerate(self.palette):
+            self.pal.insert(tk.END, f" {i + 1 if i < 9 else ' '}   {t}")
+            c = LABEL_COLORS[i % len(LABEL_COLORS)]
+            self.pal.itemconfig(i, background=c, foreground="white",
+                                selectbackground=c, selectforeground="white")
+        self.pal.configure(height=max(1, len(self.palette)))
+        self._who_changed()
+        self._redraw()
+
+    def _edit_types(self):
+        ikt = self.app.tabs["Iktató"]
+        TypeEditor(self, ikt.types, lambda items: (ikt._apply_types(items), self.refresh()))
+
+    def _look(self, doc_type):
+        """A címke sávja: (rövid név, szín) a palettából."""
+        for i, (t, r) in enumerate(self.palette):
+            if t == doc_type:
+                return (r.short if r else t[:6]), LABEL_COLORS[i % len(LABEL_COLORS)]
+        return doc_type[:6], COL_NOLABEL
+
+    def _default_suffix(self, doc_type):
+        """Mint az Iktatóban: DocGen-irat „aláírt”, útlevél, igazolás üres."""
+        r = next((r for t, r in self.palette if t == doc_type), None)
+        return "" if r and not r.generated else SUFFIX
+
+    def _fill_who(self):
+        self.who_cb.configure(values=resolve_worker(self.who_text.get(), self.dirs)[1])
+
+    def _who_changed(self):
+        self.who, hits = resolve_worker(self.who_text.get(), self.dirs)
+        if self.who:
+            msg, col = f"→ {self.who}", COL_OK
+        elif not self.who_text.get().strip():
+            msg, col = "írd be a nevét (elég egy részlete)", ""
+        else:
+            msg, col = (f"{len(hits)} találat — pontosíts" if hits
+                        else "nincs ilyen dolgozói mappa"), COL_WARN
+        self.who_msg.set(msg)
+        self.who_lbl.configure(foreground=col)
+        self._refresh_out()
+
+    def _who_enter(self):
+        if self.who:
+            self.who_text.set(self.who)
+            self.canvas.focus_set()
+
+    # ---------------- címkézés ----------------
+    def _pal_click(self, e):
+        i = self.pal.nearest(e.y)
+        self.pal.selection_clear(0, tk.END)
+        if 0 <= i < len(self.palette):
+            self._label(self.palette[i][0])
+        self.canvas.focus_set()
+
+    def _key(self, e, item=None):
+        """1–9: a kijelöltek (a nagyítóban a látott oldal) címkéje a paletta
+        ennyiedik típusa, utána tovább a következő oldalra; 0 / Backspace: címke le."""
+        k = "0" if e.keysym == "BackSpace" else e.char
+        if len(k) != 1 or not k.isdigit():
+            return None
+        if item is not None:
+            self.sel = {item}
+        if k == "0":
+            self._label(None)
+        elif int(k) <= len(self.palette):
+            self._label(self.palette[int(k) - 1][0])
+        return "break"
+
+    def _label(self, doc_type):
+        """A kijelölt oldalak címkéje (None: le). Utána a kijelölés az utolsó
+        kijelölt utáni oldalra lép — így billentyűvel végig lehet menni a kötegen."""
+        todo = [it for it in self.items if it in self.sel and not it.bad]
+        if self._b or not todo:
+            if not todo:
+                self.app.status("Jelöld ki az oldalakat (kattintás, Ctrl/Shift+kattintás), "
+                                "aztán nyomj számot.")
+            return
+        doc = None
+        if doc_type is not None:
+            if doc_type not in self.docs:
+                self.docs[doc_type] = OutDoc(doc_type, self._default_suffix(doc_type))
+            doc = self.docs[doc_type]
+        for it in todo:
+            it.doc = doc
+        nxt = self.items.index(todo[-1]) + 1
+        if nxt < len(self.items):
+            self.sel, self.anchor = {self.items[nxt]}, self.items[nxt]
+            self._see(nxt)
+        self._redraw()
+        self._refresh_out()
+        if self.viewer and len(self.sel) == 1:
+            self.viewer.show(next(iter(self.sel)), keep_view=True)
+
+    # ---------------- kimenet ----------------
+    def _out_docs(self):
+        """[(OutDoc, oldalai)] — az iratok az első oldaluk rácsbeli helye szerint."""
+        docs = {}
+        for it in self.items:
+            if it.doc is not None and not it.bad:
+                docs.setdefault(it.doc, []).append(it)
+        return list(docs.items())
+
+    def _doc_name(self, d):
+        return target_name(self.who or "Dolgozó", d.doc_type, d.suffix)
+
+    def _refresh_out(self):
+        t = self.tree
+        docs = self._out_docs()
+        t.delete(*t.get_children())
+        for n, (d, its) in enumerate(docs):
+            color = self._look(d.doc_type)[1]
+            exists = self.who and os.path.exists(os.path.join(self.folder, self.who, self._doc_name(d)))
+            t.insert("", "end", iid=str(n),
+                     values=(f"{d.doc_type} {d.suffix}".strip(), f"{len(its)} o.",
+                             "⚠ létezik" if exists else ""),
+                     tags=("c" + color[1:],))
+            t.tag_configure("c" + color[1:], background=color, foreground="white")
+        keep = [d for d, _ in docs]
+        if self.cur_doc in keep:
+            t.selection_set(str(keep.index(self.cur_doc)))
+        else:
+            self.cur_doc = None
+            self._quiet = True
+            self.suffix.set("")
+            self._quiet = False
+            self.suffix_ent.state(["disabled"])
+        free = sum(1 for it in self.items if it.doc is None and not it.bad)
+        self.out_info.set(f"{free} oldal címke nélkül — kimarad" if free and docs else "")
+        self.btn_go.configure(text=f"Iktatás ({len(docs)} irat)" if docs else "Iktatás")
+
+    def _doc_selected(self):
+        """Egy irat a Kimenet listában: az oldalai kijelölődnek, az utótagja szerkeszthető."""
+        s, docs = self.tree.selection(), self._out_docs()
+        if not s or int(s[0]) >= len(docs) or docs[int(s[0])][0] is self.cur_doc:
+            return                   # a lista újrarajzolása is ide fut — az nem kattintás
+        self.cur_doc, its = docs[int(s[0])]
+        self._quiet = True
+        self.suffix.set(self.cur_doc.suffix)
+        self._quiet = False
+        self.suffix_ent.state(["!disabled"])
+        self.sel, self.anchor = set(its), its[0]
+        self._see(self.items.index(its[0]))
+        self._redraw()
+
+    def _suffix_changed(self):
+        if not self._quiet and self.cur_doc:
+            self.cur_doc.suffix = self.suffix.get()
+            self._refresh_out()
+
     # ---------------- lista ----------------
     def _add_files(self):
-        pat = " ".join("*" + e for e in IMG_EXT)
-        self._add(filedialog.askopenfilenames(title="Képek kiválasztása",
+        pat = " ".join("*" + e for e in SRC_EXT)
+        self._add(filedialog.askopenfilenames(title="PDF-ek és képek kiválasztása",
                                               initialdir=self.last_dir or self.folder,
-                                              filetypes=[("Képek", pat)]))
+                                              filetypes=[("PDF és kép", pat)]))
 
     def _add_dir(self):
-        d = filedialog.askdirectory(title="Képek mappája", initialdir=self.last_dir or self.folder)
+        d = filedialog.askdirectory(title="A források mappája", initialdir=self.last_dir or self.folder)
         if d:
-            self._add([os.path.join(d, f) for f in list_files(d, IMG_EXT)])
+            self._add([os.path.join(d, f) for f in list_files(d, SRC_EXT)])
 
     def _add(self, paths):
-        known = {it.path for it in self.items}
-        new = {os.path.abspath(p) for p in paths if p.lower().endswith(IMG_EXT)} - known
-        new = sorted(new, key=lambda p: natural_key(os.path.basename(p)))
+        """PDF-ek és képek a rács végére, oldalanként (többoldalas TIFF is)."""
+        known = {(it.path, it.page) for it in self.items}
+        files = sorted({os.path.abspath(p) for p in paths if p.lower().endswith(SRC_EXT)},
+                       key=lambda p: natural_key(os.path.basename(p)))
+        new = []
+        for p in files:
+            try:
+                d = open_checked(p)
+                n = d.page_count
+                d.close()
+            except Exception as e:
+                self._write_log(f"  ⚠ {os.path.basename(p)}: {e}")
+                if (p, 0) not in known:
+                    new.append(PageItem(p, bad="⚠ nem olvasható"))
+                continue
+            new += [PageItem(p, i) for i in range(n) if (p, i) not in known]
         if not new:
             return
-        self.last_dir = os.path.dirname(new[0])
-        self.items += [PageItem(p) for p in new]
+        self.last_dir = os.path.dirname(new[0].path)
+        self.items += new
         self._redraw()
         self._thumbs()
+        self._refresh_out()
 
     def _rotate(self, d):
         for it in self.sel:
@@ -4042,12 +4254,14 @@ class ImagesToPdfTab(ttk.Frame):
         self.items = [it for it in self.items if it not in self.sel]
         self.sel, self.anchor = set(), None
         self._redraw()
+        self._refresh_out()
         self._close_viewer_if_gone()
 
     def _clear(self):
         if not self._b:
             self.items, self.sel, self.anchor = [], set(), None
             self._redraw()
+            self._refresh_out()
             self._close_viewer_if_gone()
 
     def _close_viewer_if_gone(self):
@@ -4059,7 +4273,7 @@ class ImagesToPdfTab(ttk.Frame):
         i, _, _ = self._hit_item(e)
         if i is not None:
             if not self.viewer:
-                self.viewer = ImageViewer(self)
+                self.viewer = PageViewer(self)
             self.viewer.show(self.items[i])
         return "break"
 
@@ -4094,36 +4308,49 @@ class ImagesToPdfTab(ttk.Frame):
         c = self._cols()
         return GAP + (i % c) * (CELL_W + GAP), GAP + (i // c) * (CELL_H + GAP)
 
+    def _see(self, i):
+        """Görgetés, hogy az i-edik csempe látsszon."""
+        c, (_, y) = self.canvas, self._xy(i)
+        top, h = c.canvasy(0), c.winfo_height()
+        total = GAP + -(-len(self.items) // self._cols()) * (CELL_H + GAP)
+        if y < top or y + CELL_H > top + h:
+            c.yview_moveto(max(0, y - GAP) / max(1, total))
+
     def _redraw(self):
         c = self.canvas
         c.delete("all")
         for i, it in enumerate(self.items):
             x, y = self._xy(i)
             hot = it in self.sel
+            short, color = self._look(it.doc.doc_type) if it.doc else (None, None)
             c.create_rectangle(x, y, x + CELL_W, y + CELL_H,
                                fill=COL_TILE_BG_HOT if hot else COL_TILE_BG,
-                               outline=COL_TILE_LINE_HOT if hot else COL_TILE_LINE,
-                               width=2 if hot else 1)
+                               outline=color or (COL_TILE_LINE_HOT if hot else COL_TILE_LINE),
+                               width=3 if color else (2 if hot else 1))
             cx, cy = x + CELL_W / 2, y + 8 + THUMB / 2
             if it.thumb:
                 c.create_image(cx, cy, image=it.thumb)
             else:
                 c.create_text(cx, cy, text=it.bad or "…", font=("Segoe UI", 9),
                               fill=COL_WARN if it.bad else "#8a929b")
-            name = os.path.basename(it.path)
-            name = name if len(name) <= 20 else name[:19] + "…"
-            c.create_text(cx, y + CELL_H - 12, text=f"{i + 1}. {name}", font=("Segoe UI", 8))
+            if color:                                  # a címke sávja
+                c.create_rectangle(x, y, x + CELL_W, y + 17, fill=color, outline=color)
+                c.create_text(cx, y + 9, text=short, fill="white", font=("Segoe UI", 9, "bold"))
+            name = it.label() if it.paged() else f"{i + 1}. {it.label()}"
+            name = name if len(name) <= 26 else name[:25] + "…"
+            c.create_text(cx, y + CELL_H - 12, text=name, font=("Segoe UI", 8))
         n = len(self.items)
         rows = (n + self._cols() - 1) // self._cols()
         c.configure(scrollregion=(0, 0, c.winfo_width(), GAP + rows * (CELL_H + GAP)))
         if not n:
-            c.create_text(max(200, c.winfo_width()) / 2, 80, fill="#e8e8e8", justify="center",
+            c.create_text(max(200, c.winfo_width()) / 2, 90, fill="#e8e8e8", justify="center",
                           font=("Segoe UI", 11),
-                          text="Nincs kép.\nAdj hozzá képeket vagy egy mappát — a sorrend "
-                               "vonszolással állítható.\nCtrl+kattintás: több kép kijelölése · "
+                          text="Nincs oldal.\nAdj hozzá PDF-et vagy képeket — a sorrend "
+                               "vonszolással állítható.\nJelöld ki az oldalakat, és nyomj "
+                               "számot (1–9): ez lesz a doktípusuk.\nCtrl+kattintás: több oldal · "
                                "Shift+kattintás: tartomány · dupla kattintás: nagyítás")
         bad = sum(1 for it in self.items if it.bad)
-        self.info.set(f"{n} kép · {len(self.sel)} kijelölve (Ctrl/Shift+kattintás) · "
+        self.info.set(f"{n} oldal · {len(self.sel)} kijelölve · 1–9: címke · 0: címke le · "
                       "dupla kattintás: nagyítás" +
                       (f" · {bad} nem olvasható (kimarad)" if bad else ""))
 
@@ -4149,7 +4376,7 @@ class ImagesToPdfTab(ttk.Frame):
         return self._index_at(x, y), x, y
 
     def _press(self, e):
-        """Sima kattintás: csak ez az egy kép lesz kijelölve (és vonszolható)."""
+        """Sima kattintás: csak ez az egy oldal lesz kijelölve (és vonszolható)."""
         i, x, y = self._hit_item(e)
         self.sel = {self.items[i]} if i is not None else set()
         self.anchor = self.items[i] if i is not None else None
@@ -4157,7 +4384,7 @@ class ImagesToPdfTab(ttk.Frame):
         self._redraw()
 
     def _press_ctrl(self, e):
-        """Ctrl+kattintás: a kép ki-/bekapcsolása a kijelölésben."""
+        """Ctrl+kattintás: az oldal ki-/bekapcsolása a kijelölésben."""
         i, _, _ = self._hit_item(e)
         if i is not None:
             self.sel ^= {self.items[i]}
@@ -4166,7 +4393,7 @@ class ImagesToPdfTab(ttk.Frame):
         return "break"
 
     def _press_shift(self, e):
-        """Shift+kattintás: a kiinduló elemtől eddig minden kép."""
+        """Shift+kattintás: a kiinduló elemtől eddig minden oldal."""
         i, _, _ = self._hit_item(e)
         if i is None:
             return "break"
@@ -4199,7 +4426,7 @@ class ImagesToPdfTab(ttk.Frame):
         c.create_line(lx, ly, lx, ly + CELL_H, fill=COL_CROP, width=3, tags=("ghost",))
         c.create_rectangle(x - 70, y - 12, x + 70, y + 12, fill="#ffffcc",
                            outline=COL_TILE_LINE_HOT, dash=(3, 2), tags=("ghost",))
-        c.create_text(x, y, text=os.path.basename(self.items[i].path)[:22],
+        c.create_text(x, y, text=self.items[i].label()[:22],
                       font=("Segoe UI", 8), tags=("ghost",))
 
     def _release(self, e):
@@ -4217,115 +4444,267 @@ class ImagesToPdfTab(ttk.Frame):
         j = s - 1 if s > i else s
         self.items.insert(j, self.items.pop(i))
         self._redraw()
+        self._refresh_out()
 
-    # ---------------- feldolgozás ----------------
-    def _run(self, only_sel=False):
-        """only_sel: csak a kijelölt képekből, a rácsbeli sorrendjükben — külön PDF."""
+    # ---------------- iktatás ----------------
+    def _iktat(self):
+        """Minden címkézett irat a dolgozó mappájába, egyetlen összegzés után."""
         if self._b:
             return
-        todo = [it for it in self.items if not it.bad and (not only_sel or it in self.sel)]
-        if not todo:
-            messagebox.showwarning(
-                "Nincs kép",
-                "Jelölj ki legalább egy olvasható képet (Ctrl+kattintás, Shift+kattintás)."
-                if only_sel else "Adj hozzá legalább egy olvasható képet.")
+        if not self.who:
+            self.who_msg.set("Előbb válaszd ki a dolgozót.")
+            self.who_lbl.configure(foreground=COL_WARN)
+            self.who_cb.focus_set()
             return
-        first = todo[0].path
-        dst = filedialog.asksaveasfilename(
-            title="A kész PDF mentése (utána az Iktatóban kap végleges nevet)",
-            initialdir=os.path.dirname(first),
-            initialfile=os.path.splitext(os.path.basename(first))[0] + ".pdf",
-            defaultextension=".pdf", filetypes=[("PDF fájlok", "*.pdf")])
-        if not dst:
+        docs = self._out_docs()
+        if not docs:
+            messagebox.showwarning("Nincs irat", "Címkézz fel legalább egy oldalt: jelöld ki, "
+                                                 "és nyomj számot (1–9).")
+            return
+        folder = os.path.join(self.folder, self.who)
+        jobs = []
+        for d, its in docs:
+            name = self._doc_name(d)
+            try:
+                check_path_len(os.path.join(folder, name))
+            except ValueError as e:
+                messagebox.showerror("Túl hosszú útvonal", str(e))
+                return
+            jobs.append(dict(doc=d, items=its, name=name,
+                             exists=os.path.exists(os.path.join(folder, name))))
+        free = sum(1 for it in self.items if it.doc is None and not it.bad)
+        mode = self._ask_batch(jobs, free)
+        if mode == "cancel":
             return
         _, dpi, q = PRESETS[self.preset.get()]
-        self._b = dict(todo=todo, i=0, out=pymupdf.open(), dst=dst, dpi=dpi, q=q,
-                       gray=self.gray.get(), a4=self.fit_a4.get(), cancel=False)
+        self._b = dict(jobs=jobs, j=0, i=0, out=None, srcs={}, who=self.who, folder=folder,
+                       mode=mode, dpi=dpi, q=q, gray=self.gray.get(), a4=self.fit_a4.get(),
+                       cancel=False, done=[], errors=[], big=[])
         self.log.configure(state="normal")
         self.log.delete("1.0", tk.END)
         self.log.configure(state="disabled")
-        self.pb.configure(maximum=len(todo), value=0)
-        for b in self.btns:
-            b.state(["disabled"])
+        self.pb.configure(maximum=sum(len(j["items"]) for j in jobs), value=0)
+        self.btn_go.state(["disabled"])
         self.after(1, self._step)
+
+    def _ask_batch(self, jobs, free):
+        """Egyetlen összegzés az iktatás előtt. -> new | overwrite | cancel"""
+        win = tk.Toplevel(self)
+        win.title("Iktatás")
+        win.transient(self.winfo_toplevel())
+        win.resizable(False, False)
+        win.grab_set()
+        res = {"v": "cancel"}
+        coll = [j for j in jobs if j["exists"]]
+        ttk.Label(win, text=f"{len(jobs)} irat → {self.who}\\",
+                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
+        for j in jobs:
+            ttk.Label(win, text=("⚠ " if j["exists"] else "    ") +
+                      f"{j['name']} · {len(j['items'])} oldal",
+                      foreground=COL_WARN if j["exists"] else "").pack(anchor="w", padx=14)
+        notes = [f"{free} oldal címke nélkül — kimarad."] if free else []
+        if coll:
+            notes.append(f"{len(coll)} irat már létezik (⚠). Az Új néven gomb (2), (3) … "
+                         "sorszámmal menti; Felülírásnál az előző példány a mappa .eredeti "
+                         "almappájába kerül. A Visszavonás mindkettőt visszacsinálja.")
+        if notes:
+            ttk.Label(win, text="\n".join(notes), wraplength=460,
+                      justify="left").pack(anchor="w", padx=14, pady=(8, 0))
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=14)
+
+        def pick(v):
+            res["v"] = v
+            win.destroy()
+
+        b = ttk.Button(row, text="Új néven (2)" if coll else "Iktatás", command=lambda: pick("new"))
+        b.pack(side="left")
+        b.focus_set()
+        if coll:
+            ttk.Button(row, text="Felülírás", command=lambda: pick("overwrite")).pack(side="left", padx=8)
+        ttk.Button(row, text="Mégsem", command=lambda: pick("cancel")).pack(side="right")
+        win.bind("<Return>", lambda e: pick("new"))
+        win.bind("<Escape>", lambda e: pick("cancel"))
+        win.wait_window()
+        return res["v"]
 
     def _cancel(self):
         if self._b:
             self._b["cancel"] = True
 
     def _step(self):
+        """Egy oldal az éppen készülő iratba."""
         b = self._b
         if b["cancel"]:
-            b["out"].close()
-            self._done("Megszakítva — nem készült fájl.")
+            self._end_batch()
             return
-        if b["i"] < len(b["todo"]):
-            it = b["todo"][b["i"]]
-            name = os.path.basename(it.path)
-            try:
-                jpeg, w, h, npages = image_page_jpeg(it.path, it.rot, b["dpi"], b["q"], b["gray"])
-                add_image_page(b["out"], jpeg, w, h, b["dpi"], b["a4"])
-                if npages > 1:     # ponytail: többoldalas TIFF-ből csak az 1. oldal; ha kell, ciklus az oldalakon
-                    self._write_log(f"  ! {name}: {npages} oldalas — csak az 1. oldal került be")
-            except Exception as e:
-                self._write_log(f"  ⚠ kihagyva: {name} ({type(e).__name__}: {e})")
-            b["i"] += 1
-            self.pb.configure(value=b["i"])
-            self.app.status(f"{b['i']}/{len(b['todo'])} kép feldolgozva")
-            self.after(1, self._step)
-            return
-        self._finish()
-
-    def _finish(self):
-        out, dst = self._b["out"], self._b["dst"]
+        job = b["jobs"][b["j"]]
+        if b["out"] is None:
+            b["out"] = pymupdf.open()
         try:
-            pages = out.page_count
-            if not pages:
-                raise RuntimeError("Egyetlen kép sem volt feldolgozható.")
-            out.set_metadata(dict(CLEAN_META, title=os.path.splitext(os.path.basename(dst))[0]))
-            data = out.tobytes(garbage=4, deflate=True)
-            out.close()
+            add_item_page(b["out"], job["items"][b["i"]], b["dpi"], b["q"], b["gray"], b["a4"],
+                          b["srcs"])
         except Exception as e:
-            if not out.is_closed:
-                out.close()
-            self._failed(e)
+            self._doc_failed(job, e)
             return
+        b["i"] += 1
+        self.pb.configure(value=float(self.pb["value"]) + 1)
+        self.app.status(f"{job['name']}: {b['i']}/{len(job['items'])} oldal")
+        if b["i"] < len(job["items"]):
+            self.after(1, self._step)
+        else:
+            self._doc_built(job)
+
+    def _doc_built(self, job):
+        """Az irat kész a memóriában: kiírás, 5 MB fölött előbb lépcsőzetes tömörítés."""
+        b = self._b
+        out, b["out"] = b["out"], None
+        try:
+            out.set_metadata(dict(CLEAN_META, title=os.path.splitext(job["name"])[0]))
+            pages = out.page_count
+            data = out.tobytes(garbage=4, deflate=True)
+        except Exception as e:
+            self._doc_failed(job, e)
+            return
+        finally:
+            out.close()
+        job["size"] = len(data)
         if len(data) <= UPLOAD_LIMIT:
-            self._save(dst, pages, data)
+            self._doc_save(job, data, pages)
             return
-        self._write_log(f"{mb(len(data))} — a feltöltési korlát ({mb(UPLOAD_LIMIT)}) "
+        self._write_log(f"  {job['name']}: {mb(len(data))} — a korlát ({mb(UPLOAD_LIMIT)}) "
                         "fölött, tömörítés…")
         shrink_later(self, data,
-                     on_step=lambda dpi, q: self._write_log(f"  lépcső: {dpi} DPI, Q{q}"),
-                     on_done=lambda d, step, err: self._save(dst, pages, d, step, err, True))
+                     on_step=lambda dpi, q: self._write_log(f"    lépcső: {dpi} DPI, Q{q}"),
+                     on_done=lambda d, step, err: self._doc_save(job, d, pages, step, err, True))
 
-    def _save(self, dst, pages, data, step=None, err=None, shrunk=False):
+    def _doc_save(self, job, data, pages, step=None, err=None, shrunk=False):
+        """Ellenőrzött kiírás a dolgozó mappájába — az Iktató szabályai szerint."""
+        b = self._b
+        name, backup, result = job["name"], None, "OK"
+        dst = os.path.join(b["folder"], name)
         try:
             if err:
                 raise err
-            if shrunk:
-                self._write_log(f"  → {mb(len(data))}" + (f" ({step[0]} DPI, Q{step[1]})" if step
-                                                          else " — a legerősebb lépcsővel sem fért be!"))
+            if os.path.exists(dst):
+                if b["mode"] == "overwrite":
+                    backup = backup_existing(dst)
+                    result = f"FELULIRVA (elozo: {BACKUP_DIR})"
+                else:
+                    name = unique_name(b["folder"], name)[0]
+                    dst = os.path.join(b["folder"], name)
+                    result = "UTKOZES-UJ NEV"
             write_pdf_verified(data, dst, pages)
         except Exception as e:
-            self._failed(e)
+            if backup and os.path.exists(backup):
+                try:
+                    os.remove(backup)       # a cél érintetlen maradt, a másolat felesleges
+                except OSError:
+                    pass
+            self._doc_failed(job, e)
             return
-        self._done(f"\n{os.path.basename(dst)} kész – {pages} oldal, {mb(len(data))} {size_note(dst)}")
-        ikt = self.app.tabs["Iktató"]
-        ikt._enqueue([dst])
-        self.app.nb.select(ikt)
+        note = ""
+        if shrunk:
+            result += f" TOMORITVE {mb(job['size'])}->{mb(len(data))}"
+            note = f" · tömörítve: {mb(job['size'])} → {mb(len(data))}"
+            if step is None:
+                b["big"].append(name)
+        log_row(self.folder, source_desc(job["items"]), b["who"], name, job["doc"].doc_type, result)
+        b["done"].append(dict(dst=dst, backup=backup, name=name, doc_type=job["doc"].doc_type,
+                              items=job["items"]))
+        self._write_log(f"  ✔ {name} — {pages} oldal, {mb(len(data))}{note}" +
+                        (" · új néven (már volt ilyen)" if result == "UTKOZES-UJ NEV" else "") +
+                        (f" · felülírva, az előző: {BACKUP_DIR}\\" if backup else ""))
+        self._next_doc()
 
-    def _failed(self, e):
+    def _doc_failed(self, job, e):
+        b = self._b
+        if b["out"] is not None:
+            b["out"].close()
+            b["out"] = None
         traceback.print_exception(e)
-        self._done(f"Hiba: {type(e).__name__}: {e}")
-        messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
+        log_row(self.folder, source_desc(job["items"]), b["who"], job["name"],
+                job["doc"].doc_type, "HIBA: " + str(e)[:120])
+        b["errors"].append(f"{job['name']}: {type(e).__name__}: {e}")
+        self._write_log(f"  ⚠ {job['name']}: {type(e).__name__}: {e}")
+        self._next_doc()
 
-    def _done(self, msg):
-        self._b = None
-        for b in self.btns:
-            b.state(["!disabled"])
+    def _next_doc(self):
+        b = self._b
+        b["j"], b["i"] = b["j"] + 1, 0
+        self.pb.configure(value=sum(len(j["items"]) for j in b["jobs"][:b["j"]]))
+        if b["j"] < len(b["jobs"]):
+            self.after(1, self._step)
+        else:
+            self._end_batch()
+
+    def _end_batch(self):
+        """Az iktatott oldalak kikerülnek a rácsból (mint az Iktató várólistájáról);
+        a visszavonás az eredeti helyükre teszi vissza őket."""
+        b, self._b = self._b, None
+        if b["out"] is not None:
+            b["out"].close()
+        for d in b["srcs"].values():
+            d.close()
+        done = b["done"]
+        if done:
+            gone = [it for rec in done for it in rec["items"]]
+            pos = sorted(((self.items.index(it), it) for it in gone if it in self.items),
+                         key=lambda p: p[0])
+            self.last_batch = dict(files=done, pos=pos, who=b["who"])
+            gone = set(gone)
+            self.items = [it for it in self.items if it not in gone]
+            self.sel -= gone
+            if self.anchor in gone:
+                self.anchor = None
+        self.btn_go.state(["!disabled"])
+        msg = (f"✔ {len(done)} irat iktatva → {b['who']}" +
+               (f" · {len(b['errors'])} hiba" if b["errors"] else "") +
+               (" · megszakítva" if b["cancel"] else ""))
         self._write_log(msg)
-        self.app.status(msg.strip())
+        self.app.status(msg)
+        self._redraw()
+        self._refresh_out()
+        self._close_viewer_if_gone()
+        if b["errors"]:
+            messagebox.showerror("Iktatás", "Nem sikerült:\n\n" + "\n".join(b["errors"]))
+        if b["big"]:
+            messagebox.showwarning(
+                "Tömörítés", "A legerősebb tömörítés után is a feltöltési korlát "
+                f"({mb(UPLOAD_LIMIT)}) fölött maradt:\n\n" + "\n".join(b["big"]) +
+                "\n\nÉrdemes kevesebb oldalra bontani: vond vissza, és címkézd két iratba.")
+
+    def _undo(self):
+        """Az utolsó iktatás egészét vonja vissza: a fájlok törlődnek (felülírásnál
+        az előző példány visszakerül), az oldalak visszakerülnek a rácsba."""
+        if self._b:
+            self.app.status("Előbb várd meg az iktatás végét.")
+            return
+        lb = self.last_batch
+        if not lb:
+            self.app.status("Nincs mit visszavonni.")
+            return
+        undone, kept = [], []
+        for rec in reversed(lb["files"]):
+            try:
+                undo_copy(rec["dst"], rec["backup"])
+            except OSError as e:
+                kept.insert(0, rec)
+                self._write_log(f"  ⚠ nem vonható vissza: {rec['name']} ({e})")
+                continue
+            undone.append(rec)
+            log_row(self.folder, source_desc(rec["items"]), lb["who"], rec["name"], rec["doc_type"],
+                    "VISSZAVONVA" + (" (elozo visszaallitva)" if rec["backup"] else ""))
+        back = {it for rec in undone for it in rec["items"]}
+        for i, it in lb["pos"]:              # növekvő sorrendben: mind az eredeti helyére
+            if it in back:
+                self.items.insert(min(i, len(self.items)), it)
+        self.last_batch = dict(lb, files=kept) if kept else None
+        msg = f"Visszavonva: {len(undone)} irat" + (f", {len(kept)} nem sikerült" if kept else "")
+        self._write_log(msg)
+        self.app.status(msg)
+        self._redraw()
+        self._refresh_out()
 
 
 # ───────────────────────────────── főablak ─────────────────────────────────
@@ -4350,8 +4729,7 @@ class App(tk.Tk):
         self.tabs = {
             "Arckép elhelyezés": PlacerTab(self.nb, self),
             "Összefűzés": MergeTab(self.nb, self),
-            "Képek → PDF": ImagesToPdfTab(self.nb, self),
-            "Szétvágás": SplitTab(self.nb, self),
+            "Összeállító": ComposerTab(self.nb, self),
             "Raszterizálás": RasterTab(self.nb, self),
             "Iktató": IktatoTab(self.nb, self),
             "Áttekintő": AttekintoTab(self.nb, self),
@@ -4396,8 +4774,11 @@ class App(tk.Tk):
         self._status.set(txt)
 
     def _tab_changed(self, _e=None):
-        if self.active_tab() is self.tabs["Áttekintő"]:
-            self.tabs["Áttekintő"].refresh()        # iktatás után is friss állapot
+        tab = self.active_tab()
+        if tab is self.tabs["Áttekintő"]:
+            tab.refresh()        # iktatás után is friss állapot
+        elif tab is self.tabs["Összeállító"]:
+            tab.refresh()        # közben új dolgozói mappa vagy doktípus jöhetett
 
     def goto_iktato(self, who, rule_name=None, path=None):
         """Az Áttekintő jobb klikkes menüjéből: Iktató a dolgozóra szűrve,
@@ -4414,6 +4795,14 @@ class App(tk.Tk):
             ikt._enqueue([path])
         ikt._type_chosen()
         self.nb.select(ikt)
+
+    def goto_composer(self, path, who=""):
+        """Az Iktatóból: egy többoldalas köteg az Összeállítóba, a dolgozóval."""
+        tab = self.tabs["Összeállító"]
+        tab._add([path])
+        if who.strip() and not tab.who_text.get().strip():
+            tab.who_text.set(who)
+        self.nb.select(tab)
 
     def goto_arckep(self, folder):
         self.tabs["Arckép elhelyezés"].set_folder(folder)
@@ -4587,9 +4976,9 @@ def _selftest() -> int:
         p = os.path.join(td, "fekvo.jpg")
         with open(p, "wb") as f:
             f.write(pymupdf.Pixmap(pymupdf.csRGB, 400, 200, half, False).tobytes("jpeg"))
-        jpeg, w, h, _ = image_page_jpeg(p, 0, 200, 75, False)
+        jpeg, w, h = image_page_jpeg(p, 0, 200, 75, False)
         ck("kis kép nem nagyítódik", (w, h) == (400, 200), (w, h))
-        jpeg, w, h, _ = image_page_jpeg(p, 90, 200, 75, True)
+        jpeg, w, h = image_page_jpeg(p, 90, 200, 75, True)
         px = pymupdf.Pixmap(jpeg)
         ck("↻ 90° = óramutató szerint (a bal fehér fél felülre kerül)",
            (w, h) == (200, 400) and px.pixel(100, 40)[0] > 200 and px.pixel(100, 360)[0] < 60,
@@ -4599,16 +4988,70 @@ def _selftest() -> int:
         with open(big, "wb") as f:
             f.write(pymupdf.Pixmap(pymupdf.csRGB, 4000, 3000, bytes(4000 * 3000 * 3), False)
                     .tobytes("jpeg"))
-        _, w, h, _ = image_page_jpeg(big, 0, 150, 65, False)
+        _, w, h = image_page_jpeg(big, 0, 150, 65, False)
         ck("nagy kép -> hosszabb oldal 150 DPI × A4", abs(max(w, h) - 150 * A4_LONG_IN) <= 1, (w, h))
         out = pymupdf.open()
-        jpeg, w, h, _ = image_page_jpeg(p, 0, 200, 75, False)
+        jpeg, w, h = image_page_jpeg(p, 0, 200, 75, False)
         add_image_page(out, jpeg, w, h, 200, True)
         pg = out[0]
         ck("fekvő kép -> fekvő A4, a JPEG bájtra azonos",
            pg.rect.width > pg.rect.height and
            out.xref_stream_raw(pg.get_images()[0][0]) == jpeg)
         out.close()
+
+    print("ÖSSZEÁLLÍTÓ")
+    ck("oldaltartomány: 1-3,5", page_ranges([0, 1, 2, 4]) == "1-3,5", page_ranges([0, 1, 2, 4]))
+    ck("oldaltartomány a rács sorrendjében: 3,1-2", page_ranges([2, 0, 1]) == "3,1-2")
+    ck("napló-forrás: PDF oldalakkal, kép anélkül",
+       source_desc([PageItem("k.pdf", 0), PageItem("k.pdf", 1), PageItem("f.jpg")]) ==
+       "k.pdf [1-2]; f.jpg")
+    pal = palette_types(DOC_TYPES_DEFAULT + ["Saját irat"], RULES)
+    shorts = [r.short if r else t for t, r in pal]
+    ck("paletta: az Áttekintő sorrendje, a kötelezők elöl, a saját típus a végén",
+       shorts == ["Forma", "Előz", "Elism", "Hozzá", "Megh", "Útl", "SzVált", "SzIg",
+                  "Végz", "NAV", "Munk", "Saját irat"], shorts)
+    ck("paletta: az Iktató-típus neve marad, az Áttekintőből a szabály neve jön",
+       pal[0][0] == "Tart_eng_formanyomtatvány" and pal[5][0] == "Útlevél")
+    ck("paletta-név -> az Áttekintő felismeri",
+       all(match_rule(target_name("Kiss Anna", t), RULES)[0] is r for t, r in pal if r))
+    dirs = ["Kiss Anna", "Kiss Anna Mária", "Nagy Béla", "Ökrös Zsófia"]
+    ck("dolgozó: részlet -> egyetlen találat", resolve_worker("bela", dirs)[0] == "Nagy Béla")
+    ck("dolgozó: ékezet és kisbetű nélkül is", resolve_worker("okros", dirs)[0] == "Ökrös Zsófia")
+    ck("dolgozó: pontos egyezés nyer a hosszabb név ellen",
+       resolve_worker("kiss anna", dirs)[0] == "Kiss Anna")
+    ck("dolgozó: kétes részlet -> nincs választás, két találat",
+       resolve_worker("kiss", dirs) == (None, ["Kiss Anna", "Kiss Anna Mária"]))
+    with tempfile.TemporaryDirectory() as td:
+        kp = os.path.join(td, "koteg.pdf")                 # 2 oldal, felső negyedük piros
+        src = pymupdf.open()
+        for k in range(2):
+            px = pymupdf.Pixmap(pymupdf.csRGB, 100, 200,
+                                bytes((255, 0, 0) * 5000 + (0, 0, 40 * k) * 15000), False)
+            pg = src.new_page(width=300, height=600)
+            pg.insert_image(pg.rect, stream=px.tobytes("jpeg"))
+        src.save(kp)
+        ip = os.path.join(td, "foto.jpg")
+        with open(ip, "wb") as f:
+            f.write(pymupdf.Pixmap(pymupdf.csRGB, 400, 200, half, False).tobytes("jpeg"))
+        out, srcs = pymupdf.open(), {}
+        add_item_page(out, PageItem(kp, 1, rot=90), 200, 75, False, True, srcs)
+        add_item_page(out, PageItem(ip), 200, 75, False, True, srcs)
+        ck("PDF-oldal veszteségmentesen: a kép bájtra azonos",
+           out.xref_stream_raw(out[0].get_images()[0][0]) ==
+           src.xref_stream_raw(src[1].get_images()[0][0]))
+        def red_at(pix):             # melyik szélén piros: 0 fent, 1 jobb, 2 lent, 3 bal
+            probes = ((0.5, 0.1), (0.9, 0.5), (0.5, 0.9), (0.1, 0.5))
+            rgb = [pix.pixel(int(x * (pix.width - 1)), int(y * (pix.height - 1))) for x, y in probes]
+            return [i for i, c in enumerate(rgb) if c[0] > 200 and c[2] < 80]
+        thumb = src[1].get_pixmap(matrix=pymupdf.Matrix(0.3, 0.3).prerotate(90))
+        ck("forgatás: a kimenet ugyanarra fordul, mint a bélyegkép (/Rotate 90)",
+           out[0].rotation == 90 and red_at(out[0].get_pixmap()) == red_at(thumb) == [1],
+           (out[0].rotation, red_at(out[0].get_pixmap()), red_at(thumb)))
+        ck("vegyes irat: PDF-oldal + kép", out.page_count == 2 and out[1].get_images())
+        out.close()
+        for d in srcs.values():
+            d.close()
+        src.close()
 
     print("IKTATÓMAG")
     with tempfile.TemporaryDirectory() as td:

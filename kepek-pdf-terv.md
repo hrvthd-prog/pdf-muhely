@@ -1,6 +1,7 @@
 # Terv — „Képek → PDF” modul a PDF Műhelybe
 
 **Státusz:** megvalósítva (v1) — lásd a 11. fejezetet · **Készült:** 2026-09-25
+**2026-09-28 óta** a fül az **Összeállító** része (kötegelt címkézés és iktatás) — lásd `szetvago-terv.md`, 14. fejezet.
 **Érintett fájl:** `pdf-muhely.py` (egyesített, már tartalmazza az Iktató fület)
 
 ---

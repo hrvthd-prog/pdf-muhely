@@ -1,6 +1,6 @@
 # Terv — Szétvágás kötegelt kiosztással (és visszavezetés a Képek → PDF-be)
 
-**Státusz:** minden kérdés eldőlt, indulhat az F0 · **Készült:** 2026-09-28
+**Státusz:** megvalósítva (F0–F6, 2026-09-28) — lásd 14.4 · **Készült:** 2026-09-28
 **Fontos:** a 14. fejezet (döntések) felülírja a korábbi fejezeteket, ahol eltérnek — megvalósításkor az a mérvadó.
 **Érintett fájlok:** `pdf-muhely.py`, `test/gui.py`, `README.md`
 **Előzmény:** `kepek-pdf-terv.md` — a rács, a vonszolás, a nagyító és az 5 MB-os lépcsőzetes tömörítés onnan jön.
@@ -343,3 +343,12 @@ Nettó ~+280 sor, kevesebb az eredeti ~550-nél, mert a régi Szétvágás és a
 **F1 — kész (2026-09-28).** Az `ImgItem` neve `PageItem` lett, `page` mezővel (képnél 0); a bélyegkép és a nagyító a `page`-edik oldalt rendereli. A Képek → PDF viselkedése nem változott. Eltérés a 14.3-tól: a `doc` (címke) mező az F3-ban jön, amikor használni is kezdjük. GUI-teszt: +2 („OLDAL MINT ELEM”: egy kétoldalas PDF 2. oldala a bélyegképen és a nagyítóban is).
 
 **Az F2-re átvitt megfigyelés:** a nagyító felső nagyítási határa a lapon lévő első kép natív felbontása. Képet nem tartalmazó (vektoros, pl. DocGen-ből nyomtatott) PDF-oldalnál ez most az illesztésre korlátozna, ott más felső határ kell (pl. `ZOOM_MAX`).
+
+**F2–F6 — kész (2026-09-28).** Az Összeállító a Képek → PDF helyén; a Szétvágás fül törölve. Önteszt: +13 (ÖSSZEÁLLÍTÓ), GUI: a régi Képek → PDF-kimenet tesztjei helyett a teljes kötegfolyamat (54 teszt).
+
+- **F2 — források:** hozzáadáskor minden fájl megnyílik (kép ~5 ms), és oldalanként kerül a rácsba. Így a **többoldalas TIFF is oldalanként** jön, megszűnt a korábbi „csak az 1. oldal” egyszerűsítés (kepek-pdf-terv.md, 11.4). A bélyegkép oldalanként újranyitja a forrást (60 oldalas kötegen mérve 13 ms/oldal, nyitva tartva 7 ms): a különbség az `after()`-láncban nem érezhető, gyorsítótár nincs. A PDF-oldal `insert_pdf`-fel, veszteségmentesen megy át, a forgatás `/Rotate` (az irány az önteszt szerint egyezik a bélyegképével). A nagyító PDF-oldalon `ZOOM_MAX`-ig nagyít.
+- **F3 — címkézés:** a paletta színes lista (nem gombsor): kicsi, és a színei megegyeznek a csempék sávjaival. A Kimenet oszlopos lista behúzás nélkül (a fanézet levágta a neveket). **Eltérés az 5.1-től:** a kimeneti lista nem mutat élő méretet. Az 5 MB fölötti iratot az iktatás úgyis automatikusan tömöríti, a méret a naplóban látszik, a képoldalak élő újrakódolása pedig lassú lenne (~0,5 s/kép).
+- **F4 — iktatás:** előellenőrzés (név, útvonalhossz, ütközés), egyetlen összegző párbeszéd (ütközésnél kötegenként egy döntés), iratonként `after()`-lánc, 5 MB fölött `shrink_later`, `write_pdf_verified`, felülírásnál `backup_existing`, iratonként `log_row` (a forrás oldalakkal: `koteg.pdf [2,1]`). Hibás irat után a többi megy tovább. A sikeresen iktatott oldalak kikerülnek a rácsból; a Visszavonás az egész köteget `undo_copy`-val vonja vissza, és az oldalakat az eredeti helyükre teszi.
+- **F5 — takarítás:** `ImagesToPdfTab` → `ComposerTab`, `ImageViewer` → `PageViewer`; a régi kimeneti gombok, a mentés-párbeszéd, az Iktatóba küldés, a `SplitTab` és a csak általa használt `FileList`-részek (`multi`, `all_paths`, `select_all`, `extra`) törölve. A dolgozói mappák listája közös (`worker_dirs`), az Iktató is ezt hívja. A minőség-előbeállítás rádiógombok helyett legördülő lett, mert 960 px szélességnél a sor levágódott.
+- **F6 — Iktató:** többoldalas PDF-nél az előnézet alatt „✂ Szétosztás…” gomb: a köteg az Összeállítóba kerül (a várólistáról ki), a dolgozó az Iktató szűrőjéből jön, ha az Összeállítóban még nincs megadva.
+- **Egy teszt által talált hiba:** a `_name` metódusnév ütközött a tkinter widgetek belső `_name` attribútumával; `_doc_name` lett.
