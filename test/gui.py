@@ -11,6 +11,7 @@ vesztés, rendezés oszlophúzáskor). A valódi beállításfájlokhoz nem nyú
 szkript mappáját egy ideiglenes mappára irányítja.
 """
 
+import csv
 import importlib.util
 import json
 import os
@@ -117,7 +118,7 @@ def dbl(c, x, y):
     pump(0.4)
 
 
-att, ikt, kt = app.tabs["Áttekintő"], app.tabs["Iktató"], app.tabs["Képek → PDF"]
+att, ikt, kt = app.tabs["Áttekintő"], app.tabs["Iktató"], app.tabs["Összeállító"]
 try:
     # ════════════════════════════ Áttekintő ════════════════════════════════
     print("ÁTTEKINTŐ")
@@ -235,8 +236,8 @@ try:
     ck("Visszavonás: az eredeti visszaállt", os.path.getsize(big_pdf) == size0 and
        not os.path.exists(bak), ikt.msg.get())
 
-    # ═══════════════════════════ Képek → PDF ═══════════════════════════════
-    print("KÉPEK → PDF")
+    # ═══════════════════════════ Összeállító ═══════════════════════════════
+    print("ÖSSZEÁLLÍTÓ: KÉPEK")
     app.nb.select(kt)
     pump(0.3)
     kt._add([os.path.join(imgs, f) for f in sorted(os.listdir(imgs))])
@@ -258,17 +259,6 @@ try:
     at(4, "Shift-")
     at(0, "Control-")
     ck("kijelölés: sima + Shift-tartomány + Ctrl", idx() == [0, 2, 3, 4], idx())
-    kt.fit_a4.set(False)
-    out = os.path.join(TMP, "kijelolt.pdf")
-    pm.filedialog.asksaveasfilename = lambda **k: out
-    kt._run(only_sel=True)
-    wait(lambda: kt._b is None, 60)
-    d = P.open(out)
-    widths = [round(p.rect.width * 200 / 72) for p in d]
-    d.close()
-    ck("külön PDF a kijelöltekből, rácssorrendben", widths == [400, 600, 700, 800], widths)
-    app.nb.select(kt)
-    pump(0.2)
     kt._rotate(90)
     ck("forgatás minden kijelöltre", [it.rot for it in kt.items][:6] == [90, 0, 90, 90, 90, 0])
 
@@ -305,6 +295,13 @@ try:
     pump(0.3)
     ck("→: következő kép, a nagyítás marad, a kijelölés követi",
        v.item is kt.items[nb + 1] and v.zk == zk and kt.sel == {kt.items[nb + 1]})
+    v.event_generate("<Left>")
+    pump(0.2)
+    v.event_generate("<Key>", keysym="1")
+    pump(0.3)
+    ck("nagyítóban 1: a látott kép címkét kap, a nagyító továbblapoz",
+       kt.items[nb].doc and kt.items[nb].doc.doc_type == kt.palette[0][0] and
+       v.item is kt.items[nb + 1], (kt.items[nb].doc, v.title()))
     v.event_generate("<Escape>")
     pump(0.2)
     ck("Esc: bezár", kt.viewer is None)
@@ -371,28 +368,165 @@ try:
     ck("bélyegkép a megadott oldalról", it.thumb and
        (it.thumb.width(), it.thumb.height()) == (pm.THUMB, pm.THUMB // 2),
        it.thumb and (it.thumb.width(), it.thumb.height()))
-    v = kt.viewer = pm.ImageViewer(kt)
+    v = kt.viewer = pm.PageViewer(kt)
     v.show(it)
     pump(0.3)
     ck("a nagyító is azt az oldalt mutatja", abs(v.photo.width() / v.photo.height() - 2) < 0.02,
        (v.photo.width(), v.photo.height()))
     v.close()
 
-    print("TÖMÖRÍTÉS KÉPEKBŐL")
+    print("ÖSSZEÁLLÍTÓ: KÖTEG")
+    app.nb.select(kt)
+    pump(0.3)
     kt._clear()
-    kt.fit_a4.set(True)
+    koteg = os.path.join(TMP, "koteg.pdf")               # 6 oldal, „oldal N” szöveggel
+    d = P.open()
+    for k in range(6):
+        d.new_page(width=595, height=842).insert_text((72, 100), f"oldal {k + 1}", fontsize=30)
+    d.save(koteg)
+    d.close()
+    elo = os.path.join(anna, "Kiss Anna Előzetes megállapodás aláírt.pdf")
+    empty_pdf(elo)                                        # ütközni fog
+    kt._add([koteg])
+    wait(lambda: kt._thumb_job is None, 20)
+    ck("PDF-köteg: oldalanként egy bélyegkép",
+       [it.page for it in kt.items] == list(range(6)) and all(it.thumb for it in kt.items))
+    kt.who_text.set("kiss")
+    ck("dolgozó a mező részletéből", kt.who == "Kiss Anna", kt.who_msg.get())
+
+    def key(k, w=None):
+        w = w or c
+        w.focus_force()
+        w.event_generate("<Key>", keysym=k)
+        pump(0.1)
+
+    def labels():
+        return [kt._look(it.doc.doc_type)[0] if it.doc else None for it in kt.items]
+
+    at(0)
+    at(1, "Shift-")
+    key("1")
+    ck("szám: a kijelöltek címkét kapnak, a kijelölés továbblép",
+       labels()[:2] == ["Forma", "Forma"] and kt.sel == {kt.items[2]}, (labels(), idx()))
+    for k in "226":
+        key(k)
+    ck("billentyűvel végig a kötegen: 2 2 6",
+       labels() == ["Forma", "Forma", "Előz", "Előz", "Útl", None], labels())
+    ck("kimenet: 3 irat, a meglévő jelölve, 1 oldal címke nélkül",
+       len(kt.tree.get_children()) == 3 and kt.tree.set("1", "note") == "⚠ létezik" and
+       kt.out_info.get().startswith("1 oldal"), (kt.tree.get_children(), kt.out_info.get()))
+
+    x0, y0 = kt._xy(0)
+    x1, _ = kt._xy(1)
+    c.event_generate("<ButtonPress-1>", x=x1 + 60, y=y0 + 60)
+    for k in range(1, 11):
+        c.event_generate("<B1-Motion>", x=int(x1 + 60 - (x1 + 50 - x0) * k / 10), y=y0 + 60)
+        pump(0.02)
+    c.event_generate("<ButtonRelease-1>", x=x0 + 10, y=y0 + 60)
+    pump(0.2)
+    ck("vonszolás: az iraton belüli sorrend is változik", [it.page for it in kt.items[:2]] == [1, 0])
+    at(4)
+    kt._rotate(90)
+    kt.tree.selection_set("2")                            # Útlevél: saját utótag
+    pump(0.2)
+    kt.suffix.set("másolat")
+    pump(0.1)
+    ck("a kimeneti sorra kattintva az irat oldalai kijelölődnek, az utótag szerkeszthető",
+       kt.sel == {kt.items[4]} and kt.tree.set("2", "name") == "Útlevél másolat")
+
+    app.geometry("960x680")
+    pump(0.6)
+    bg = kt.btn_go
+    ck("960×680: az Iktatás gomb teljesen látszik",
+       bg.winfo_ismapped() and bg.winfo_rooty() + bg.winfo_height() <= app.winfo_rooty() +
+       app.winfo_height(), (bg.winfo_rooty() + bg.winfo_height(), app.winfo_rooty() + app.winfo_height()))
+    app.geometry("1200x840")
+    pump(0.3)
+
+    asked = []
+    kt._ask_batch = lambda jobs, free: (asked.append(
+        ([j["name"] for j in jobs if j["exists"]], free)), "new")[1]
+    kt._iktat()
+    ck("iktatás közben a gomb tiltva", kt.btn_go.instate(["disabled"]))
+    wait(lambda: kt._b is None, 60)
+    ck("összegzés: az ütközés és a kimaradó oldal",
+       asked == [(["Kiss Anna Előzetes megállapodás aláírt.pdf"], 1)], asked)
+
+    def pdf_info(fn):
+        d = P.open(os.path.join(anna, fn))
+        r = [pg.get_text().strip() for pg in d], [pg.rotation for pg in d]
+        d.close()
+        return r
+
+    forma, elo2, utl = ("Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf",
+                        "Kiss Anna Előzetes megállapodás aláírt (2).pdf", "Kiss Anna Útlevél másolat.pdf")
+    ck("Forma: 2 oldal, a vonszolt sorrendben", pdf_info(forma)[0] == ["oldal 2", "oldal 1"],
+       pdf_info(forma))
+    ck("ütközés: új néven (2), a régi érintetlen",
+       pdf_info(elo2)[0] == ["oldal 3", "oldal 4"] and pdf_info(os.path.basename(elo))[0] == [""])
+    ck("Útlevél: a szerkesztett utótaggal, elforgatva (/Rotate 90)",
+       pdf_info(utl) == (["oldal 5"], [90]), pdf_info(utl))
+    with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f, delimiter=";"))[-3:]
+    ck("napló: iratonként egy sor, a forrás oldalakkal",
+       [r[5] for r in rows] == ["OK", "UTKOZES-UJ NEV", "OK"] and
+       rows[0][1].endswith("koteg.pdf [2,1]") and rows[0][2] == "Kiss Anna", rows)
+    ck("az iktatott oldalak kikerültek, a címke nélküli maradt", [it.page for it in kt.items] == [5])
+
+    kt._undo()
+    ck("visszavonás: a köteg fájljai törlődnek, a régi Előzetes megmarad",
+       not any(os.path.exists(os.path.join(anna, f)) for f in (forma, elo2, utl)) and
+       os.path.exists(elo))
+    ck("visszavonás: az oldalak a helyükre kerülnek, címkével",
+       [it.page for it in kt.items] == [1, 0, 2, 3, 4, 5] and labels()[0] == "Forma",
+       [it.page for it in kt.items])
+
+    kt._ask_batch = lambda jobs, free: "overwrite"
+    kt._iktat()
+    wait(lambda: kt._b is None, 60)
+    ck("felülírás: az új példány a helyén, az előző a .eredeti\\-ben",
+       pdf_info(os.path.basename(elo))[0] == ["oldal 3", "oldal 4"] and
+       os.path.exists(os.path.join(anna, pm.BACKUP_DIR, os.path.basename(elo))))
+    kt._undo()
+    ck("visszavonás felülírás után: az előző példány visszaállt",
+       pdf_info(os.path.basename(elo))[0] == [""] and
+       not os.path.exists(os.path.join(anna, pm.BACKUP_DIR, os.path.basename(elo))))
+
+    print("ÖSSZEÁLLÍTÓ: TÖMÖRÍTÉS")
+    kt._clear()
     kt._add([os.path.join(big_imgs, f) for f in sorted(os.listdir(big_imgs))])
     wait(lambda: kt._thumb_job is None, 20)
-    out2 = os.path.join(TMP, "nagy.pdf")
-    pm.filedialog.asksaveasfilename = lambda **k: out2
-    kt._run()
-    ck("feldolgozás közben a gombok tiltva", all(b.instate(["disabled"]) for b in kt.btns))
-    wait(lambda: kt._b is None, 120)
+    at(0)
+    at(3, "Shift-")
+    key("8")                                               # Szálláshely-igazolás, utótag nélkül
+    kt._ask_batch = lambda jobs, free: "new"
+    kt._iktat()
+    wait(lambda: kt._b is None, 180)
+    out2 = os.path.join(anna, "Kiss Anna Szálláshely-igazolás.pdf")
     log = kt.log.get("1.0", "end")
-    ck("5 MB fölött lépcsőzetes tömörítés, a kész PDF alatta",
-       "lépcső:" in log and os.path.getsize(out2) <= pm.UPLOAD_LIMIT, pm.mb(os.path.getsize(out2)))
-    ck("a kész PDF az Iktató várólistáján, az Iktató aktív",
-       os.path.abspath(out2) in ikt.queue and app.active_tab() is ikt)
+    ck("képekből: 5 MB fölött lépcsőzetes tömörítés, a kész PDF alatta",
+       "lépcső:" in log and os.path.exists(out2) and os.path.getsize(out2) <= pm.UPLOAD_LIMIT,
+       log[-300:])
+
+    print("IKTATÓ → ÖSSZEÁLLÍTÓ")
+    kt._clear()
+    kt.who_text.set("")
+    app.nb.select(ikt)
+    pump(0.3)
+    ikt.queue.clear()
+    ikt.filter_text.set("Nagy Béla")
+    ikt._enqueue([koteg])
+    pump(0.3)
+    cv = ikt.canvas
+    ck("többoldalas kötegnél „Szétosztás…” az előnézet alatt",
+       any("Szétosztás" in cv.itemcget(i, "text") for i in cv.find_withtag("cbtn")
+           if cv.type(i) == "text"))
+    ikt._to_composer()
+    pump(0.3)
+    ck("Szétosztás: az Összeállítóban, a dolgozóval, a sorból kivéve",
+       app.active_tab() is kt and len(kt.items) == 6 and kt.who == "Nagy Béla" and
+       os.path.abspath(koteg) not in ikt.queue, (len(kt.items), kt.who))
+    ikt.filter_text.set("")
 finally:
     app.destroy()
     shutil.rmtree(TMP, ignore_errors=True)

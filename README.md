@@ -1,16 +1,17 @@
 # PDF Műhely
 
 Offline asztali eszköztár idegenrendészeti iratok előkészítéséhez: PDF-ek
-összefűzése, szétvágása, arckép elhelyezése, képekből tömörített PDF, iktatás a
-dolgozók mappáiba, és áttekintés arról, ki adható be. Hálózatot nem használ.
+összefűzése, arckép elhelyezése, szkennelt kötegek és képek szétosztása iratokra,
+iktatás a dolgozók mappáiba, és áttekintés arról, ki adható be. Hálózatot nem
+használ.
 A dokumentumokat a [DocGen](https://github.com/hrvthd-prog/DocGen) generálja,
 ez az eszköz a nyomtatás–aláírás–szkennelés utáni lépéseket segíti.
 
 | Fül | Mire való |
 |---|---|
 | Arckép elhelyezés | fénykép ráhelyezése egy PDF-nyomtatványra |
-| Összefűzés / Szétvágás / Raszterizálás | PDF-műveletek |
-| Képek → PDF | fotókból, szkennelt képekből egy tömörített PDF (vonszolásos sorrend, nagyító, kijelöltekből külön PDF) |
+| Összefűzés / Raszterizálás | PDF-műveletek |
+| Összeállító | szkennelt kötegből és képekből iratok: az oldalak számbillentyűvel doktípust kapnak, egyetlen Iktatással mind a dolgozó mappájába kerül |
 | Iktató | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva |
 | Áttekintő | mátrix: dolgozónként melyik irat van meg, ki adható be, mi hiányzik |
 
@@ -35,10 +36,36 @@ tömörítéshez vagy a JPEG-minőség állításához, az app induláskor szól
 A portálra egy fájl legfeljebb 5 MB lehet. A korlát szándékosan a szigorúbb
 értelmezés: **5 000 000 bájt** (`UPLOAD_LIMIT`). Minden fül jelez, ha egy kész
 fájl fölötte van; az **Iktató** iktatáskor felajánlja a tömörítést (a forrás
-érintetlen marad), a **Képek → PDF** magától tömörít, az **Áttekintő** `P!`
+érintetlen marad), az **Összeállító** magától tömörít, az **Áttekintő** `P!`
 jellel mutatja, és a csak túlméretes PDF-fel rendelkező iratot nem számítja
 beadhatónak. A tömörítés csak a beágyazott képeket kódolja újra, lépcsőnként
 (200 → 150 → 120 → 100 DPI), és megáll, amint befért.
+
+## Az Összeállító röviden
+
+Egy köteg = egy dolgozó iratai (szkenneléskor így kell összerakni).
+
+1. **PDF / kép hozzáadása…** — a köteg oldalai bélyegképként jelennek meg
+   (képek és PDF-ek vegyesen is jöhetnek). Az Iktatóból a többoldalas PDF alatti
+   **✂ Szétosztás…** gomb ugyanide küldi.
+2. **Dolgozó:** elég a név egy részlete (ékezet nélkül is), a mező alatt látszik,
+   melyik mappát találta meg.
+3. **Címkézés:** jelöld ki az oldalakat (kattintás, Shift/Ctrl+kattintás), és
+   nyomj számot: az a doktípus (a jobb oldali lista sorszáma, az Áttekintő
+   oszlopsorrendjében). Utána a kijelölés a következő oldalra lép, így a köteg
+   billentyűzetről is végigmehető. `0` / Backspace: címke le. A nagyítóban (dupla
+   kattintás) ugyanígy működik. Címke nélküli oldal kimarad.
+4. Egy irat = az azonos címkéjű oldalak, a rács sorrendjében (vonszolással
+   átrendezhető). A **Kimenet** listában egy irat kijelölésével az oldalai is
+   kijelölődnek, és az utótagja átírható.
+5. **Iktatás (N irat)** — egy összegzés után mind a dolgozó mappájába kerül, az
+   Iktató szabályai szerint (szabványos név, ütközésnél új név vagy felülírás
+   `.eredeti\` mentéssel, napló, 5 MB fölött tömörítés). A **Visszavonás** az egész
+   utolsó iktatást visszacsinálja, az oldalak visszakerülnek a rácsba.
+
+A PDF-oldalak veszteségmentesen kerülnek az iratba (a forgatás csak `/Rotate`);
+a képoldalakra a „Képoldalak” minőség, a szürkeárnyalat és az A4-illesztés hat.
+A forrás köteg-PDF változatlan marad.
 
 ## Adatfájlok — mi hol él
 
@@ -55,7 +82,7 @@ kerülhetnek a repóba, mert a munkamappa alapból a program mappája, és oda
 dolgozói iratok is kerülhetnek. **Új projektfájlt a `.gitignore`-ba is fel kell
 venni** — a klón-próba (lásd lent) szól, ha kimaradt.
 
-Felülírásnál (Iktató) az előző példány a dolgozó mappájában a `.eredeti\`
+Felülírásnál (Iktató, Összeállító) az előző példány a dolgozó mappájában a `.eredeti\`
 almappába kerül, és a **Visszavonás** visszahozza. A ponttal kezdődő mappát az
 Áttekintő és az Iktató is kihagyja.
 
@@ -142,4 +169,5 @@ GitHub-szerű ZIP-pel, és ellenőrzi, hogy minden megmaradt.
 ## Döntések
 
 A tervezés és a döntések indoklása: [`kepek-pdf-terv.md`](kepek-pdf-terv.md)
-(11. fejezet: mi készült el és miért).
+(11. fejezet: mi készült el és miért), az Összeállítóé:
+[`szetvago-terv.md`](szetvago-terv.md) (14. fejezet).

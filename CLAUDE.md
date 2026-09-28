@@ -5,9 +5,10 @@
 ## A projekt
 
 Egyfájlos, offline tkinter + pymupdf eszköztár (`pdf-muhely.py`), a DocGen
-testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Képek → PDF, Iktató,
+testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeállító, Iktató,
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
-11. fejezet — **új döntést oda írj**.
+11. fejezet, az Összeállítóé (a volt Szétvágás és Képek → PDF) `szetvago-terv.md`,
+14. fejezet — **új döntést a témához tartozó fájlba írj**.
 
 ## Tesztek
 
