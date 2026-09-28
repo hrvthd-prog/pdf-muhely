@@ -4644,6 +4644,7 @@ def _selftest() -> int:
 
 if __name__ == "__main__":
     if "--test" in sys.argv:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # átirányítva is (cp1250)
         sys.exit(_selftest())
     # Éles szöveg 125–150%-os Windows-skálázásnál: a GDI-skálázás a Tk szövegét és
     # vonalait a valódi felbontáson rajzolja, a pixelméretek (elrendezés) maradnak.
