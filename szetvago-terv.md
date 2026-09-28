@@ -339,3 +339,7 @@ Nettó ~+280 sor, kevesebb az eredeti ~550-nél, mert a régi Szétvágás és a
 ### 14.4 Megvalósítás
 
 **F0 — kész (2026-09-28).** Modulszintű iktatómag a `check_path_len` mellett: `backup_existing(dst)`, `undo_copy(dst, backup)`, `log_row(parent, src, folder, name, doc_type, result)`. Az Iktató ezeket hívja; a `_log` vékony burok maradt, mert a doktípus alapértéke (a legördülő aktuális értéke) Iktató-specifikus. Eltérés a 6. fejezettől: az `undo_copy` nem kapja meg a forrást. A „helyben felülírt fájl nem vonható vissza” szabály csak az Iktatóban fordulhat elő (ott lehet a forrás maga a cél), ezért ott maradt. Önteszt: +5 (IKTATÓMAG), a GUI-teszt Iktató-része változatlanul zöld.
+
+**F1 — kész (2026-09-28).** Az `ImgItem` neve `PageItem` lett, `page` mezővel (képnél 0); a bélyegkép és a nagyító a `page`-edik oldalt rendereli. A Képek → PDF viselkedése nem változott. Eltérés a 14.3-tól: a `doc` (címke) mező az F3-ban jön, amikor használni is kezdjük. GUI-teszt: +2 („OLDAL MINT ELEM”: egy kétoldalas PDF 2. oldala a bélyegképen és a nagyítóban is).
+
+**Az F2-re átvitt megfigyelés:** a nagyító felső nagyítási határa a lapon lévő első kép natív felbontása. Képet nem tartalmazó (vektoros, pl. DocGen-ből nyomtatott) PDF-oldalnál ez most az illesztésre korlátozna, ott más felső határ kell (pl. `ZOOM_MAX`).

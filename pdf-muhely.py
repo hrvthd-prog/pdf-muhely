@@ -3793,8 +3793,9 @@ def add_image_page(out, jpeg, w, h, dpi, fit_a4):
 
 
 @dataclass(eq=False)             # azonosság szerint hashel: a kijelölés halmaz
-class ImgItem:
-    path: str
+class PageItem:
+    path: str                    # kép vagy PDF
+    page: int = 0                # oldalszám a fájlban (képnél 0)
     rot: int = 0                 # felhasználói forgatás: 0 / 90 / 180 / 270
     thumb: object = None         # tk.PhotoImage, ha már elkészült
     bad: str = ""                # hibaüzenet, ha a kép nem olvasható
@@ -3869,7 +3870,7 @@ class ImageViewer(tk.Toplevel):
                           font=("Segoe UI", 12))
             self.title(f"{pos} · {name}")
             return
-        page, rot = self.doc[0], self.item.rot
+        page, rot = self.doc[self.item.page], self.item.rot
         r = page.rect
         pw, ph = (r.height, r.width) if rot in (90, 270) else (r.width, r.height)
         fz = fit_zoom(pw, ph, cw, ch)
@@ -3927,7 +3928,7 @@ class ImagesToPdfTab(ttk.Frame):
         self.folder = script_dir()
         self.last_dir = None
         self.items = []
-        self.sel = set()             # kijelölt ImgItem-ek (a sorrendezés nem érinti)
+        self.sel = set()             # kijelölt PageItem-ek (a sorrendezés nem érinti)
         self.anchor = None           # a Shift+kattintásos tartomány kiinduló eleme
         self.preset = tk.IntVar(value=0)
         self.gray = tk.BooleanVar(value=False)
@@ -4022,7 +4023,7 @@ class ImagesToPdfTab(ttk.Frame):
         if not new:
             return
         self.last_dir = os.path.dirname(new[0])
-        self.items += [ImgItem(p) for p in new]
+        self.items += [PageItem(p) for p in new]
         self._redraw()
         self._thumbs()
 
@@ -4075,7 +4076,7 @@ class ImagesToPdfTab(ttk.Frame):
         try:
             d = pymupdf.open(it.path)
             try:
-                p = d[0]
+                p = d[it.page]
                 z = THUMB / max(p.rect.width, p.rect.height)
                 it.thumb = tkimg(p.get_pixmap(matrix=pymupdf.Matrix(z, z).prerotate(it.rot)), "ppm")
             finally:

@@ -357,6 +357,27 @@ try:
     ck("forgatott arckép: a mentett PDF = előnézet (lapforgatással is)",
        all(p == o and len(p) == 1 for _, _, p, o in got), got)
 
+    print("OLDAL MINT ELEM")
+    ketlap = os.path.join(TMP, "ketlap.pdf")         # 1. oldal négyzet, 2. oldal fekvő 2:1
+    d = P.open()
+    d.new_page(width=300, height=300)
+    d.new_page(width=600, height=300)
+    d.save(ketlap)
+    d.close()
+    it = pm.PageItem(ketlap, page=1)
+    kt.items.append(it)
+    kt._thumbs()
+    wait(lambda: kt._thumb_job is None, 20)
+    ck("bélyegkép a megadott oldalról", it.thumb and
+       (it.thumb.width(), it.thumb.height()) == (pm.THUMB, pm.THUMB // 2),
+       it.thumb and (it.thumb.width(), it.thumb.height()))
+    v = kt.viewer = pm.ImageViewer(kt)
+    v.show(it)
+    pump(0.3)
+    ck("a nagyító is azt az oldalt mutatja", abs(v.photo.width() / v.photo.height() - 2) < 0.02,
+       (v.photo.width(), v.photo.height()))
+    v.close()
+
     print("TÖMÖRÍTÉS KÉPEKBŐL")
     kt._clear()
     kt.fit_a4.set(True)
