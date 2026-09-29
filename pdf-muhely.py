@@ -2680,6 +2680,31 @@ def has_docgen_stamp(path: str) -> bool:
             or "docgen" in (m.get("keywords") or "").lower())
 
 
+def is_worker_folder(folder: str, rules: list, depth: int = 3) -> bool:
+    """Bizonyíték, hogy ez a mappa EBBEN a folyamatban dolgozói mappa. A Rendezés
+    csak ilyenben mozgat — enélkül egy tévesen kiválasztott munkamappában (pl. a
+    Letöltések vagy egy képmappa) a Rendezés minden képet elmozgatna, mert a
+    képeket szabály-illesztés nélkül sorolja be. A mozgatás nem visszavonható,
+    tehát nem elég az előnézet emberi átolvasására bízni.
+
+    Három elfogadott jel:
+      * már van benne 01_Elokeszitett vagy 02_Feltoltheto
+      * van benne legalább egy irat, ami illeszkedik egy szabályra
+      * teljesen üres (frissen létrehozott dolgozói mappa: nincs is mit mozgatni)
+    """
+    try:
+        if any(os.path.isdir(os.path.join(folder, d)) for d in WORK_DIRS):
+            return True
+        files = walk_files(folder, depth)
+    except OSError:
+        return False
+    if not [f for f in files if not is_noise(f)]:
+        return True                                  # üres: ártalmatlan
+    return any(match_rule(rel, rules)[0] is not None for rel in files
+               if not is_noise(rel)
+               and os.path.splitext(rel)[1].lower() in (".pdf", ".docx"))
+
+
 def migracio_terv(folder: str, rules: list, depth: int = 3) -> list:
     """Mit hova mozgatnánk egy dolgozó mappájában.
     -> [(relatív út, cél | None, indok, biztos-e)]
@@ -3946,13 +3971,17 @@ class AttekintoTab(ttk.Frame):
         if not self.rows:
             self._info("Nincs beolvasott mappa.", warn=True)
             return
-        missing = [r for r in self.rows if not r.error
-                   and any(not os.path.isdir(os.path.join(r.folder, d))
-                           for d in WORK_DIRS)]
-        plans = {}
+        # Mappánkénti kapu: csak bizonyítottan dolgozói mappában mozgatunk.
+        ok_rows, skipped = [], []
         for r in self.rows:
             if r.error:
                 continue
+            (ok_rows if is_worker_folder(r.folder, self.rules) else skipped).append(r)
+        missing = [r for r in ok_rows
+                   if any(not os.path.isdir(os.path.join(r.folder, d))
+                          for d in WORK_DIRS)]
+        plans = {}
+        for r in ok_rows:
             t = migracio_terv(r.folder, self.rules)
             if t:
                 plans[r.name] = (r.folder, t)
@@ -3969,6 +3998,26 @@ class AttekintoTab(ttk.Frame):
         ttk.Label(win, text=head + f"{movable} fájl kerülne a helyére "
                                    f"({guesses} ebből tipp), {stay} marad a gyökérben.",
                   wraplength=620, justify="left").pack(anchor="w", padx=14, pady=(14, 6))
+
+        if not ok_rows:
+            # Ez a leggyakoribb tévedés: nem munkamappa van kiválasztva. A mozgatás
+            # nem visszavonható, ezért itt nincs továbblépés, csak Mégsem.
+            ttk.Label(win, foreground=C_WARN, wraplength=620, justify="left",
+                      text=f"⚠ Ez nem úgy néz ki, mint egy munkamappa: a "
+                           f"{len(skipped)} almappa egyikében sincs 01/02 mappa és "
+                           f"felismert irat sem.\n\nEllenőrizd a fenti Munkamappa "
+                           f"sávot:\n{self.parent_dir}").pack(anchor="w", padx=14,
+                                                              pady=(4, 8))
+            ttk.Button(win, text="Mégsem", command=win.destroy).pack(pady=(0, 14))
+            win.bind("<Escape>", lambda e: win.destroy())
+            return
+        if skipped:
+            ttk.Label(win, foreground=C_WARN, wraplength=620, justify="left",
+                      text=f"⚠ {len(skipped)} almappát kihagyok (nem dolgozói mappa: "
+                           f"nincs benne 01/02 és felismert irat sem): " +
+                           ", ".join(r.name for r in skipped[:6]) +
+                           (" …" if len(skipped) > 6 else "")).pack(anchor="w",
+                                                                    padx=14, pady=(0, 6))
 
         txt = tk.Text(win, width=88, height=22, wrap="none")
         txt.pack(fill="both", expand=True, padx=14)
@@ -3987,9 +4036,7 @@ class AttekintoTab(ttk.Frame):
 
         def only_dirs():
             made = 0
-            for r in self.rows:
-                if r.error:
-                    continue
+            for r in ok_rows:                  # a kihagyott almappákba nem nyúlunk
                 try:
                     made += len(ensure_work_dirs(r.folder))
                 except OSError as e:
@@ -5516,6 +5563,44 @@ def _selftest() -> int:
            not [t for t in migracio_terv(who, RULES) if t[1]],
            migracio_terv(who, RULES))
         ck("ensure_work_dirs idempotens", ensure_work_dirs(who) == [])
+
+    print("MUNKAMAPPA-KAPU")
+    # A Rendezés csak bizonyítottan dolgozói mappában mozgat: egy tévesen
+    # kiválasztott munkamappában a képeket egyébként vaktában elmozgatná.
+    with tempfile.TemporaryDirectory() as td:
+        ures = os.path.join(td, "Uj Ur")
+        os.makedirs(ures)
+        ck("üres mappa átmegy a kapun (nincs is mit mozgatni)",
+           is_worker_folder(ures, RULES))
+
+        van02 = os.path.join(td, "Van Vera")
+        os.makedirs(os.path.join(van02, DIR_UP))
+        ck("már van benne 02 -> átmegy", is_worker_folder(van02, RULES))
+
+        irat = os.path.join(td, "Irat Imre")
+        os.makedirs(irat)
+        open(os.path.join(irat, "Irat Imre Útlevél aláírt.pdf"), "w").close()
+        ck("felismert irat -> átmegy", is_worker_folder(irat, RULES))
+
+        kepek = os.path.join(td, "nyaralas 2026")
+        os.makedirs(kepek)
+        for n in ("IMG_0001.jpg", "IMG_0002.jpg"):
+            open(os.path.join(kepek, n), "w").close()
+        ck("csak képek, se 01/02, se irat -> KIHAGYVA",
+           not is_worker_folder(kepek, RULES))
+        ck("a kapu nélkül a képeket elmozgatná",
+           [t[1] for t in migracio_terv(kepek, RULES)] == [DIR_PREP, DIR_PREP],
+           migracio_terv(kepek, RULES))
+
+        egyeb = os.path.join(td, "projekt")
+        os.makedirs(egyeb)
+        open(os.path.join(egyeb, "jegyzet.txt"), "w").close()
+        ck("nem felismert tartalom -> KIHAGYVA", not is_worker_folder(egyeb, RULES))
+
+        zaj = os.path.join(td, "Zaj Zoli")
+        os.makedirs(zaj)
+        open(os.path.join(zaj, "Thumbs.db"), "w").close()
+        ck("csak zaj -> üresnek számít, átmegy", is_worker_folder(zaj, RULES))
 
     # A DocGen-bélyeg bizonyíték: bélyeges PDF -> 01, akkor is, ha „aláírt” a nevében.
     with tempfile.TemporaryDirectory() as td:

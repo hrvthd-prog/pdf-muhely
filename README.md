@@ -58,6 +58,24 @@ A bizonytalan eset szándékosan `01` felé téved: ha `02`-be tennénk, a mátr
 aláírás nélküli iratot mondana beadhatónak. **A mozgatás nem visszavonható** —
 ezért mutat az előnézet minden sort.
 
+### A munkamappa-kapu
+
+Mivel a mozgatás nem visszavonható, a Rendezés **csak bizonyítottan dolgozói
+mappában** dolgozik. Egy almappa akkor számít annak, ha
+
+- már van benne `01_Elokeszitett` vagy `02_Feltoltheto`, **vagy**
+- van benne legalább egy felismert irat, **vagy**
+- teljesen üres (frissen létrehozott dolgozói mappa — nincs is mit mozgatni).
+
+Minden más almappát **kihagy**, és a párbeszéd tetején felsorolja. Ha egyik
+almappa sem felel meg, a Rendezés nem is engedi a továbblépést, csak figyelmeztet
+és megmutatja a kiválasztott útvonalat.
+
+Erre azért van szükség, mert a képeket a Rendezés szabály-illesztés **nélkül**
+sorolja be (az arckép jellemzően nem illeszkedik irattípusra). Kapu nélkül egy
+tévesen kiválasztott munkamappában — mondjuk a Letöltésekben vagy egy képmappában
+— az összes kép elmozdulna.
+
 ## Telepítés és indítás
 
 Python 3.10+ és PyMuPDF kell (a tkinter a Python része):
