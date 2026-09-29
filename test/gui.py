@@ -72,11 +72,17 @@ def noisy_pdf(path, pages=2):
 root = mkdir(TMP, "gyujto")
 for i in range(40):
     mkdir(root, f"Dolgozó {i:02d}")
+# A dolgozói mappa szerkezete: 01_Elokeszitett / 02_Feltoltheto
 anna = mkdir(root, "Kiss Anna")
+anna_up = mkdir(anna, pm.DIR_UP)
+anna_prep = mkdir(anna, pm.DIR_PREP)
 for fn in ("Kiss Anna Útlevél.pdf", "Kiss Anna Útlevél (2).pdf"):
-    empty_pdf(os.path.join(anna, fn))
+    empty_pdf(os.path.join(anna_up, fn))
 bela = mkdir(root, "Nagy Béla")
-big_pdf = os.path.join(bela, "Nagy Béla Útlevél.pdf")
+bela_up = mkdir(bela, pm.DIR_UP)
+mkdir(bela, pm.DIR_PREP)
+# A helyben tömörítés útja: a forrás MAGA a cél — ezért a 02-ben él.
+big_pdf = os.path.join(bela_up, "Nagy Béla Útlevél.pdf")
 noisy_pdf(big_pdf)
 
 imgs = mkdir(TMP, "kepek")
@@ -174,8 +180,39 @@ try:
        cd.canvasx(0) - 1 <= cx and cx + cw <= cd.canvasx(0) + cd.winfo_width() + 1)
 
     texts = {cd.itemcget(i, "text") for i in cd.find_all() if cd.type(i) == "text"}
-    ck("két útlevél-PDF: „P×2”, 5 MB fölött: „P!”", "P×2" in texts and "P!" in texts,
-       sorted(t for t in texts if t.startswith("P")))
+    ck("két útlevél-PDF a feltölthetőben: „F×2”, 5 MB fölött: „F!”",
+       "F×2" in texts and "F!" in texts,
+       sorted(t for t in texts if t.startswith(("F", "E", "~"))))
+
+    # Rendezés: előnézet a besorolatlan fájlokról, mozgatás nélkül is bezárható
+    lapos = mkdir(root, "Lapos Lajos")
+    empty_pdf(os.path.join(lapos, "Lapos Lajos Útlevél aláírt.pdf"))
+    att.refresh()
+    pump(0.2)
+    rl = next(x for x in att.rows if x.name == "Lapos Lajos")
+    ck("a lapos szerkezet besorolatlan és nem beadható",
+       not rl.beadhato and len(rl.unsorted) == 1, (rl.beadhato, rl.unsorted))
+    att._open_tidy()
+    pump(0.2)
+    tidy = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
+    body = [w for w in tidy.winfo_children() if w.winfo_class() == "Text"]
+    ck("a Rendezés előnézete felsorolja a mozgatandó fájlt",
+       bool(body) and "Lapos Lajos Útlevél aláírt.pdf" in body[0].get("1.0", "end"),
+       body[0].get("1.0", "end")[:200] if body else "nincs Text")
+    tidy.destroy()
+    pump(0.2)
+    ck("mozgatás nélkül semmi nem változott",
+       os.path.isfile(os.path.join(lapos, "Lapos Lajos Útlevél aláírt.pdf")))
+    done, errs = pm.migracio_vegrehajt(lapos, pm.migracio_terv(lapos, att.rules))
+    ck("a rendezés a 02-be teszi az aláírt iratot",
+       (done, errs) == (1, []) and
+       os.path.isfile(os.path.join(lapos, pm.DIR_UP, "Lapos Lajos Útlevél aláírt.pdf")),
+       (done, errs))
+    att.refresh()
+    pump(0.2)
+    rl = next(x for x in att.rows if x.name == "Lapos Lajos")
+    ck("rendezés után beadható lenne, ha minden irat megvolna",
+       rl.docs["utlevel"].cell == "F" and not rl.unsorted, rl.docs["utlevel"].cell)
 
     h1 = att.hdr_h
     dlg = pm.SettingsDialog(att, att.settings, att._apply_settings)
@@ -205,6 +242,23 @@ try:
         ikt.doc_type.set(typ)
         ikt._type_chosen()
         ck(f"utótag a típusból: {typ} -> „{want}”", ikt.suffix.get() == want, ikt.suffix.get())
+
+    # Arckép-jelölő: csak a fotóigényes típusnál él, és típusváltáskor kiürül
+    ck("a jelölő tiltva az útlevélnél",
+       ikt.arckep_cb.instate(["disabled"]) and not ikt.arckep_kesz.get())
+    ikt.doc_type.set("Tart_eng_formanyomtatvány")
+    ikt._type_chosen()
+    ck("a jelölő él a formanyomtatványnál", ikt.arckep_cb.instate(["!disabled"]))
+    ck("fotó nélkül az előkészítettbe megy",
+       ikt.name_preview.get().startswith(pm.DIR_PREP), ikt.name_preview.get())
+    ikt.arckep_kesz.set(True)
+    ikt._update_name()
+    ck("fotóval a feltölthetőbe megy",
+       ikt.name_preview.get().startswith(pm.DIR_UP), ikt.name_preview.get())
+    ikt.doc_type.set("Útlevél")
+    ikt._type_chosen()
+    ck("típusváltáskor a jelölő kiürül, nem ragad be",
+       not ikt.arckep_kesz.get() and ikt.arckep_cb.instate(["disabled"]))
 
     app.goto_iktato("Kiss Anna", "Előzetes megállapodás")
     pump(0.2)
@@ -354,6 +408,24 @@ try:
     ck("forgatott arckép: a mentett PDF = előnézet (lapforgatással is)",
        all(p == o and len(p) == 1 for _, _, p, o in got), got)
 
+    # Iktatás a feltölthetőbe: a kör zárása 01 -> fotó -> 02
+    pl.set_folder(anna)
+    ck("a dolgozó mappáját kapva a szülő lesz a munkamappa, a név kitöltve",
+       pl.parent_dir == root and pl.who == "Kiss Anna", (pl.parent_dir, pl.who))
+    ck("alapértelmezett típus a fotóigényes nyomtatvány",
+       pl.doc_type.get() == "Tart_eng_formanyomtatvány", pl.doc_type.get())
+    pl.angle.set(0)
+    pl._render_photo()
+    pl._iktat()
+    pump(0.2)
+    kesz2 = os.path.join(anna_up, "Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf")
+    ck("az arcképes irat a feltölthető mappába került", os.path.isfile(kesz2), kesz2)
+    with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
+        last = list(csv.reader(f, delimiter=";"))[-1]
+    ck("naplósor az arckép-iktatásról",
+       last[2] == os.path.join("Kiss Anna", pm.DIR_UP) and last[5] == "OK", last)
+    os.remove(kesz2)
+
     print("OLDAL MINT ELEM")
     ketlap = os.path.join(TMP, "ketlap.pdf")         # 1. oldal négyzet, 2. oldal fekvő 2:1
     d = P.open()
@@ -385,7 +457,7 @@ try:
         d.new_page(width=595, height=842).insert_text((72, 100), f"oldal {k + 1}", fontsize=30)
     d.save(koteg)
     d.close()
-    elo = os.path.join(anna, "Kiss Anna Előzetes megállapodás aláírt.pdf")
+    elo = os.path.join(anna_up, "Kiss Anna Előzetes megállapodás aláírt.pdf")
     empty_pdf(elo)                                        # ütközni fog
     kt._add([koteg])
     wait(lambda: kt._thumb_job is None, 20)
@@ -452,30 +524,35 @@ try:
     ck("összegzés: az ütközés és a kimaradó oldal",
        asked == [(["Kiss Anna Előzetes megállapodás aláírt.pdf"], 1)], asked)
 
-    def pdf_info(fn):
-        d = P.open(os.path.join(anna, fn))
+    def pdf_info(fn, sub=None):
+        d = P.open(os.path.join(anna, sub or pm.DIR_UP, fn))
         r = [pg.get_text().strip() for pg in d], [pg.rotation for pg in d]
         d.close()
         return r
 
     forma, elo2, utl = ("Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf",
                         "Kiss Anna Előzetes megállapodás aláírt (2).pdf", "Kiss Anna Útlevél másolat.pdf")
-    ck("Forma: 2 oldal, a vonszolt sorrendben", pdf_info(forma)[0] == ["oldal 2", "oldal 1"],
-       pdf_info(forma))
+    # A formanyomtatványra arcképet is kell helyezni, a jelölő nincs bepipálva:
+    # ezért NEM a feltölthetőbe, hanem az előkészítettbe kerül.
+    ck("Forma (fotó nélkül) az előkészítettbe, a vonszolt sorrendben",
+       pdf_info(forma, pm.DIR_PREP)[0] == ["oldal 2", "oldal 1"],
+       pdf_info(forma, pm.DIR_PREP))
     ck("ütközés: új néven (2), a régi érintetlen",
        pdf_info(elo2)[0] == ["oldal 3", "oldal 4"] and pdf_info(os.path.basename(elo))[0] == [""])
     ck("Útlevél: a szerkesztett utótaggal, elforgatva (/Rotate 90)",
        pdf_info(utl) == (["oldal 5"], [90]), pdf_info(utl))
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
         rows = list(csv.reader(f, delimiter=";"))[-3:]
-    ck("napló: iratonként egy sor, a forrás oldalakkal",
+    ck("napló: iratonként egy sor, a forrás oldalakkal és az alkönyvtárral",
        [r[5] for r in rows] == ["OK", "UTKOZES-UJ NEV", "OK"] and
-       rows[0][1].endswith("koteg.pdf [2,1]") and rows[0][2] == "Kiss Anna", rows)
+       rows[0][1].endswith("koteg.pdf [2,1]") and
+       rows[0][2] == os.path.join("Kiss Anna", pm.DIR_PREP), rows)
     ck("az iktatott oldalak kikerültek, a címke nélküli maradt", [it.page for it in kt.items] == [5])
 
     kt._undo()
     ck("visszavonás: a köteg fájljai törlődnek, a régi Előzetes megmarad",
-       not any(os.path.exists(os.path.join(anna, f)) for f in (forma, elo2, utl)) and
+       not os.path.exists(os.path.join(anna, pm.DIR_PREP, forma)) and
+       not any(os.path.exists(os.path.join(anna_up, f)) for f in (elo2, utl)) and
        os.path.exists(elo))
     ck("visszavonás: az oldalak a helyükre kerülnek, címkével",
        [it.page for it in kt.items] == [1, 0, 2, 3, 4, 5] and labels()[0] == "Forma",
@@ -502,7 +579,7 @@ try:
     kt._ask_batch = lambda jobs, free: "new"
     kt._iktat()
     wait(lambda: kt._b is None, 180)
-    out2 = os.path.join(anna, "Kiss Anna Szálláshely-igazolás.pdf")
+    out2 = os.path.join(anna_up, "Kiss Anna Szálláshely-igazolás.pdf")
     log = kt.log.get("1.0", "end")
     ck("képekből: 5 MB fölött lépcsőzetes tömörítés, a kész PDF alatta",
        "lépcső:" in log and os.path.exists(out2) and os.path.getsize(out2) <= pm.UPLOAD_LIMIT,

@@ -295,7 +295,15 @@ class PlacerTab(ttk.Frame):
         self.page_tk = self.photo_tk = None
         self.pw_px = self.ph_px = 0
         self._drag = self._job = None
+        # iktatás (a fotóval ellátott irat a 02_Feltoltheto mappába)
+        self.parent_dir = script_dir()
+        self.dirs = []
+        self.who = None
+        self.who_text = tk.StringVar(value="")
+        self.who_msg = tk.StringVar(value="")
+        self.doc_type = tk.StringVar(value="")
         self._build()
+        self.refresh()
 
     def _build(self):
         left = ttk.Frame(self, width=340)
@@ -349,6 +357,27 @@ class PlacerTab(ttk.Frame):
         ttk.Label(dd, text="DPI:").pack(side="left")
         ttk.Spinbox(dd, from_=72, to=1200, textvariable=self.dpi, width=6).pack(side="left", padx=6)
         ttk.Button(o, text="Mentés másként…", command=self._save).pack(fill="x", padx=6, pady=6)
+
+        # Iktatás: a kész (fotóval ellátott) irat mindig a feltölthető mappába megy —
+        # a fotó épp most került rá. Ez zárja be a kört 01 → fotó → 02.
+        ik = ttk.LabelFrame(left, text=f"Iktatás a {DIR_UP} mappába")
+        ik.pack(fill="x", pady=(0, 8))
+        wr = ttk.Frame(ik)
+        wr.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Label(wr, text="Dolgozó:").pack(side="left")
+        ttk.Entry(wr, textvariable=self.who_text, width=20).pack(side="left", padx=4)
+        self.who_lbl = ttk.Label(ik, textvariable=self.who_msg, wraplength=320)
+        self.who_lbl.pack(anchor="w", padx=6)
+        tr = ttk.Frame(ik)
+        tr.pack(fill="x", padx=6, pady=2)
+        ttk.Label(tr, text="Típus:").pack(side="left")
+        self.type_cbo = ttk.Combobox(tr, textvariable=self.doc_type, width=24,
+                                     state="readonly")
+        self.type_cbo.pack(side="left", padx=4)
+        ttk.Button(ik, text="Iktatás a feltölthetőbe",
+                   command=self._iktat).pack(fill="x", padx=6, pady=6)
+        self.who_text.trace_add("write", lambda *a: self._who_changed())
+
         ttk.Label(left, textvariable=self.pos_info, foreground="#333", wraplength=320).pack(anchor="w")
 
         right = ttk.Frame(self)
@@ -394,6 +423,112 @@ class PlacerTab(ttk.Frame):
     def set_folder(self, folder):
         self.pdfs.set_folder(folder)
         self.imgs.set_folder(folder)
+        # A munkamappa a dolgozói mappák szülője; ha egy dolgozó mappáját kaptuk
+        # (Áttekintő → „Arckép elhelyezése”), a szülőt vesszük, a nevet kitöltjük.
+        base = os.path.basename(os.path.normpath(folder))
+        parent = os.path.dirname(os.path.normpath(folder))
+        if parent and base and os.path.isdir(os.path.join(parent, base)):
+            try:
+                if base in worker_dirs(parent):
+                    self.parent_dir = parent
+                    self.refresh()
+                    self.who_text.set(base)
+                    return
+            except OSError:
+                pass
+        self.parent_dir = folder
+        self.refresh()
+
+    # -- iktatás --
+    def refresh(self):
+        """Dolgozói mappák és típuslista — fülváltáskor és mappaváltáskor."""
+        try:
+            self.dirs = worker_dirs(self.parent_dir)
+        except OSError:
+            self.dirs = []
+        ikt = getattr(self.app, "tabs", {}).get("Iktató")
+        types = ikt.types if ikt else load_types()
+        self.type_cbo.configure(values=types)
+        if self.doc_type.get() not in types:
+            # A fotóigényes típus az alapértelmezés — ezért van ez a fül.
+            rules = self._rules()
+            pick = next((t for t in types
+                         if (doc_type_rule(t, rules) or Rule("", "", "")).arckep), None)
+            self.doc_type.set(pick or (types[0] if types else ""))
+        self._who_changed()
+
+    def _rules(self) -> list:
+        att = getattr(self.app, "tabs", {}).get("Áttekintő")
+        return att.rules if att else rules_from(default_settings())
+
+    def _who_changed(self):
+        self.who, hits = resolve_worker(self.who_text.get(), self.dirs)
+        if self.who:
+            msg, col = f"→ {self.who}\\{DIR_UP}", COL_OK
+        elif not self.who_text.get().strip():
+            msg, col = "a nevéből elég egy részlet", ""
+        else:
+            msg, col = (f"{len(hits)} találat — pontosíts" if hits
+                        else "nincs ilyen dolgozói mappa"), COL_WARN
+        self.who_msg.set(msg)
+        self.who_lbl.configure(foreground=col)
+
+    def _iktat(self):
+        """A fotóval ellátott irat a dolgozó 02_Feltoltheto mappájába, az Iktató
+        közös magjával: szabványos név, ütközéskezelés, 5 MB, napló."""
+        if not (self.doc and self.imgpdf):
+            messagebox.showwarning("Hiányzik", "PDF és kép is kell az iktatáshoz.")
+            return
+        if not self.who:
+            self.who_msg.set("Előbb válaszd ki a dolgozót.")
+            self.who_lbl.configure(foreground=COL_WARN)
+            return
+        dt = self.doc_type.get()
+        if not dt:
+            messagebox.showwarning("Hiányzik", "Válassz dokumentumtípust.")
+            return
+        r = doc_type_rule(dt, self._rules())
+        folder = os.path.join(self.parent_dir, self.who, DIR_UP)
+        name = target_name(self.who, dt, SUFFIX if (r is None or r.generated) else "")
+        dst = os.path.join(folder, name)
+        backup = None
+        try:
+            check_path_len(dst)
+            os.makedirs(folder, exist_ok=True)
+            if os.path.exists(dst):
+                if not messagebox.askyesno(
+                        "A fájl már létezik",
+                        f"{name}\n\nFelülírjuk? Az előző példány a dolgozó "
+                        f"{BACKUP_DIR}\\ mappájába kerül.\n\n"
+                        "Nem = új név (2), (3) …"):
+                    name = unique_name(folder, name)[0]
+                    dst = os.path.join(folder, name)
+                else:
+                    backup = backup_existing(dst)
+            self.app.status("Iktatás…")
+            self.update_idletasks()
+            self._write(dst)
+        except Exception as e:
+            traceback.print_exc()
+            if backup and os.path.exists(backup):
+                try:
+                    os.replace(backup, dst)
+                except OSError:
+                    pass
+            log_row(self.parent_dir, self.src_path or "", os.path.join(self.who, DIR_UP),
+                    name, dt, "HIBA: " + str(e)[:120])
+            messagebox.showerror("Az iktatás nem sikerült", f"{type(e).__name__}: {e}")
+            self.app.status("Hiba.")
+            return
+        note = size_note(dst)
+        log_row(self.parent_dir, self.src_path or "", os.path.join(self.who, DIR_UP),
+                name, dt, "FELULIRVA (elozo: " + BACKUP_DIR + ")" if backup else "OK")
+        self.app.status(f"Iktatva: {name} {note}")
+        messagebox.showinfo("Iktatva", f"{self.who}\\{DIR_UP}\\{name}" +
+                            (f"\n\n{note}" if note else "") +
+                            ("\n\nAz 5 MB-os korlát fölött van — az Iktató fülön "
+                             "tömöríthető." if note else ""))
+        self.app.refresh_all()
 
     # -- betöltés --
     def _open_pdf(self, path):
@@ -842,6 +977,13 @@ LOG_NAME = "iktato-naplo.csv"
 BACKUP_DIR = ".eredeti"                    # felülírt példányok a dolgozó mappáján belül
 TYPES_FILE = "iktato-doktipusok.json"      # a szkript mappájában
 
+# ── dolgozónkénti két alkönyvtár (kepek-pdf-terv.md 12.) ───────────────────
+# Ékezet nélkül és számozva: az Intézőben a folyamat sorrendjében látszanak, és
+# csak 15/14 karaktert vesznek el a MAX_FULL_PATH büdzséből.
+DIR_PREP = "01_Elokeszitett"    # nyomtatásra/aláírásra váró irat, arckép, docx
+DIR_UP   = "02_Feltoltheto"     # szkennelt, aláírt, korlát alatti végleges PDF
+WORK_DIRS = (DIR_PREP, DIR_UP)
+
 TILE_W, TILE_H, GAP = 150, 52, 10
 CACHE_MAX = 12
 BIG_FILE = 20 * 1024 * 1024        # efölött darabolt másolás
@@ -961,11 +1103,18 @@ def check_path_len(full: str):
 
 
 # ── iktatómag: az Iktató és a kötegelt iktatás közös lépései ────────────────
+def worker_root(folder: str) -> str:
+    """A dolgozó mappája egy 01/02 alkönyvtárból visszanézve (különben önmaga)."""
+    return (os.path.dirname(folder) if os.path.basename(os.path.normpath(folder))
+            in WORK_DIRS else folder)
+
+
 def backup_existing(dst: str) -> str:
     """Felülírás előtt az előző példány másolata a dolgozó mappájában a
     .eredeti\\ almappába kerül — a ponttal kezdődő mappát az Áttekintő és az
-    Iktató is kihagyja. -> a másolat útja"""
-    d = os.path.join(os.path.dirname(dst), BACKUP_DIR)
+    Iktató is kihagyja. A mentés a dolgozó GYÖKERÉBEN közös, nem a 01/02 alatt:
+    egy helyen legyen minden visszaállítható példány. -> a másolat útja"""
+    d = os.path.join(worker_root(os.path.dirname(dst)), BACKUP_DIR)
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, unique_name(d, os.path.basename(dst))[0])
     shutil.copy2(dst, path)
@@ -1239,6 +1388,10 @@ class IktatoTab(ttk.Frame):
 
         self.doc_type = tk.StringVar(value="")
         self.suffix = tk.StringVar(value=SUFFIX)
+        # Fotóigényes nyomtatványnál: rajta van-e már az arckép. Típusváltáskor
+        # szándékosan visszaáll — téves 02 aláírás/fotó nélküli iratot mondana
+        # beadhatónak, a téves 01 csak annyit, hogy még nincs kész.
+        self.arckep_kesz = tk.BooleanVar(value=False)
         self.filter_text = tk.StringVar(value="")
         self.name_preview = tk.StringVar(value="")
         self.msg = tk.StringVar(value="")
@@ -1266,6 +1419,12 @@ class IktatoTab(ttk.Frame):
         ttk.Label(bar, text="Utótag:").pack(side="left", padx=(12, 4))
         ttk.Entry(bar, textvariable=self.suffix, width=10).pack(side="left")
         self.suffix.trace_add("write", lambda *a: self._update_name())
+
+        self.arckep_cb = ttk.Checkbutton(bar, text="Az arckép már rajta van",
+                                         variable=self.arckep_kesz,
+                                         command=self._update_name)
+        self.arckep_cb.pack(side="left", padx=(12, 0))
+        self._sync_arckep()
 
         ttk.Label(bar, text="Szűrő:").pack(side="left", padx=(18, 4))
         ent = ttk.Entry(bar, textvariable=self.filter_text, width=16)
@@ -1742,7 +1901,19 @@ class IktatoTab(ttk.Frame):
             r, _ = match_rule(target_name("X", self.doc_type.get()), att.rules)
             if r:
                 self.suffix.set(SUFFIX if r.generated else "")
+        self.arckep_kesz.set(False)          # típusváltáskor nem ragadhat be
+        self._sync_arckep()
         self._update_name()
+
+    def _rules(self) -> list:
+        """Az Áttekintő szabályai (a célmappához és az utótaghoz)."""
+        att = getattr(self.app, "tabs", {}).get("Áttekintő")
+        return att.rules if att else rules_from(default_settings())
+
+    def _sync_arckep(self):
+        """A jelölő csak a fotóigényes típusnál él."""
+        r = doc_type_rule(self.doc_type.get(), self._rules()) if self.doc_type.get() else None
+        self.arckep_cb.configure(state="normal" if (r and r.arckep) else "disabled")
 
     def _update_name(self, hover=None):
         dt = self.doc_type.get()
@@ -1750,7 +1921,8 @@ class IktatoTab(ttk.Frame):
             self.name_preview.set("— válassz dokumentumtípust —")
             return
         who = hover or "<mappanév>"
-        self.name_preview.set(target_name(who, dt, self.suffix.get()))
+        sub = target_subdir(dt, self._rules(), self.arckep_kesz.get())
+        self.name_preview.set(sub + "\\" + target_name(who, dt, self.suffix.get()))
 
     # ---------------- másolás ----------------
     def _do_copy(self, dir_name):
@@ -1770,8 +1942,16 @@ class IktatoTab(ttk.Frame):
             self._render_preview()
             return
 
-        folder = os.path.join(self.parent_dir, dir_name)
-        job = dict(src=src, dir_name=dir_name, doc_type=self.doc_type.get(),
+        folder = os.path.join(self.parent_dir, dir_name,
+                              target_subdir(self.doc_type.get(), self._rules(),
+                                            self.arckep_kesz.get()))
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            self._info(f"A célmappa nem hozható létre: {e}", warn=True)
+            return
+        job = dict(src=src, dir_name=dir_name, sub=os.path.basename(folder),
+                   doc_type=self.doc_type.get(),
                    name=target_name(dir_name, self.doc_type.get(), self.suffix.get()),
                    size=os.path.getsize(src), collision=False, overwritten=False,
                    backup=None, shrunk=None)
@@ -1838,8 +2018,8 @@ class IktatoTab(ttk.Frame):
                 os.remove(job["backup"])        # a cél érintetlen maradt, a másolat felesleges
             except OSError:
                 pass
-        self._log(job["src"], job["dir_name"], job["name"], "HIBA: " + str(e)[:120],
-                  job["doc_type"])
+        self._log(job["src"], os.path.join(job["dir_name"], job["sub"]), job["name"],
+                  "HIBA: " + str(e)[:120], job["doc_type"])
         self._info(f"Hiba: {type(e).__name__}: {e}", warn=True)
         messagebox.showerror("A másolás nem sikerült", f"{type(e).__name__}: {e}")
 
@@ -1859,7 +2039,8 @@ class IktatoTab(ttk.Frame):
                     f"A legerősebb tömörítés után is {mb(new_size)} maradt — "
                     f"a feltöltési korlát ({mb(UPLOAD_LIMIT)}) fölött.\n\n"
                     "Érdemes kevesebb oldalra bontani (Összeállító fül).")
-        self._log(src, job["dir_name"], name, result, job["doc_type"])
+        self._log(src, os.path.join(job["dir_name"], job["sub"]), name,
+                  result, job["doc_type"])
         if src in self.queue:                # tömörítés közben a sor mozoghatott
             i = self.queue.index(src)
             self.queue.pop(i)
@@ -1876,7 +2057,7 @@ class IktatoTab(ttk.Frame):
                 "A mappában már volt ilyen nevű fájl.\n\n"
                 "Az új példány neve:\n" + name)
         else:
-            self._info(f"✔ {job['dir_name']} → {name}" +
+            self._info(f"✔ {job['dir_name']}\\{job['sub']} → {name}" +
                        (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
                        (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
                         if job["shrunk"] else ""), ok=True)
@@ -2016,12 +2197,15 @@ class Rule:
     required: bool = False                       # a beadhatóságot ez dönti el
     generated: bool = False                      # készül-e belőle .docx
     width: int = 56                              # oszlopszélesség képpontban
+    # Arcképet is kell rá helyezni: aláírva még nem feltölthető, csak előkészített.
+    # A width UTÁN van, mert a DEFAULT_RULES egy helyen pozicionálisan adja meg.
+    arckep: bool = False
 
 
 DEFAULT_RULES = [
     # ── KÖTELEZŐ ────────────────────────────────────────────────────────────
     Rule("forma", "Aláírt formanyomtatvány", "Forma",
-         [], ["formanyomtatvany"], True, True),
+         [], ["formanyomtatvany"], True, True, arckep=True),
     Rule("elozetes", "Előzetes megállapodás", "Előz",
          [], ["elozetes megallapodas", "elozetes probaido", "elozetes"],
          True, True),
@@ -2062,6 +2246,7 @@ C_DP = "#b6e3b6"
 C_NONE = "#f4f6f8"
 C_AMB = "#ffd0a0"
 C_BIG = "#ffb3b3"          # 5 MB feletti (nem feltölthető) PDF
+C_UNSORTED = "#e0d4f0"     # besorolatlan: se 01_Elokeszitett, se 02_Feltoltheto
 C_ROW_ALT = "#fafbfc"
 C_SEL = "#cfe6ff"
 C_CUR = "#1e6fd9"
@@ -2112,6 +2297,7 @@ def load_settings() -> dict:
                     required=bool(d.get("required", False)),
                     generated=bool(d.get("generated", False)),
                     width=max(MIN_COL_W, min(MAX_COL_W, int(d.get("width", 56)))),
+                    arckep=bool(d.get("arckep", False)),
                 ))
             except Exception:
                 continue
@@ -2234,6 +2420,46 @@ def match_rule(filename: str, rules: list):
     return winners[0], len(winners) > 1
 
 
+def doc_type_rule(doc_type: str, rules: list):
+    """Az Iktató doktípusához tartozó Áttekintő-szabály (kétértelműnél None).
+    Ugyanaz az illesztés, ami a palettát is sorba rakja (palette_types)."""
+    r, amb = match_rule(target_name("X", doc_type), rules)
+    return None if amb else r
+
+
+def target_subdir(doc_type: str, rules: list, arckep_kesz: bool = False) -> str:
+    """Hova iktatunk a dolgozó mappáján belül. Alapból 02_Feltoltheto — kivéve a
+    fotót igénylő nyomtatványt, amelyen a fotó még nincs rajta: az aláírva sem
+    feltölthető, tehát 01_Elokeszitett. Téves 01 csak annyit mond, hogy még nincs
+    kész; téves 02 aláírás/fotó nélküli iratot mondana beadhatónak."""
+    r = doc_type_rule(doc_type, rules)
+    if r is not None and r.arckep and not arckep_kesz:
+        return DIR_PREP
+    return DIR_UP
+
+
+def ensure_work_dirs(worker_folder: str) -> list:
+    """A 01/02 alkönyvtár létrehozása, ha hiányzik. -> a létrehozottak nevei."""
+    made = []
+    for d in WORK_DIRS:
+        p = os.path.join(worker_folder, d)
+        if not os.path.isdir(p):
+            os.makedirs(p, exist_ok=True)
+            made.append(d)
+    return made
+
+
+def file_loc(rel: str) -> str:
+    """Egy relatív út helye a dolgozó mappáján belül: "E" (előkészített),
+    "F" (feltölthető) vagy "~" (besorolatlan: gyökér vagy más almappa)."""
+    head = rel.split(os.sep)[0] if os.sep in rel else ""
+    if head == DIR_PREP:
+        return "E"
+    if head == DIR_UP:
+        return "F"
+    return "~"
+
+
 def is_noise(name: str) -> bool:
     """Amit nem tekintünk iratnak."""
     base = os.path.basename(name)
@@ -2257,18 +2483,20 @@ class DocState:
     docx: list = field(default_factory=list)
     pdf: list = field(default_factory=list)
     ambiguous: bool = False
+    # Hol vannak a fájlok: "E" (01_Elokeszitett), "F" (02_Feltoltheto),
+    # "~" (besorolatlan: a dolgozó gyökerében vagy más almappában).
+    loc: set = field(default_factory=set)
 
     @property
     def cell(self) -> str:
+        """A hely mondja meg, mi van kész — nem a kiterjesztés. A docx/pdf tény a
+        tooltipben van (kepek-pdf-terv.md 12.3)."""
         if self.ambiguous:
             return "?"
-        if self.pdf and self.docx:
-            return "DP"
-        if self.pdf:
-            return "P"
-        if self.docx:
-            return "D"
-        return "·"
+        s = ("E" if "E" in self.loc else "") + ("F" if "F" in self.loc else "")
+        if s:
+            return s
+        return "~" if "~" in self.loc else "·"
 
 
 @dataclass
@@ -2291,8 +2519,11 @@ class PersonRow:
         return [r for r in self.rules if not r.required]
 
     def _ok(self, r) -> bool:
-        """Van-e ehhez a típushoz FELTÖLTHETŐ (korlát alatti) PDF."""
-        return any(p not in self.big for p in self.docs[r.id].pdf)
+        """Van-e ehhez a típushoz FELTÖLTHETŐ (korlát alatti) PDF a
+        02_Feltoltheto mappában. A gyökérben vagy az előkészítettben lévő PDF nem
+        számít: nem tudjuk róla, hogy aláírt-e (kepek-pdf-terv.md 12.3)."""
+        return any(p not in self.big and file_loc(p) == "F"
+                   for p in self.docs[r.id].pdf)
 
     @property
     def ready_required(self) -> int:
@@ -2309,26 +2540,44 @@ class PersonRow:
 
     @property
     def to_print(self) -> list:
+        """Nyomtatandó: van előkészített példány, feltölthető még nincs. Pontosabb a
+        korábbi „docx van, PDF nincs”-nél, mert a nyomtatandó DocGen-PDF-et is
+        elkapja (kepek-pdf-terv.md 12.3)."""
         return [r.name for r in self.rules
-                if r.generated and self.docs[r.id].docx and not self.docs[r.id].pdf]
+                if "E" in self.docs[r.id].loc and "F" not in self.docs[r.id].loc]
 
     @property
     def missing_required(self) -> list:
         return [r.name for r in self._req()
-                if r.generated and not self.docs[r.id].docx
-                and not self.docs[r.id].pdf]
+                if r.generated and not self.docs[r.id].loc]
 
     @property
     def to_obtain(self) -> list:
         return [r.name for r in self._req()
-                if not r.generated and not self.docs[r.id].pdf]
+                if not r.generated and "F" not in self.docs[r.id].loc]
+
+    @property
+    def unsorted(self) -> list:
+        """Besorolatlan fájlok: se 01_Elokeszitett, se 02_Feltoltheto. -> relatív utak"""
+        out = []
+        for st in self.docs.values():
+            out += [p for p in st.pdf + st.docx if file_loc(p) == "~"]
+        out += [p for p in self.extra_pdfs + self.photos + self.other
+                if file_loc(p) == "~"]
+        return sorted(set(out))
 
     @property
     def duplicates(self) -> list:
-        """Irattípusok, amelyekhez több PDF is van — feltöltéskor melyik a jó?
-        -> [(típusnév, [fájlok])]"""
-        return [(r.name, self.docs[r.id].pdf) for r in self.rules
-                if len(self.docs[r.id].pdf) > 1]
+        """Irattípusok, amelyekhez több FELTÖLTHETŐ PDF is van — feltöltéskor melyik
+        a jó? -> [(típusnév, [fájlok])]
+        Csak a 02_Feltoltheto számít: az előkészített és az aláírt példány együtt a
+        normális állapot (EF cella), nem kétely."""
+        out = []
+        for r in self.rules:
+            up = [p for p in self.docs[r.id].pdf if file_loc(p) == "F"]
+            if len(up) > 1:
+                out.append((r.name, up))
+        return out
 
     @property
     def ambiguous_files(self) -> list:
@@ -2361,8 +2610,10 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
     row = PersonRow(name=name, folder=folder, docs=docs, rules=rules)
     try:
         files = walk_files(folder, depth)
+        # A 01/02 a szabványos szerkezet, nem „extra almappa” — csak a többit jelezzük.
         row.subdirs = sum(1 for e in os.scandir(folder)
-                          if e.is_dir() and not e.name.startswith("."))
+                          if e.is_dir() and not e.name.startswith(".")
+                          and e.name not in WORK_DIRS)
     except OSError as e:
         row.error = str(e)
         return row
@@ -2398,6 +2649,7 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
                 st.ambiguous = True
         else:
             st.pdf.append(rel)
+        st.loc.add(file_loc(rel))
         if amb:
             st.ambiguous = True
     return row
@@ -2410,6 +2662,82 @@ def scan(parent: str, rules: list, depth: int = 1) -> list:
             if entry.is_dir() and not entry.name.startswith("."):
                 rows.append(scan_person(entry.path, entry.name, rules, depth))
     return sorted(rows, key=lambda r: _sort_key(r.name))
+
+
+# ── egyszeri rendezés a két alkönyvtárba (kepek-pdf-terv.md 12.6) ───────────
+def has_docgen_stamp(path: str) -> bool:
+    """Van-e a PDF-en DocGen-bélyeg. A bélyeg jelenléte bizonyítja, hogy generált
+    (tehát még nem aláírt); a HIÁNYA azt, hogy szkennerből jött."""
+    try:
+        d = pymupdf.open(path)
+    except Exception:
+        return False
+    try:
+        m = d.metadata or {}
+    finally:
+        d.close()
+    return ("docgen" in (m.get("producer") or "").lower()
+            or "docgen" in (m.get("keywords") or "").lower())
+
+
+def migracio_terv(folder: str, rules: list, depth: int = 3) -> list:
+    """Mit hova mozgatnánk egy dolgozó mappájában.
+    -> [(relatív út, cél | None, indok, biztos-e)]
+    A besorolás ugyanaz a match_rule, ami a mátrixot hajtja — nincs új logika.
+    A bizonytalan eset szándékosan 01 felé téved: téves 02 aláírás nélküli iratot
+    mondana beadhatónak, a téves 01 csak annyit, hogy még nincs kész."""
+    out = []
+    for rel in walk_files(folder, depth):
+        if is_noise(rel) or file_loc(rel) != "~":
+            continue                       # zaj, vagy már a helyén van
+        ext = os.path.splitext(rel)[1].lower()
+        if ext in IMG_EXT:
+            out.append((rel, DIR_PREP, "kép: nyersanyag", True))
+            continue
+        if ext not in (".pdf", ".docx"):
+            out.append((rel, None, "nem irat", True))
+            continue
+        rule, _amb = match_rule(rel, rules)
+        if rule is None:
+            out.append((rel, None, "nem ismeri fel egyik szabály sem", True))
+            continue
+        if ext == ".docx":
+            out.append((rel, DIR_PREP, "docx: nyomtatásra vár", True))
+            continue
+        if has_docgen_stamp(os.path.join(folder, rel)):
+            out.append((rel, DIR_PREP, "DocGen-bélyeg: generált, még nem aláírt", True))
+        # strip_accents, NEM norm: a norm() szándékosan kitörli az „alairt” szót
+        # (a szabályillesztéshez), tehát azzal soha nem találnánk meg.
+        elif SUFFIX and strip_accents(SUFFIX) in strip_accents(rel):
+            out.append((rel, DIR_UP, f"„{SUFFIX}” utótag: az Iktatón át jött", True))
+        else:
+            out.append((rel, DIR_PREP,
+                        "nincs bélyeg és nincs utótag — tipp", False))
+    return out
+
+
+def migracio_vegrehajt(folder: str, terv: list) -> tuple:
+    """A terv mozgatható sorainak végrehajtása. -> (kész, [(rel, hiba)])
+    ponytail: nincs visszavonás — egyszeri eszköz, a védelem az előnézet. Ha kell,
+    a bővítés útja: naplósor minden mozgatásról + fordított mozgatás belőle."""
+    done, errs = 0, []
+    for rel, dst, _reason, _sure in terv:
+        if dst is None:
+            continue
+        src = os.path.join(folder, rel)
+        target = os.path.join(folder, dst, os.path.basename(rel))
+        try:
+            check_path_len(target)          # ELŐBB mérünk, nem mozgatás közben
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.exists(target):
+                target = os.path.join(os.path.dirname(target),
+                                      unique_name(os.path.dirname(target),
+                                                  os.path.basename(target))[0])
+            os.replace(src, target)
+            done += 1
+        except (OSError, ValueError) as e:
+            errs.append((rel, str(e)))
+    return done, errs
 
 
 def open_path(path: str):
@@ -2448,6 +2776,7 @@ class SettingsDialog(tk.Toplevel):
         self.v_any = tk.StringVar()
         self.v_req = tk.BooleanVar()
         self.v_gen = tk.BooleanVar()
+        self.v_arckep = tk.BooleanVar()
         self.v_width = tk.IntVar(value=56)
         self.v_depth = tk.IntVar(value=self.gen["scan_depth"])
         self.v_namew = tk.IntVar(value=self.gen["name_width"])
@@ -2517,6 +2846,12 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(f, text="Generált (készül belőle .docx a DocGen-ből)",
                         variable=self.v_gen,
                         command=self._apply_cur).grid(row=4, column=0,
+                                                      columnspan=2, sticky="w",
+                                                      padx=8)
+        ttk.Checkbutton(f, text="Arcképet is kell rá helyezni (aláírva sem "
+                               "feltölthető, míg nincs rajta fotó)",
+                        variable=self.v_arckep,
+                        command=self._apply_cur).grid(row=5, column=0,
                                                       columnspan=2, sticky="w",
                                                       padx=8, pady=(0, 6))
         f.columnconfigure(1, weight=1)
@@ -2633,6 +2968,7 @@ class SettingsDialog(tk.Toplevel):
         self.v_any.set(", ".join(r.any_of))
         self.v_req.set(r.required)
         self.v_gen.set(r.generated)
+        self.v_arckep.set(r.arckep)
         self.v_width.set(r.width)
         self.cur = i
         self._probe()
@@ -2647,6 +2983,7 @@ class SettingsDialog(tk.Toplevel):
         r.any_of = [x.strip() for x in self.v_any.get().split(",") if x.strip()]
         r.required = bool(self.v_req.get())
         r.generated = bool(self.v_gen.get())
+        r.arckep = bool(self.v_arckep.get())
         try:
             r.width = max(MIN_COL_W, min(MAX_COL_W, int(self.v_width.get())))
         except Exception:
@@ -2865,6 +3202,8 @@ class AttekintoTab(ttk.Frame):
                    command=self._export_csv).pack(side="left", padx=6)
         ttk.Button(foot, text="Mappa megnyitása",
                    command=lambda: open_path(self.parent_dir)).pack(side="left")
+        ttk.Button(foot, text="Rendezés…",
+                   command=self._open_tidy).pack(side="left", padx=6)
         ttk.Label(foot, textvariable=self.summary).pack(side="left", padx=16)
         self.msg_lbl = ttk.Label(foot, textvariable=self.msg)
         self.msg_lbl.pack(side="right")
@@ -2963,7 +3302,7 @@ class AttekintoTab(ttk.Frame):
             out.sort(key=lambda r: (r.ready_required, r.ready_optional),
                      reverse=self.sort_desc)
         elif key in byid:
-            order = {"P": 0, "DP": 0, "D": 1, "?": 2, "·": 3}
+            order = {"F": 0, "EF": 0, "E": 1, "~": 2, "?": 3, "·": 4}
             out.sort(key=lambda r: (order.get(r.docs[key].cell, 9),
                                     _sort_key(r.name)), reverse=self.sort_desc)
         self.view_rows = out
@@ -2978,7 +3317,9 @@ class AttekintoTab(ttk.Frame):
         morep = sum(1 for r in self.rows if len(r.photos) > 1)
         dup = sum(1 for r in self.rows if r.duplicates)
         sub = sum(r.subdirs for r in self.rows)
-        extra = f" · {sub} almappa" if sub else ""
+        uns = sum(1 for r in self.rows if r.unsorted)
+        extra = f" · {uns} mappában besorolatlan fájl (~)" if uns else ""
+        extra += f" · {sub} egyéb almappa" if sub else ""
         extra += f" · {big} mappában 5 MB feletti PDF" if big else ""
         extra += f" · {dup} mappában több PDF ugyanahhoz" if dup else ""
         extra += f" · {morep} mappában az arcképen kívül más kép is" if morep else ""
@@ -3138,7 +3479,10 @@ class AttekintoTab(ttk.Frame):
             for j, rule in enumerate(cols):
                 st = row.docs.get(rule.id)
                 txt = st.cell if st else "·"
-                fill = {"P": C_P, "DP": C_DP, "D": C_D, "?": C_AMB}.get(txt, C_NONE)
+                # F = kész (02), EF = mindkettőben, E = még csak előkészített (01),
+                # ~ = besorolatlan (gyökér vagy más almappa) — nem beadható.
+                fill = {"F": C_P, "EF": C_DP, "E": C_D,
+                        "~": C_UNSORTED, "?": C_AMB}.get(txt, C_NONE)
                 if txt == "·":
                     fill = base
                 if st and len(st.pdf) > 1:
@@ -3524,6 +3868,10 @@ class AttekintoTab(ttk.Frame):
             if r.big:
                 L.append("    tömöríteni:  " +
                          ", ".join(f'„{f}" ({mb(n)})' for f, n in r.big.items()))
+            if r.unsorted:
+                L.append("    besorolni:   " +
+                         ", ".join(f'„{f}"' for f in r.unsorted[:4]) +
+                         (f" … ({len(r.unsorted)} db)" if len(r.unsorted) > 4 else ""))
             for name, files in r.duplicates:
                 L.append(f"    több PDF:    {name} — " + ", ".join(f'„{f}"' for f in files))
             if not r.photos:
@@ -3541,6 +3889,8 @@ class AttekintoTab(ttk.Frame):
                 extra += f"   ⚠ {len(r.photos)} kép (csak az arckép maradhat)"
             if r.big:
                 extra += f"   ⚠ {len(r.big)} db 5 MB feletti PDF"
+            if r.unsorted:
+                extra += f"   ⚠ {len(r.unsorted)} besorolatlan fájl"
             if r.duplicates:
                 extra += "   ⚠ több PDF: " + ", ".join(n for n, _ in r.duplicates)
             L.append(f"{r.name} …… {r.ready_required}/{nreq} kötelező · "
@@ -3589,6 +3939,103 @@ class AttekintoTab(ttk.Frame):
         ttk.Button(row, text="Mentés…", command=save).pack(side="left", padx=6)
         ttk.Button(row, text="Bezár", command=win.destroy).pack(side="right")
 
+    # ---------------- rendezés a két alkönyvtárba ----------------
+    def _open_tidy(self):
+        """Hiányzó 01/02 mappák létrehozása + a gyökérben hagyott fájlok besorolása,
+        előnézettel. A mozgatás nem visszavonható, ezért itt minden sor látszik."""
+        if not self.rows:
+            self._info("Nincs beolvasott mappa.", warn=True)
+            return
+        missing = [r for r in self.rows if not r.error
+                   and any(not os.path.isdir(os.path.join(r.folder, d))
+                           for d in WORK_DIRS)]
+        plans = {}
+        for r in self.rows:
+            if r.error:
+                continue
+            t = migracio_terv(r.folder, self.rules)
+            if t:
+                plans[r.name] = (r.folder, t)
+
+        win = tk.Toplevel(self)
+        win.title("Rendezés a két alkönyvtárba")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        head = (f"{len(missing)} dolgozónál hiányzik a {DIR_PREP} vagy a {DIR_UP}. "
+                if missing else "A mappaszerkezet mindenhol megvan. ")
+        movable = sum(1 for _f, t in plans.values() for row in t if row[1])
+        guesses = sum(1 for _f, t in plans.values() for row in t if row[1] and not row[3])
+        stay = sum(1 for _f, t in plans.values() for row in t if not row[1])
+        ttk.Label(win, text=head + f"{movable} fájl kerülne a helyére "
+                                   f"({guesses} ebből tipp), {stay} marad a gyökérben.",
+                  wraplength=620, justify="left").pack(anchor="w", padx=14, pady=(14, 6))
+
+        txt = tk.Text(win, width=88, height=22, wrap="none")
+        txt.pack(fill="both", expand=True, padx=14)
+        for name in hu_sorted(list(plans)):
+            _folder, t = plans[name]
+            txt.insert(tk.END, f"{name}\n")
+            for rel, dst, reason, sure in t:
+                mark = "  →  " if dst else "  ·  "
+                txt.insert(tk.END, f"   {rel}{mark}{dst or 'marad'}"
+                                   f"    [{'' if sure else 'TIPP: '}{reason}]\n")
+            txt.insert(tk.END, "\n")
+        txt.configure(state="disabled")
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=12)
+
+        def only_dirs():
+            made = 0
+            for r in self.rows:
+                if r.error:
+                    continue
+                try:
+                    made += len(ensure_work_dirs(r.folder))
+                except OSError as e:
+                    messagebox.showerror("Mappa létrehozása", str(e), parent=win)
+                    break
+            win.destroy()
+            self._info(f"{made} mappa létrehozva.", ok=True)
+            self.refresh()
+
+        def move_all():
+            if not messagebox.askyesno(
+                    "Rendezés",
+                    f"{movable} fájl mozgatása a helyére.\n\n"
+                    "Ez NEM visszavonható (a fájlok a mappán belül mozognak).\n"
+                    "Folytatjuk?", parent=win):
+                return
+            done, errs = 0, []
+            for _name, (folder, t) in plans.items():
+                try:
+                    ensure_work_dirs(folder)
+                except OSError as e:
+                    errs.append((folder, str(e)))
+                    continue
+                d, e = migracio_vegrehajt(folder, t)
+                done += d
+                errs += e
+            win.destroy()
+            self.refresh()
+            if errs:
+                messagebox.showwarning(
+                    "Rendezés — részben",
+                    f"{done} fájl a helyére került, {len(errs)} nem:\n\n" +
+                    "\n".join(f"{r}: {m}" for r, m in errs[:8]))
+            self._info(f"{done} fájl a helyére került." +
+                       (f" {len(errs)} hiba." if errs else ""),
+                       ok=not errs, warn=bool(errs))
+
+        b = ttk.Button(row, text="Csak a mappák létrehozása", command=only_dirs)
+        b.pack(side="left")
+        if movable:
+            ttk.Button(row, text=f"Mappák + {movable} fájl mozgatása",
+                       command=move_all).pack(side="left", padx=8)
+        ttk.Button(row, text="Mégsem", command=win.destroy).pack(side="right")
+        b.focus_set()
+        win.bind("<Escape>", lambda e: win.destroy())
+
     # ---------------- CSV ----------------
     def _export_csv(self):
         if not self.rows:
@@ -3607,14 +4054,15 @@ class AttekintoTab(ttk.Frame):
                 w = csv.writer(f, delimiter=";")
                 w.writerow(["Dolgozó"] + [r.name for r in self.rules] +
                            ["Arckép", "Melléklet", "Kötelező", "Ajánlott",
-                            "Beadható", "5 MB feletti PDF"])
+                            "Beadható", "5 MB feletti PDF", "Besorolatlan"])
                 for row in self.rows:
                     w.writerow([row.name] +
                                [row.docs[r.id].cell for r in self.rules] +
                                [len(row.photos), len(row.extra_pdfs),
                                 f"{row.ready_required}/{nreq}",
                                 f"{row.ready_optional}/{nopt}",
-                                "igen" if row.beadhato else "nem", len(row.big)])
+                                "igen" if row.beadhato else "nem", len(row.big),
+                                len(row.unsorted)])
             self._info(f"Exportálva: {os.path.basename(p)}", ok=True)
         except OSError as e:
             messagebox.showerror("CSV export", str(e))
@@ -3768,6 +4216,9 @@ class OutDoc:
     amelyeken ez a címke van, a rács sorrendjében — így nem csúszhat el."""
     doc_type: str
     suffix: str
+    # Fotóigényes nyomtatványnál: rajta van-e már az arckép. Iratonkénti, mert egy
+    # köteg formanyomtatványt és mást is tartalmaz (szetvago-terv.md 15.).
+    arckep_kesz: bool = False
 
 
 class PageViewer(tk.Toplevel):
@@ -3918,6 +4369,7 @@ class ComposerTab(ttk.Frame):
         self.who_text = tk.StringVar(value="")
         self.who_msg = tk.StringVar(value="")
         self.suffix = tk.StringVar(value="")
+        self.arckep_kesz = tk.BooleanVar(value=False)   # a kijelölt iraté
         self.out_info = tk.StringVar(value="")
         self.info = tk.StringVar(value="")
         self._quiet = False          # az Utótag mező programból íródik
@@ -4024,6 +4476,10 @@ class ComposerTab(ttk.Frame):
         self.suffix_ent.pack(side="left", padx=4)
         ttk.Label(sf, text="(a kijelölt iraté)", foreground="#555").pack(side="left")
         self.suffix.trace_add("write", lambda *a: self._suffix_changed())
+        self.arckep_cb = ttk.Checkbutton(sf, text="arckép rajta", state="disabled",
+                                         variable=self.arckep_kesz,
+                                         command=self._arckep_changed)
+        self.arckep_cb.pack(side="left", padx=(8, 0))
         self.tree = ttk.Treeview(o, columns=("name", "n", "note"), show="", height=4,
                                  selectmode="browse")
         self.tree.column("name", width=170, stretch=True)
@@ -4158,16 +4614,29 @@ class ComposerTab(ttk.Frame):
     def _doc_name(self, d):
         return target_name(self.who or "Dolgozó", d.doc_type, d.suffix)
 
+    def _doc_sub(self, d) -> str:
+        """Ennek az iratnak az alkönyvtára a dolgozó mappáján belül."""
+        return target_subdir(d.doc_type, self._rules(), d.arckep_kesz)
+
+    def _rules(self) -> list:
+        att = getattr(self.app, "tabs", {}).get("Áttekintő")
+        return att.rules if att else rules_from(default_settings())
+
+    def _doc_dir(self, d) -> str:
+        return os.path.join(self.folder, self.who or "", self._doc_sub(d))
+
     def _refresh_out(self):
         t = self.tree
         docs = self._out_docs()
         t.delete(*t.get_children())
         for n, (d, its) in enumerate(docs):
             color = self._look(d.doc_type)[1]
-            exists = self.who and os.path.exists(os.path.join(self.folder, self.who, self._doc_name(d)))
+            exists = self.who and os.path.exists(os.path.join(self._doc_dir(d), self._doc_name(d)))
+            note = "⚠ létezik" if exists else ""
+            if self._doc_sub(d) == DIR_PREP:
+                note = (note + " · " if note else "") + "→ előkészített"
             t.insert("", "end", iid=str(n),
-                     values=(f"{d.doc_type} {d.suffix}".strip(), f"{len(its)} o.",
-                             "⚠ létezik" if exists else ""),
+                     values=(f"{d.doc_type} {d.suffix}".strip(), f"{len(its)} o.", note),
                      tags=("c" + color[1:],))
             t.tag_configure("c" + color[1:], background=color, foreground="white")
         keep = [d for d, _ in docs]
@@ -4177,8 +4646,10 @@ class ComposerTab(ttk.Frame):
             self.cur_doc = None
             self._quiet = True
             self.suffix.set("")
+            self.arckep_kesz.set(False)
             self._quiet = False
             self.suffix_ent.state(["disabled"])
+            self.arckep_cb.state(["disabled"])
         free = sum(1 for it in self.items if it.doc is None and not it.bad)
         self.out_info.set(f"{free} oldal címke nélkül — kimarad" if free and docs else "")
         self.btn_go.configure(text=f"Iktatás ({len(docs)} irat)" if docs else "Iktatás")
@@ -4191,8 +4662,11 @@ class ComposerTab(ttk.Frame):
         self.cur_doc, its = docs[int(s[0])]
         self._quiet = True
         self.suffix.set(self.cur_doc.suffix)
+        self.arckep_kesz.set(self.cur_doc.arckep_kesz)
         self._quiet = False
         self.suffix_ent.state(["!disabled"])
+        r = doc_type_rule(self.cur_doc.doc_type, self._rules())
+        self.arckep_cb.state(["!disabled" if (r and r.arckep) else "disabled"])
         self.sel, self.anchor = set(its), its[0]
         self._see(self.items.index(its[0]))
         self._redraw()
@@ -4201,6 +4675,11 @@ class ComposerTab(ttk.Frame):
         if not self._quiet and self.cur_doc:
             self.cur_doc.suffix = self.suffix.get()
             self._refresh_out()
+
+    def _arckep_changed(self):
+        if not self._quiet and self.cur_doc:
+            self.cur_doc.arckep_kesz = self.arckep_kesz.get()
+            self._refresh_out()          # a célmappa jelzése frissül
 
     # ---------------- lista ----------------
     def _add_files(self):
@@ -4465,13 +4944,20 @@ class ComposerTab(ttk.Frame):
         jobs = []
         for d, its in docs:
             name = self._doc_name(d)
+            sub = self._doc_sub(d)                 # iratonként: 01 vagy 02
+            dfolder = os.path.join(folder, sub)
             try:
-                check_path_len(os.path.join(folder, name))
+                check_path_len(os.path.join(dfolder, name))
             except ValueError as e:
                 messagebox.showerror("Túl hosszú útvonal", str(e))
                 return
-            jobs.append(dict(doc=d, items=its, name=name,
-                             exists=os.path.exists(os.path.join(folder, name))))
+            jobs.append(dict(doc=d, items=its, name=name, sub=sub, folder=dfolder,
+                             exists=os.path.exists(os.path.join(dfolder, name))))
+        try:
+            ensure_work_dirs(folder)
+        except OSError as e:
+            messagebox.showerror("A mappaszerkezet nem hozható létre", str(e))
+            return
         free = sum(1 for it in self.items if it.doc is None and not it.bad)
         mode = self._ask_batch(jobs, free)
         if mode == "cancel":
@@ -4500,9 +4986,12 @@ class ComposerTab(ttk.Frame):
                   font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
         for j in jobs:
             ttk.Label(win, text=("⚠ " if j["exists"] else "    ") +
-                      f"{j['name']} · {len(j['items'])} oldal",
+                      f"{j['sub']}\\{j['name']} · {len(j['items'])} oldal",
                       foreground=COL_WARN if j["exists"] else "").pack(anchor="w", padx=14)
         notes = [f"{free} oldal címke nélkül — kimarad."] if free else []
+        if any(j["sub"] == DIR_PREP for j in jobs):
+            notes.append(f"Az {DIR_PREP}-be menő irat még NEM feltölthető (nincs rajta "
+                         "az arckép) — az Áttekintőben „E” jellel látszik.")
         if coll:
             notes.append(f"{len(coll)} irat már létezik (⚠). Az Új néven gomb (2), (3) … "
                          "sorszámmal menti; Felülírásnál az előző példány a mappa .eredeti "
@@ -4582,7 +5071,7 @@ class ComposerTab(ttk.Frame):
         """Ellenőrzött kiírás a dolgozó mappájába — az Iktató szabályai szerint."""
         b = self._b
         name, backup, result = job["name"], None, "OK"
-        dst = os.path.join(b["folder"], name)
+        dst = os.path.join(job["folder"], name)      # iratonként 01 vagy 02
         try:
             if err:
                 raise err
@@ -4591,8 +5080,8 @@ class ComposerTab(ttk.Frame):
                     backup = backup_existing(dst)
                     result = f"FELULIRVA (elozo: {BACKUP_DIR})"
                 else:
-                    name = unique_name(b["folder"], name)[0]
-                    dst = os.path.join(b["folder"], name)
+                    name = unique_name(job["folder"], name)[0]
+                    dst = os.path.join(job["folder"], name)
                     result = "UTKOZES-UJ NEV"
             write_pdf_verified(data, dst, pages)
         except Exception as e:
@@ -4609,7 +5098,8 @@ class ComposerTab(ttk.Frame):
             note = f" · tömörítve: {mb(job['size'])} → {mb(len(data))}"
             if step is None:
                 b["big"].append(name)
-        log_row(self.folder, source_desc(job["items"]), b["who"], name, job["doc"].doc_type, result)
+        log_row(self.folder, source_desc(job["items"]),
+                os.path.join(b["who"], job["sub"]), name, job["doc"].doc_type, result)
         b["done"].append(dict(dst=dst, backup=backup, name=name, doc_type=job["doc"].doc_type,
                               items=job["items"]))
         self._write_log(f"  ✔ {name} — {pages} oldal, {mb(len(data))}{note}" +
@@ -4875,58 +5365,182 @@ def _selftest() -> int:
        rules_from({"rules": [asdict(x) for x in RULES]})[1].any_of ==
        RULES[1].any_of)
 
-    print("BEOLVASÁS ALMAPPÁKKAL")
+    print("BEOLVASÁS A KÉT ALKÖNYVTÁRRAL")
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         who = os.path.join(td, "Teszt Elek")
-        os.makedirs(os.path.join(who, "Mellekletek", "Regi"))
+        up = os.path.join(who, DIR_UP)
+        prep = os.path.join(who, DIR_PREP)
+        os.makedirs(os.path.join(up, "Regi"))
+        os.makedirs(prep)
         for p, fn in [
-                (who, "Teszt Elek Aláírt formanyomtatvány aláírt.pdf"),
-                (who, "Teszt Elek Előzetes próbaidő nélkül_ukran_alairt.pdf"),
-                (who, "Teszt Elek Elfogadó nyilatkozat aláírt.pdf"),
-                (who, "Teszt Elek Egyoldalú hozzájárulási nyilatkozat.pdf"),
-                (who, "Teszt Elek Belföldi meghatalmazás aláírt.pdf"),
-                (who, "Teszt Elek.jpg"),
-                (who, "~$zar.docx"),
-                (os.path.join(who, "Mellekletek"), "utlevel.pdf"),
-                (os.path.join(who, "Mellekletek", "Regi"), "nav_igazolas.pdf")]:
+                (up, "Teszt Elek Aláírt formanyomtatvány aláírt.pdf"),
+                (up, "Teszt Elek Előzetes próbaidő nélkül_ukran_alairt.pdf"),
+                (up, "Teszt Elek Elfogadó nyilatkozat aláírt.pdf"),
+                (up, "Teszt Elek Egyoldalú hozzájárulási nyilatkozat.pdf"),
+                (up, "Teszt Elek Belföldi meghatalmazás aláírt.pdf"),
+                (up, "Teszt Elek Útlevél.pdf"),
+                (prep, "Teszt Elek.jpg"),
+                (prep, "~$zar.docx"),
+                (os.path.join(up, "Regi"), "nav_igazolas.pdf")]:
             open(os.path.join(p, fn), "w").close()
 
-        r0 = scan(td, RULES, 0)[0]
-        ck("mélység 0: útlevél nem látszik -> 5/6",
-           r0.ready_required == 5 and not r0.beadhato, r0.ready_required)
         r1 = scan(td, RULES, 1)[0]
-        ck("mélység 1: útlevél megvan -> BEADHATÓ",
-           r1.beadhato, r1.ready_required)
-        ck("mélység 1: NAV még nem látszik", not r1.docs["nav"].pdf)
+        ck("mind a 6 kötelező a feltölthetőben -> BEADHATÓ",
+           r1.beadhato and r1.ready_required == 6, r1.ready_required)
+        ck("cella: F, ahol csak feltölthető van",
+           r1.docs["utlevel"].cell == "F", r1.docs["utlevel"].cell)
+        ck("a 01/02 nem „egyéb almappa”", r1.subdirs == 0, r1.subdirs)
+        ck("mélység 1: a 02 alatti Regi még nem látszik", not r1.docs["nav"].pdf)
         r2 = scan(td, RULES, 2)[0]
-        ck("mélység 2: NAV is megvan", bool(r2.docs["nav"].pdf),
-           r2.docs["nav"].pdf)
-        ck("almappa-szám 1", r1.subdirs == 1, r1.subdirs)
-        ck("relatív út marad meg",
-           any(os.sep in f for f in r1.docs["utlevel"].pdf),
-           r1.docs["utlevel"].pdf)
+        ck("mélység 2: a 02/Regi is megvan, és F-nek számít",
+           r2.docs["nav"].cell == "F", r2.docs["nav"].cell)
         ck("zaj kimaradt", not r1.other, r1.other)
+        ck("nincs besorolatlan fájl", not r1.unsorted, r1.unsorted)
 
-        big = os.path.join(who, "Mellekletek", "utlevel.pdf")
+        # csak előkészített példány: E, és NEM beadható
+        open(os.path.join(prep, "Teszt Elek Szálláshely-igazolás.pdf"), "w").close()
+        re1 = scan(td, RULES, 1)[0]
+        ck("cella: E, ahol csak előkészített van",
+           re1.docs["szalli"].cell == "E", re1.docs["szalli"].cell)
+        ck("az előkészített benne van a nyomtatandóban",
+           "Szálláshely-igazolás" in re1.to_print, re1.to_print)
+
+        # mindkettőben: EF
+        open(os.path.join(up, "Teszt Elek Szálláshely-igazolás.pdf"), "w").close()
+        ref = scan(td, RULES, 1)[0]
+        ck("cella: EF, ha mindkettőben van",
+           ref.docs["szalli"].cell == "EF", ref.docs["szalli"].cell)
+        ck("EF -> már nem nyomtatandó",
+           "Szálláshely-igazolás" not in ref.to_print, ref.to_print)
+        ck("EF nem „több PDF”: az előkészített + aláírt példány a normális állapot",
+           [n for n, _ in ref.duplicates] == [], ref.duplicates)
+
+        # a gyökérben hagyott irat: besorolatlan, NEM beadható
+        root_pdf = os.path.join(who, "Teszt Elek Végzettséget igazoló okirat.pdf")
+        open(root_pdf, "w").close()
+        ru = scan(td, RULES, 1)[0]
+        ck("cella: ~ a gyökérben hagyott iratra",
+           ru.docs["vegzett"].cell == "~", ru.docs["vegzett"].cell)
+        ck("a besorolatlan megjelenik a listában",
+           os.path.basename(root_pdf) in ru.unsorted, ru.unsorted)
+        os.remove(root_pdf)
+
+        big = os.path.join(up, "Teszt Elek Útlevél.pdf")
         with open(big, "wb") as f:
             f.truncate(UPLOAD_LIMIT + 1)
         rb = scan(td, RULES, 1)[0]
         ck("5 MB feletti útlevél -> nem feltölthető, NEM beadható",
-           not rb.beadhato and rb.ready_required == 5 and big.endswith(next(iter(rb.big))),
+           not rb.beadhato and rb.ready_required == 5,
            (rb.ready_required, list(rb.big)))
-        open(os.path.join(who, "Teszt Elek Útlevél.pdf"), "w").close()
+        open(os.path.join(up, "Teszt Elek Útlevél 2.pdf"), "w").close()
         rd = scan(td, RULES, 1)[0]
         ck("mellette egy korlát alatti útlevél -> beadható", rd.beadhato)
         ck("két útlevél-PDF -> „több PDF” jelzés",
            [n for n, _ in rd.duplicates] == ["Útlevél"], rd.duplicates)
+
         os.makedirs(os.path.join(who, BACKUP_DIR))
         open(os.path.join(who, BACKUP_DIR, "Teszt Elek Előzetes megállapodás aláírt.pdf"),
              "w").close()
         re_ = scan(td, RULES, 1)[0]
         ck(f"a {BACKUP_DIR} mappát nem látja (se irat, se almappa)",
-           len(re_.docs["elozetes"].pdf) == 1 and re_.subdirs == 1,
+           len(re_.docs["elozetes"].pdf) == 1 and re_.subdirs == 0,
            (re_.docs["elozetes"].pdf, re_.subdirs))
+
+    # A régi, lapos szerkezet szándékosan NEM beadható: egy gyökérben hagyott
+    # PDF-ről nem tudjuk, hogy aláírt-e (kepek-pdf-terv.md 12.3).
+    with tempfile.TemporaryDirectory() as td2:
+        w2 = os.path.join(td2, "Lapos Lajos")
+        os.makedirs(w2)
+        for fn in ("Lapos Lajos Aláírt formanyomtatvány aláírt.pdf",
+                   "Lapos Lajos Előzetes megállapodás aláírt.pdf",
+                   "Lapos Lajos Elfogadó nyilatkozat aláírt.pdf",
+                   "Lapos Lajos Egyoldalú hozzájárulási nyilatkozat aláírt.pdf",
+                   "Lapos Lajos Belföldi meghatalmazás aláírt.pdf",
+                   "Lapos Lajos Útlevél.pdf"):
+            open(os.path.join(w2, fn), "w").close()
+        rl = scan(td2, RULES, 1)[0]
+        ck("a régi lapos szerkezet NEM beadható (mind besorolatlan)",
+           not rl.beadhato and rl.ready_required == 0 and len(rl.unsorted) == 6,
+           (rl.ready_required, len(rl.unsorted)))
+
+    print("CÉLMAPPA ÉS HELY")
+    ck("file_loc: 02 -> F", file_loc(os.path.join(DIR_UP, "a.pdf")) == "F")
+    ck("file_loc: 01 -> E", file_loc(os.path.join(DIR_PREP, "a.pdf")) == "E")
+    ck("file_loc: gyökér -> ~", file_loc("a.pdf") == "~")
+    ck("file_loc: más almappa -> ~", file_loc(os.path.join("Regi", "a.pdf")) == "~")
+    ck("file_loc: 02 mélyebben is F",
+       file_loc(os.path.join(DIR_UP, "Regi", "a.pdf")) == "F")
+    ck("célmappa: útlevél -> 02", target_subdir("Útlevél", RULES) == DIR_UP)
+    ck("célmappa: formanyomtatvány fotó nélkül -> 01",
+       target_subdir("Tart_eng_formanyomtatvány", RULES, False) == DIR_PREP)
+    ck("célmappa: formanyomtatvány fotóval -> 02",
+       target_subdir("Tart_eng_formanyomtatvány", RULES, True) == DIR_UP)
+    ck("célmappa: ismeretlen típus -> 02", target_subdir("Saját irat", RULES) == DIR_UP)
+    ck("worker_root: a 02-ből egyet vissza",
+       worker_root(os.path.join("X", "Kiss Anna", DIR_UP)) ==
+       os.path.join("X", "Kiss Anna"))
+    ck("worker_root: a dolgozó mappája önmaga",
+       worker_root(os.path.join("X", "Kiss Anna")) == os.path.join("X", "Kiss Anna"))
+
+    print("RENDEZÉS (MIGRÁCIÓ)")
+    with tempfile.TemporaryDirectory() as td:
+        who = os.path.join(td, "Rendez Rita")
+        os.makedirs(who)
+        for fn in ("Rendez Rita Útlevél aláírt.pdf",
+                   "Rendez Rita Előzetes megállapodás.pdf",
+                   "Rendez Rita.jpg",
+                   "Rendez Rita Meghatalmazás.docx",
+                   "jegyzet.txt",
+                   "valami-ismeretlen.pdf"):
+            open(os.path.join(who, fn), "w").close()
+        terv = {t[0]: t for t in migracio_terv(who, RULES)}
+        ck("aláírt utótag -> 02",
+           terv["Rendez Rita Útlevél aláírt.pdf"][1] == DIR_UP)
+        ck("utótag és bélyeg nélkül -> 01, tippként",
+           terv["Rendez Rita Előzetes megállapodás.pdf"][1] == DIR_PREP and
+           terv["Rendez Rita Előzetes megállapodás.pdf"][3] is False)
+        ck("kép -> 01", terv["Rendez Rita.jpg"][1] == DIR_PREP)
+        ck("docx -> 01", terv["Rendez Rita Meghatalmazás.docx"][1] == DIR_PREP)
+        ck("nem irat -> marad", terv["jegyzet.txt"][1] is None)
+        ck("nem ismeri fel -> marad", terv["valami-ismeretlen.pdf"][1] is None)
+        done, errs = migracio_vegrehajt(who, list(terv.values()))
+        ck("4 fájl mozgott, hiba nélkül", (done, errs) == (4, []), (done, errs))
+        ck("az útlevél a 02-ben van",
+           os.path.isfile(os.path.join(who, DIR_UP, "Rendez Rita Útlevél aláírt.pdf")))
+        ck("a kép a 01-ben van",
+           os.path.isfile(os.path.join(who, DIR_PREP, "Rendez Rita.jpg")))
+        ck("a nem felismert a gyökérben maradt",
+           os.path.isfile(os.path.join(who, "valami-ismeretlen.pdf")))
+        ck("második futás már nem mozgat semmit",
+           not [t for t in migracio_terv(who, RULES) if t[1]],
+           migracio_terv(who, RULES))
+        ck("ensure_work_dirs idempotens", ensure_work_dirs(who) == [])
+
+    # A DocGen-bélyeg bizonyíték: bélyeges PDF -> 01, akkor is, ha „aláírt” a nevében.
+    with tempfile.TemporaryDirectory() as td:
+        who = os.path.join(td, "Belyeg Bela")
+        os.makedirs(who)
+        stamped = os.path.join(who, "Belyeg Bela Meghatalmazás aláírt.pdf")
+        d = pymupdf.open()
+        d.new_page()
+        d.set_metadata({"producer": "DocGen 10.62", "keywords": "docgen;meghat"})
+        d.save(stamped)
+        d.close()
+        plain = os.path.join(who, "Belyeg Bela Útlevél aláírt.pdf")
+        d = pymupdf.open()
+        d.new_page()
+        d.set_metadata(dict(CLEAN_META))
+        d.save(plain)
+        d.close()
+        ck("has_docgen_stamp: bélyeges PDF", has_docgen_stamp(stamped))
+        ck("has_docgen_stamp: bélyeg nélküli PDF", not has_docgen_stamp(plain))
+        t = {x[0]: x for x in migracio_terv(who, RULES)}
+        ck("a bélyeg felülírja az „aláírt” utótagot -> 01",
+           t[os.path.basename(stamped)][1] == DIR_PREP,
+           t[os.path.basename(stamped)])
+        ck("bélyeg nélkül + utótaggal -> 02",
+           t[os.path.basename(plain)][1] == DIR_UP, t[os.path.basename(plain)])
 
     print("IKTATÓ-TÍPUS ↔ ÁTTEKINTŐ-SZABÁLY")
     for t in DOC_TYPES_DEFAULT:

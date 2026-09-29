@@ -9,11 +9,54 @@ ez az eszköz a nyomtatás–aláírás–szkennelés utáni lépéseket segíti
 
 | Fül | Mire való |
 |---|---|
-| Arckép elhelyezés | fénykép ráhelyezése egy PDF-nyomtatványra |
+| Arckép elhelyezés | fénykép ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
 | Összefűzés / Raszterizálás | PDF-műveletek |
 | Összeállító | szkennelt kötegből és képekből iratok: az oldalak számbillentyűvel doktípust kapnak, egyetlen Iktatással mind a dolgozó mappájába kerül |
 | Iktató | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva |
-| Áttekintő | mátrix: dolgozónként melyik irat van meg, ki adható be, mi hiányzik |
+| Áttekintő | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
+
+## A dolgozói mappa szerkezete
+
+Minden dolgozónak **két alkönyvtára** van — így ránézésre látszik, mi van kész:
+
+```
+<munkamappa>\
+  <Dolgozó Név>\
+    01_Elokeszitett\   ← a DocGen kimenete: nyomtatásra / aláírásra vár.
+                         Ide tartozik az arckép (jpg) és az aláírt
+                         formanyomtatvány is, amin még nincs fotó.
+    02_Feltoltheto\    ← szkennelt, aláírt, 5 MB alatti végleges PDF:
+                         ez megy a portálra.
+    .eredeti\          ← felülírt iratok előző példánya (közös)
+  iktato-naplo.csv
+```
+
+Az **Iktató** és az **Összeállító** alapból a `02_Feltoltheto`-be ír. Egyetlen
+kivétel a **formanyomtatvány**, amire arcképet is kell helyezni: ott van egy
+jelölő („Az arckép már rajta van"). Ha nincs bepipálva, az irat a
+`01_Elokeszitett`-be kerül — aláírva sem feltölthető, míg nincs rajta a fotó.
+Az **Arckép elhelyezés** fül eredménye mindig a `02_Feltoltheto`-be megy: a fotó
+épp akkor kerül rá. Ezzel zárul a kör: `01` → fotó → `02`.
+
+A mappák a **Rendezés…** gombbal hozhatók létre minden dolgozónál egyszerre
+(Áttekintő), és iktatáskor magukból is létrejönnek.
+
+### Rendezés: a régi, lapos szerkezet besorolása
+
+Ugyanaz a **Rendezés…** párbeszéd sorolja be a gyökérben hagyott fájlokat.
+Előnézetet ad, és csak jóváhagyás után mozgat:
+
+| forrás | cél |
+|---|---|
+| PDF DocGen-bélyeggel | `01_Elokeszitett` (generált, még nem aláírt) |
+| PDF `aláírt` utótaggal, bélyeg nélkül | `02_Feltoltheto` |
+| PDF bélyeg és utótag nélkül | `01_Elokeszitett` — **tippként jelölve** |
+| kép, `.docx` | `01_Elokeszitett` |
+| amit egyik szabály sem ismer fel | marad a gyökérben, felsorolva |
+
+A bizonytalan eset szándékosan `01` felé téved: ha `02`-be tennénk, a mátrix
+aláírás nélküli iratot mondana beadhatónak. **A mozgatás nem visszavonható** —
+ezért mutat az előnézet minden sort.
 
 ## Telepítés és indítás
 
@@ -82,9 +125,32 @@ kerülhetnek a repóba, mert a munkamappa alapból a program mappája, és oda
 dolgozói iratok is kerülhetnek. **Új projektfájlt a `.gitignore`-ba is fel kell
 venni** — a klón-próba (lásd lent) szól, ha kimaradt.
 
-Felülírásnál (Iktató, Összeállító) az előző példány a dolgozó mappájában a `.eredeti\`
-almappába kerül, és a **Visszavonás** visszahozza. A ponttal kezdődő mappát az
+Felülírásnál (Iktató, Összeállító, Arckép) az előző példány a dolgozó mappájának
+**gyökerében** a `.eredeti\` almappába kerül — egy helyen, nem a 01/02 alatt
+szétszórva —, és a **Visszavonás** visszahozza. A ponttal kezdődő mappát az
 Áttekintő és az Iktató is kihagyja.
+
+## Az Áttekintő cellái
+
+A jel azt mondja meg, **hol van** a fájl — vagyis mi van kész:
+
+| jel | jelentés |
+|---|---|
+| `F` | van a `02_Feltoltheto`-ban → **kész** |
+| `EF` | mindkét mappában van (az előkészített és az aláírt példány is) |
+| `E` | csak az előkészítettben → még nem aláírt/szkennelt |
+| `~` | se 01-ben, se 02-ben → **besorolatlan, nem beadható** (Rendezés…) |
+| `?` | kétértelmű illeszkedés — nézd meg |
+| `·` | nincs semmi |
+
+A `!` utótag (pl. `F!`) továbbra is az 5 MB fölötti, nem feltölthető PDF-et
+jelenti, az `×2` pedig azt, hogy a feltölthetőben **több** PDF is van ugyanahhoz
+a típushoz (melyik a jó?). Az előkészített + aláírt példány együtt **nem**
+ütközés, az a normális állapot.
+
+**Beadható** csak az, aminek minden kötelező iratához van korlát alatti PDF a
+`02_Feltoltheto`-ban. A gyökérben talált PDF-ről nem tudjuk, hogy aláírt-e,
+ezért nem számít.
 
 ## Tesztek
 
