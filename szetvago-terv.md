@@ -352,3 +352,20 @@ Nettó ~+280 sor, kevesebb az eredeti ~550-nél, mert a régi Szétvágás és a
 - **F5 — takarítás:** `ImagesToPdfTab` → `ComposerTab`, `ImageViewer` → `PageViewer`; a régi kimeneti gombok, a mentés-párbeszéd, az Iktatóba küldés, a `SplitTab` és a csak általa használt `FileList`-részek (`multi`, `all_paths`, `select_all`, `extra`) törölve. A dolgozói mappák listája közös (`worker_dirs`), az Iktató is ezt hívja. A minőség-előbeállítás rádiógombok helyett legördülő lett, mert 960 px szélességnél a sor levágódott.
 - **F6 — Iktató:** többoldalas PDF-nél az előnézet alatt „✂ Szétosztás…” gomb: a köteg az Összeállítóba kerül (a várólistáról ki), a dolgozó az Iktató szűrőjéből jön, ha az Összeállítóban még nincs megadva.
 - **Egy teszt által talált hiba:** a `_name` metódusnév ütközött a tkinter widgetek belső `_name` attribútumával; `_doc_name` lett.
+
+## 15. Kiegészítés (2026-09-29) — a két alkönyvtár hatása az Összeállítóra
+
+A dolgozónkénti két alkönyvtár terve a `kepek-pdf-terv.md` 12. fejezetében él. Az Összeállítót két ponton érinti.
+
+**1. A célmappa.** Az `_iktat` ma `os.path.join(self.folder, self.who)`-ba ír; ez `.../<dolgozó>/02_Feltoltheto` lesz, `os.makedirs(..., exist_ok=True)`-val. A `b["folder"]` egy helyen áll össze, tehát a `_doc_save` és a `log_row` nem változik — a napló `célmappa` mezője viszont `Dolgozó\02_Feltoltheto` lesz, hogy visszakereshető maradjon. Az előellenőrzés `check_path_len`-je a hosszabb úttal fut, tehát a mai 20–60 oldalas kötegnél is a **teljes** cél kerül mérésre, nem a dolgozói mappa.
+
+**2. Iratonkénti arckép-jelölő.** A fotót igénylő formanyomtatvány célja nem `02`, hanem `01_Elokeszitett`, ha a fotó **még nincs** a szkennelt lapon. Ez **iratonkénti** döntés, nem kötegenkénti: egy köteg = egy dolgozó (14.1, 1. döntés), de többféle irat, és csak a formanyomtatvány érintett.
+
+- A `Doc` (kimeneti irat) kap egy `arckep_kesz` mezőt, alapból `False`.
+- A jelölő a **Kimenet lista utótag-mezője mellé** kerül — az már ma is iratonkénti szerkesztő (14.2, „a Kimenet listában egy irat kijelölésével az oldalai is kijelölődnek, és az utótagja átírható”), tehát nincs új felületi fogalom.
+- Csak akkor élesedik, ha az irat doktípusa a `arckep` jelölőt hordozó szabályra illeszkedik (`palette_types` már ma összekapcsolja a típusnevet a szabállyal).
+- A `_ask_batch` összegzés **iratonként kiírja a célmappát**, hogy az egyetlen döntési pont előtt látszódjon, mi hova megy. Ez a fejezet 5. pontjának „egyetlen összegzés” elvét nem sérti: egy párbeszéd, csak több információval.
+
+**Ami nem változik:** a rács, a címkézés, a számbillentyűs továbblépés, a `shrink_later`-es tömörítés, a `write_pdf_verified`, a `backup_existing` és a kötegszintű Visszavonás. A `.eredeti\` viszont a dolgozó **gyökerébe** kerül, nem a `02_Feltoltheto` alá (a felhasználó döntése) — ez a `backup_existing`-ben egy egysoros felmenés, a `undo_copy` a tárolt utat használja, tehát érintetlen.
+
+**Teszt:** a GUI-teszt kötegfolyamata kapjon egy formanyomtatvány-iratot mindkét jelölőállásban, és ellenőrizze a célmappát; az önteszt a `target_subdir` tiszta függvényt méri.

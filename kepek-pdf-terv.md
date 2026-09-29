@@ -337,3 +337,159 @@ A **8., 9., 13. és 16.** kérdés érdemi válasza nélkül nem érdemes elkezd
 - Vonszolás: egyszerre egy elem (a többes kijelölés nem mozog blokkban); nincs billentyűs léptetés.
 - A tömörítés lépcsőnként fut; egy lépcsőn belül (nagy fájlnál 1–3 s) a felület még áll.
 - HEIC nem támogatott (a MuPDF nem olvassa) — ha kell, `pillow-heif`.
+
+## 12. Dolgozónkénti két alkönyvtár (2026-09-29)
+
+Az igény: dolgozónként két alkönyvtár, hogy **ránézésre látszódjon, mi van kész és mi nincs**. A mai lapos szerkezetben a DocGen által generált, még alá nem írt PDF és a szkennelt-aláírt PDF megkülönböztethetetlen — mindkettő „P” a mátrixban, és mindkettő beadhatónak számít. A két alkönyvtár tehát nem csak rendezés: **ez adja meg az Áttekintőnek azt az információt, ami ma nincs benne.**
+
+### 12.1 A felhasználó döntései
+
+| Kérdés | Döntés |
+|--------|--------|
+| A két mappa jelentése | **nyomtatandó vs. aláírt**: `01_Elokeszitett` = a DocGen kimenete, ami nyomtatásra/aláírásra vár; `02_Feltoltheto` = a szkennelt, aláírt, korlát alatti végleges PDF |
+| Mappanevek | `01_Elokeszitett` / `02_Feltoltheto` — **ékezet nélkül, számozva**: az Intézőben a folyamat sorrendjében látszanak, és csak 15/14 karaktert vesznek el a `MAX_FULL_PATH` büdzséből |
+| Áttekintő | **hely-alapú cella** (E/F); a docx/pdf jel a cellából megszűnik, és a „beadható” csak a `02`-t számolja |
+| Gyökérben hagyott fájl | **besorolatlan jel, NEM beadható** — a szigorú értelmezés: a mátrix ne mondjon készre olyat, ami nincs a helyén |
+| Migráció | **egyszeri eszköz előnézettel**; a fel nem ismert fájl marad a gyökérben, felsorolva |
+| Iktatás célja | mindig `02` — **kivéve** a fotót igénylő formanyomtatványt: ott iratonkénti jelölő dönt, mindkét modulban |
+| Arckép elhelyezés eredménye | **mindig `02`** — és ehhez a fül igazi iktatást kap (dolgozó, szabványos név, napló) |
+| Arckép (jpg/png) helye | `01_Elokeszitett` — nyersanyag, nem feltölthető irat |
+| `.eredeti\` helye | **közös, a dolgozó gyökerében** (nem almappánként) |
+| Almappák létrehozása | **gomb az Áttekintőn**: a hiányzó 01/02 minden dolgozónál egyszerre |
+| DocGen-bélyeg | igen, **csak a generált PDF-en** (`producer`/`keywords`) — docx-bélyeg nincs, és az Iktató bájtazonossága érintetlen |
+
+### 12.2 A szerkezet
+
+```
+<munkamappa>\
+  <Dolgozó Név>\
+    01_Elokeszitett\   ← DocGen-kimenet (docx + nyomtatandó PDF), arckép (jpg/png),
+                         és az aláírt formanyomtatvány, amin még nincs fotó
+    02_Feltoltheto\    ← szkennelt, aláírt, korlát alatti végleges PDF-ek
+    .eredeti\          ← közös, a dolgozó gyökerében (felülírt példányok)
+  iktato-naplo.csv
+```
+
+A `scan_depth = 1` alapértelmezés miatt az Áttekintő **ma is megtalálja** ezeket a fájlokat: nem a keresést kell átírni, hanem a jelentésadást. A `walk_files` relatív utat ad (`01_Elokeszitett\Xy.pdf`), tehát **az első útvonalelem dönt** — egy egysoros helper elég hozzá.
+
+### 12.3 Az Áttekintő: hely-alapú állapot
+
+| jel | jelentés |
+|---|---|
+| `F` | van a `02_Feltoltheto`-ban → kész |
+| `EF` | mindkét mappában van |
+| `E` | csak az előkészítettben → még nem aláírt/szkennelt |
+| `~` | csak a gyökérben vagy más almappában → **besorolatlan, nem beadható** |
+| `?` | kétértelmű illeszkedés (marad) |
+| `·` | nincs semmi |
+
+A `!` utótag (5 MB fölött, `C_BIG` színnel) **változatlan marad**: `F!`, `~!`. Ezért nem lehetett a besorolatlan jele `!` — az már foglalt. A docx/pdf tény átkerül a tooltipbe.
+
+Érintett kód:
+
+- `DocState`: `+loc: set`, a `cell` property átírva. A `docx`/`pdf` listák maradnak (tooltip, `duplicates`).
+- `PersonRow._ok`: csak `F`-beli, korlát alatti PDF számít — ezen áll a `beadhato`, a `ready_required` és a CSV.
+- `to_print`: ma „docx van, PDF nincs”; új: „`E`-ben van, `F`-ben nincs” — pontosabb, mert a nyomtatandó DocGen-**PDF**-et is elkapja, nem csak a docx-et.
+- `missing_required`: sem `E`, sem `F`, sem `~`.
+- új `unsorted` property + darabszám a fejléc-összegzőben és +1 CSV-oszlop.
+- `subdirs`: a 01/02 ne számítson „extra almappának”.
+
+### 12.4 Írási cél és a formanyomtatvány-jelölő
+
+Célmappát ma két hely dönt, mindkettő egy sor: `IktatoTab._do_copy` és `ComposerTab._iktat`. Mindkettő egy közös helperen megy át:
+
+```python
+def target_subdir(doc_type, rules, arckep_kesz: bool) -> str:
+    """02_Feltoltheto — kivéve a fotót igénylő formanyomtatvány, fotó nélkül."""
+```
+
+A fotóigény **nem beégetett név**: a `Rule` kap egy `arckep` jelölőt a `required`/`generated` mintájára (dataclass + `load_settings` + egy új jelölőmező a szabályszerkesztőben), alapból a `forma` szabályon. A típus→szabály összekötést a már létező `palette_types`/`match_rule` adja — ugyanaz a mechanizmus, ami a paletta sorrendjét is.
+
+- **Iktató:** jelölő a doktípus-combo mellett („Az arckép már rajta van”), csak a fotóigényes típusnál élesedik, és **típusváltáskor magától kiürül** — téves `02` rosszabb, mint téves `01`, mert az előbbi aláírás nélküli iratot mond beadhatónak.
+- **Összeállító:** iratonként kell, nem kötegenként (lásd `szetvago-terv.md` 15.), mert egy köteg formanyomtatványt és mást is tartalmaz.
+- A napló `célmappa` mezője `Dolgozó\02_Feltoltheto` legyen, hogy visszakereshető maradjon.
+- `check_path_len` nagyobb utakat kap; a leghosszabb valós eset (`Nyilatkozat feltöltött dokumentumok elismeréséről aláírt.pdf` + hosszú dolgozónév + a mai munkamappa) ~170–180 karakter, tehát belül van a 255-ön, de a `.eredeti\` és a `(2)` utótag tovább növel.
+
+### 12.5 Arckép elhelyezés: igazi iktatás
+
+Ez a fül ma **nem iktat**: `asksaveasfilename`, a forrás mappájába, `..._kesz.pdf` néven — nem ismeri a dolgozót, nem ad szabványos nevet, nem naplóz. Az iktatómag viszont már modulszintű függvényekben van (`target_name`, `unique_name`, `backup_existing`, `check_path_len`, `write_pdf_verified`, `shrink_later`, `log_row`), tehát újrahasználható, nem kell duplikálni.
+
+A fül kap: Dolgozó mezőt (`resolve_worker` + `worker_dirs`, ahogy az Összeállítóban), doktípus-combót (alapból a formanyomtatvány), és egy „Iktatás a feltölthetőbe” gombot a mai „Mentés másként” mellett. A cél **mindig `02`** — a fotó épp most került rá. Ha a forrás PDF egy dolgozói mappából jött, a dolgozó magától kitöltődik: ez zárja be a kört `01` → fotó → `02`.
+
+### 12.6 Migráció
+
+Előnézetes egyszeri eszköz, ugyanabban a párbeszédben, mint a mappalétrehozás („Rendezés…”). A besorolás **nem új logika** — ugyanaz a `match_rule`, ami a mátrixot hajtja:
+
+| forrás | cél | a jel erőssége |
+|---|---|---|
+| PDF DocGen-bélyeggel | `01_Elokeszitett` | **bizonyíték** |
+| PDF bélyeg nélkül, a névben `aláírt` utótag | `02_Feltoltheto` | **bizonyíték** (az Iktatón át jött) |
+| PDF bélyeg nélkül és utótag nélkül | `01_Elokeszitett`, külön szakaszban jelölve | **tipp** — átnézésre |
+| kép (`IMG_EXT`), `.docx` | `01_Elokeszitett` | bizonyíték |
+| szabályra nem illeszkedik, vagy `is_noise` | marad a gyökérben, felsorolva | — |
+| `.eredeti\`, `iktato-naplo.csv` | nem mozdul | — |
+
+**A bizonytalan eset szándékosan `01` felé téved** (terv-ellenőrzés, 2026-09-29): egy bélyeg és utótag nélküli PDF lehet bélyeg előtti DocGen-kimenet is. Ha ilyet `02`-be tennénk, a mátrix **aláírás nélküli iratot mondana beadhatónak** — ez a legdrágább hiba. A `01` felé tévedés csak annyit mond, hogy még nincs kész. Ugyanaz az aszimmetria, mint az arckép-jelölőnél (12.4).
+
+A besorolás tiszta függvény (`migracio_terv(folder, rules) -> [(rel, cél|None, indok)]`), ezért öntesztelhető; a mozgatás `os.replace` + **előzetes** `check_path_len` (nem közben). **Visszavonás nincs** — egyszeri eszköz, a védelem az előnézet; `ponytail:` kommenttel jelölve, hogy ez tudatos, és mi a bővítés útja (naplósor + fordított mozgatás).
+
+### 12.7 Metaadat: miért csak a generált PDF-en
+
+Felmerült, hogy a metaadat vegye át az azonosítást. A kód ma **szándékosan kitörli** a metaadatot (`CLEAN_META`), és csak a `title`-t tölti a fájlnévből; a `subject`/`keywords` szabad. Egy mérésen alapuló részlet: a `shrink_steps` újra megnyitja és visszaírja a dokumentumot, tehát a metaadat **átéli az 5 MB-os tömörítést**; a `rasterize_doc` viszont újra `CLEAN_META`-t tesz rá, ott elveszik.
+
+Amiért mégis csak egy ponton használjuk:
+
+- **A szkennelt fájlon nincs semmi** — épp az, amit osztályozni akarunk, a szkennerből jön. A bélyeg tehát nem azonosít, csak **kizár**: a hiánya a jel.
+- **A nyomtatás–aláírás–szkennelés kör mindent elveszít.** A docx metaadatából papír lesz; a docx-bélyeg ezért nem ér semmit, amit a `D`/`E` jel ne adna meg.
+- **Az Iktató bájtazonos másolatot készít és ellenőriz** (`_copy_verified`, `write_pdf_verified`). Iktatáskori bélyegzés ezt a mért tulajdonságot törné fel.
+- **Ránézésre nem látszik:** a PDF `keywords` az Intézőben alapból nincs oszlopként. Az átláthatóságot a mappaszerkezet adja, nem a metaadat.
+- **Második igazság kockázata:** ma a fájlnév az egyetlen igazság, az egész felismerés arra épül. Ha a kettő szétcsúszik (átnevezés), el kell dönteni, melyiket hisszük.
+
+Ezért a bélyeg **egyetlen dolgot dönt el**: generált-e a PDF vagy szkennelt (12.6). Ott bizonyíték, és nem lehet átnevezéssel elrontani.
+
+**Ami nagyságrenddel többet adna, de nincs a tervben:** a papírra nyomtatott QR/vonalkód az egyetlen jel, ami átéli a kört — akkor a szkennelt köteget az Összeállító magától szét tudná osztani, és a kézi címkézés nagyrészt elmaradna. Ára: dekóder-dependencia (`zxing-cpp`/`pyzbar`) egy ma kétfüggőségű offline eszközben, plusz mérés, hogy a helyi szkennerbeállítással olvasható-e. Csak mérés után döntendő.
+
+### 12.8 Fázisok
+
+```
+F1    konstansok, célmappa, makedirs, hely-alapú E/F cella, mappalétrehozó gomb
+      → ellenőrzés: --test zöld; kézi kör egy próbadolgozón (iktatás → F,
+        DocGen-fájl → E, gyökérben hagyott PDF → ~)
+F4.5  DocGen: fs-service felújítás (DocGen/TERV-mappaszerkezet.md)   ← blokkoló
+F5    DocGen: célmappa 01_Elokeszitett + bélyeg a generált PDF-en
+F2    migrációs előnézet + mozgatás (a bélyegre épül)
+      → ellenőrzés: migracio_terv önteszt; éles futtatás előnézetből
+F3    arckep szabály-flag + a jelölő az Iktatóban és az Összeállítóban
+      → ellenőrzés: target_subdir mindkét állásra; test/gui.py bővítés
+F4    Arckép fül iktatása
+      → ellenőrzés: GUI-teszt, naplósor, a 01 → fotó → 02 kör végigjátszása
+```
+
+**A sorrend nem cserélhető:** az F5-nek az F2 **előtt** kell lennie, különben a migráció a bélyeg nélküli régi DocGen-kimenetet „szkennelt”-nek látja, és tévesen `02`-be tenné. Amíg az F5 nincs kész, minden új generálás után besorolatlan (`~`) sorok jelennek meg a mátrixban — ez a szigorú jel választott ára.
+
+### 12.9 Tesztterv
+
+- **Önteszt:** a szkennelt fixture átírása 01/02 szerkezetre (ma `who\Mellekletek\utlevel.pdf`-et használ, ami az új rendben `~` lenne); új esetek: hely-osztályozás, `_ok` csak `F`-re, `target_subdir` mindkét jelölőállásra, `backup_existing` a dolgozó gyökerébe, `migracio_terv` besorolás.
+- **`test/gui.py`:** az új jelölő, a mappalétrehozó és a migrációs párbeszéd.
+- **`test/frissit.py`:** a hamis „céges gép” fixture-je kapjon 01/02 szerkezetet — annak igazolására, hogy a frissítő a dolgozói mappákhoz nem nyúl.
+- **`.gitignore`:** új projektfájl nem keletkezik (minden a `pdf-muhely.py`-ba megy), tehát az engedélyező listát nem kell bővíteni. Külön `tools/migracio.py` esetén fel kell venni, különben a klón-próba bukik.
+
+### 12.9.1 Elkészült (2026-09-29) — és amit a megvalósítás megtanított
+
+**F1–F4 kész**, a tervek szerint. Önteszt: 74 → **109**, GUI: 54 → **68**.
+
+Három dolog derült ki menet közben, és mindhárom javítást igényelt a terven túl:
+
+- **A `norm()` szándékosan kitörli az „alairt” szót** (a szabályillesztéshez), tehát az `aláírt` utótagot **soha nem** találná meg. A migráció ezért `strip_accents`-et használ. Az első változat emiatt *minden* PDF-et a feltölthetőbe tett volna — az önteszt kapta el.
+- **Az előkészített + aláírt példány nem „több PDF”.** A `duplicates` eddig minden azonos típusú PDF-et ütközésnek vett; a 01/02 szerkezetben viszont az `EF` állapot a **normális**. A `duplicates` innentől csak a `02_Feltoltheto`-n belüli többes példányt jelzi — feltöltéskor csak ott van mit eldönteni.
+- **A „helyben tömörítés” útja a forrás = cél egyezésen áll** (Áttekintő → jobb klikk → tömörítés az Iktatóban). Ez csak akkor működik, ha a túlméretes PDF már a `02_Feltoltheto`-ban van — ott a célmappa ugyanaz. A GUI-teszt fixture-je ezért a 02-be került; a gyökérben hagyott túlméretes PDF-et előbb be kell sorolni.
+
+**A bizonytalan migrációs eset iránya a terv-ellenőrzésen javult** `02`-ről `01`-re (12.6), mielőtt egy sor kód is készült volna.
+
+### 12.10 Amit szándékosan nem építünk
+
+- Nincs beállítható mappanév — a két név konstans.
+- Nincs undó a migrációra (az előnézet a védelem).
+- Nincs harmadik mappa (`00_Egyeb`) a fel nem ismert fájloknak.
+- Nincs általános 01/02 célválasztó az iktatásban — csak a formanyomtatvány jelölője. Egy ott hagyott kapcsoló csendben kivenné az iratot a beadhatóságból.
+- Nincs docx-metaadat és nincs iktatáskori bélyegzés (12.7).
