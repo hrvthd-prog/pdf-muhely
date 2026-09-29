@@ -203,6 +203,28 @@ try:
     pump(0.2)
     ck("mozgatás nélkül semmi nem változott",
        os.path.isfile(os.path.join(lapos, "Lapos Lajos Útlevél aláírt.pdf")))
+
+    # Munkamappa-kapu: egy nem dolgozói almappa képeit NEM mozgatja
+    idegen = mkdir(root, "nyaralas 2026")
+    empty_pdf(os.path.join(idegen, "nem-irat.pdf"))
+    open(os.path.join(idegen, "IMG_0001.jpg"), "wb").close()
+    att.refresh()
+    pump(0.2)
+    att._open_tidy()
+    pump(0.2)
+    tidy2 = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
+    labels2 = " ".join(w.cget("text") for w in tidy2.winfo_children()
+                       if w.winfo_class() == "TLabel")
+    body2 = [w for w in tidy2.winfo_children() if w.winfo_class() == "Text"]
+    ck("a kapu jelzi a kihagyott, nem dolgozói mappát",
+       "nyaralas 2026" in labels2 and "kihagyok" in labels2, labels2[:200])
+    ck("a kihagyott mappa nincs a mozgatási előnézetben",
+       bool(body2) and "IMG_0001.jpg" not in body2[0].get("1.0", "end"))
+    tidy2.destroy()
+    pump(0.2)
+    ck("a kép a helyén maradt",
+       os.path.isfile(os.path.join(idegen, "IMG_0001.jpg")))
+    shutil.rmtree(idegen)
     done, errs = pm.migracio_vegrehajt(lapos, pm.migracio_terv(lapos, att.rules))
     ck("a rendezés a 02-be teszi az aláírt iratot",
        (done, errs) == (1, []) and

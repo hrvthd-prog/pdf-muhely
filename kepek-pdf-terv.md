@@ -433,6 +433,18 @@ Előnézetes egyszeri eszköz, ugyanabban a párbeszédben, mint a mappalétreho
 
 A besorolás tiszta függvény (`migracio_terv(folder, rules) -> [(rel, cél|None, indok)]`), ezért öntesztelhető; a mozgatás `os.replace` + **előzetes** `check_path_len` (nem közben). **Visszavonás nincs** — egyszeri eszköz, a védelem az előnézet; `ponytail:` kommenttel jelölve, hogy ez tudatos, és mi a bővítés útja (naplósor + fordított mozgatás).
 
+#### 12.6.1 A munkamappa-kapu (2026-09-29, utólagos kérdésből)
+
+A felhasználó rákérdezett, épült-e a kiválasztott mappa **ellenőrzése** — és nem épült. Ez valódi hiányosság volt: a `_pick_folder` bármit elfogad, a Rendezés pedig a kiválasztott mappa **minden** almappájára hatott. Mivel a képeket szabály-illesztés **nélkül** sorolja be (az arckép jellemzően nem illeszkedik irattípusra), egy tévesen kiválasztott munkamappában — Letöltések, képmappa — az összes kép elmozdult volna, visszavonhatatlanul.
+
+**Nem globális heurisztika került be, hanem mappánkénti kapu** (`is_worker_folder`). A globális „az almappák többsége dolgozó-szerű” változat két okból rosszabb: a névforma-vizsgálat könnyen téved (a `Dolgozó 00` alakú tesztmappa és az `Adobe Premiere Pro` is elbukna/átmenne), és egy jó munkamappában sok friss, üres mappa mellett tévesen blokkolna.
+
+A kapu három jelet fogad el: van már 01/02 · van felismert irat · teljesen üres (frissen létrehozott mappa, nincs is mit mozgatni). A többi almappa **kimarad**, felsorolva; ha egy sem felel meg, a párbeszéd nem engedi a mozgatást, csak a kiválasztott útvonalat mutatja. A „Csak a mappák létrehozása” is ugyanerre a szűkített körre hat.
+
+**A képek feltétel nélküli besorolása maradt** (a felhasználó döntése): a dolgozói mappában lévő kép definíció szerint nyersanyag, akárhogy hívják — így a rosszul elnevezett arckép is a helyére kerül, és ezt a kapu önmagában elég biztonságossá teszi.
+
+Önteszt: +7 eset (`MUNKAMAPPA-KAPU`), köztük az is, hogy a kapu **nélkül** a képek valóban elmozdulnának — egy ellenőrzés, ami nem tud bukni, semmit nem ér. GUI: +3 eset.
+
 ### 12.7 Metaadat: miért csak a generált PDF-en
 
 Felmerült, hogy a metaadat vegye át az azonosítást. A kód ma **szándékosan kitörli** a metaadatot (`CLEAN_META`), és csak a `title`-t tölti a fájlnévből; a `subject`/`keywords` szabad. Egy mérésen alapuló részlet: a `shrink_steps` újra megnyitja és visszaírja a dokumentumot, tehát a metaadat **átéli az 5 MB-os tömörítést**; a `rasterize_doc` viszont újra `CLEAN_META`-t tesz rá, ott elveszik.
@@ -476,7 +488,7 @@ F4    Arckép fül iktatása
 
 ### 12.9.1 Elkészült (2026-09-29) — és amit a megvalósítás megtanított
 
-**F1–F4 kész**, a tervek szerint. Önteszt: 74 → **109**, GUI: 54 → **68**.
+**F1–F4 kész**, a tervek szerint. Önteszt: 74 → **116**, GUI: 54 → **71** (a munkamappa-kapuval együtt, 12.6.1).
 
 Három dolog derült ki menet közben, és mindhárom javítást igényelt a terven túl:
 
