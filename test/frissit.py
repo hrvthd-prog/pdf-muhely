@@ -69,7 +69,11 @@ try:
     ir(cel, "pdf-muhely.py", "print('RÉGI verzió')")                   # frissülnie kell
     ir(cel, "verzio.json", '{"verzio": "1.5", "datum": "2026-09-01"}\n')
     ir(cel, "attekinto-szabalyok.json", '{"rules": "SAJÁT, kézzel hangolt"}')  # SOHA nem írható felül
-    ir(cel, "Kiss Anna/Kiss Anna Útlevél.pdf", "éles irat")             # SOHA nem törölhető
+    # A dolgozói mappa a két alkönyvtárral, ahogy élesben van — a frissítő ezekhez
+    # sem nyúlhat, és a ZIP-ben nincsenek benne.
+    ir(cel, "Kiss Anna/02_Feltoltheto/Kiss Anna Útlevél aláírt.pdf", "éles irat")
+    ir(cel, "Kiss Anna/01_Elokeszitett/Kiss Anna Meghatalmazás.docx", "nyomtatásra vár")
+    ir(cel, "Kiss Anna/.eredeti/Kiss Anna Útlevél aláírt.pdf", "előző példány")
     ir(cel, "iktato-naplo.csv", "időbélyeg;forrás")                     # SOHA nem törölhető
     ir(cel, "regi-segedfajl.txt", "ez már nincs a repóban")             # nem törölhető
     os.makedirs(os.path.join(cel, "tools"))
@@ -95,8 +99,12 @@ try:
     print("[Amihez nem szabad nyúlni]")
     ck("a SAJÁT szabályfájl megmaradt — a ZIP-beli alap NEM írta felül",
        "SAJÁT" in olvas(cel, "attekinto-szabalyok.json"), olvas(cel, "attekinto-szabalyok.json"))
-    ck("a dolgozói mappa és irata megvan",
-       olvas(cel, "Kiss Anna/Kiss Anna Útlevél.pdf") == "éles irat")
+    ck("a feltölthető irat megvan",
+       olvas(cel, "Kiss Anna/02_Feltoltheto/Kiss Anna Útlevél aláírt.pdf") == "éles irat")
+    ck("az előkészített irat megvan",
+       olvas(cel, "Kiss Anna/01_Elokeszitett/Kiss Anna Meghatalmazás.docx") == "nyomtatásra vár")
+    ck("a dolgozó .eredeti mentése megvan",
+       olvas(cel, "Kiss Anna/.eredeti/Kiss Anna Útlevél aláírt.pdf") == "előző példány")
     ck("a napló megvan", os.path.exists(os.path.join(cel, "iktato-naplo.csv")))
     ck("a repóból kikerült fájlt nem törli", os.path.exists(os.path.join(cel, "regi-segedfajl.txt")))
     ck("a védett .eredeti mappába nem írt", not os.path.exists(os.path.join(cel, ".eredeti")))
