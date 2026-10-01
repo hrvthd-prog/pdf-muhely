@@ -13,6 +13,7 @@ import os
 import re
 import csv
 import sys
+import hashlib
 import json
 import math
 import shutil
@@ -299,11 +300,46 @@ def rasterize_doc(doc, dpi: int, pages=None):
     return flat
 
 
-def open_image_pdf(path, crop=None):
+def level_lut(brightness: int = 0, contrast: int = 0) -> bytes:
+    """256 bájtos átalakító tábla a fényerőhöz és a kontraszthoz (-100..100).
+    Táblával dolgozunk, mert a `bytes.translate()` C-sebességgel alkalmazza —
+    pixelenkénti Python-ciklus egy 2000×3000-es fotón másodpercekig tartana."""
+    br = max(-100, min(100, int(brightness)))
+    ct = max(-100, min(100, int(contrast)))
+    f = (100.0 + ct) / 100.0 if ct >= 0 else 100.0 / (100.0 - ct)
+    off = br * 1.28
+    return bytes(max(0, min(255, round((i - 128) * f + 128 + off))) for i in range(256))
+
+
+def apply_levels(pix, lut: bytes):
+    """Új pixmap a táblával átszámolt képpontokkal (alfa nélkül)."""
+    if pix.alpha:
+        pix = pymupdf.Pixmap(pix, 0)
+    cs = pymupdf.csGRAY if pix.n == 1 else pymupdf.csRGB
+    return pymupdf.Pixmap(cs, pix.width, pix.height,
+                          bytes(pix.samples).translate(lut), False)
+
+
+def image_px_scale(doc) -> float:
+    """px/pt a beágyazott kép valódi felbontásából. A get_pixmap() alap 72 DPI-je
+    a szkennelt fotó felbontásának egy részét eldobná."""
+    try:
+        imgs = doc[0].get_images()
+        if imgs:
+            w = doc.extract_image(imgs[0][0])["width"]
+            return max(1.0, w / doc[0].mediabox.width)
+    except Exception:
+        pass
+    return 96.0 / 72.0                     # a convert_to_pdf szokásos aránya
+
+
+def open_image_pdf(path, crop=None, levels=None):
     """A kép egylapos PDF-ként (így helyezhető, forgatható, méretezhető).
     `crop`: a megtartandó rész a lap koordinátáiban — elég a cropbox szűkítése,
     mert a lap rect-je ezzel együtt szűkül, és a show_pdf_page is csak ezt teszi
-    le. A kép fájlja így soha nem változik, a vágás visszavonható."""
+    le. A kép fájlja így soha nem változik, a vágás visszavonható.
+    `levels`: (fényerő, kontraszt) — ez viszont ÚJRAKÓDOLJA a képet (a képpontokat
+    kell átszámolni), ezért csak akkor fut, ha tényleg állítottak rajta."""
     src = pymupdf.open(path)
     try:
         doc = pymupdf.open("pdf", src.convert_to_pdf())
@@ -313,18 +349,30 @@ def open_image_pdf(path, crop=None):
         r = pymupdf.Rect(crop) & doc[0].rect          # a lapon kívüli részt levágja
         if r.width > 1 and r.height > 1:
             doc[0].set_cropbox(r)
-    return doc
+    if not levels or not any(levels):
+        return doc
+    try:
+        z = image_px_scale(doc)                       # natív felbontáson számolunk
+        pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(z, z))
+        jpeg = apply_levels(pix, level_lut(*levels)).tobytes("jpeg", jpg_quality=92)
+        img = pymupdf.open("jpg", jpeg)
+        try:
+            out = pymupdf.open("pdf", img.convert_to_pdf())
+        finally:
+            img.close()
+    except Exception:
+        return doc                                    # szintezés nélkül, de működik
+    doc.close()
+    return out
 
 
 class CropDialog(tk.Toplevel):
     """Minimális képszerkesztő: húzz téglalapot a megtartandó rész köré.
-    Csak vágás van — a szkennelt arckép szegélyének leszedéséhez ez kell.
-    ponytail: fényerő/kontraszt nincs (a forgatás az elhelyezésnél amúgy megvan);
-    ha kell, ugyanebben a dialógusban a pixmapra szűrő tehető."""
+    Vágás és fényerő/kontraszt; forgatni az elhelyezésnél amúgy lehet."""
 
     MAX_PX = 760                       # a nagyobb oldal legfeljebb ennyi képpont
 
-    def __init__(self, master, path, crop, on_crop):
+    def __init__(self, master, path, crop, on_crop, levels=None):
         super().__init__(master)
         self.title("Arckép körülvágása — " + os.path.basename(path))
         self.transient(master.winfo_toplevel())
@@ -339,6 +387,9 @@ class CropDialog(tk.Toplevel):
         self.msg = tk.StringVar(value="")
         self.box = None                                # (x0, y0, x1, y1) a vásznon
         self._from = None
+        self.base_pix = pix                            # a szintezés nélküli előnézet
+        self.br = tk.IntVar(value=levels[0] if levels else 0)
+        self.ct = tk.IntVar(value=levels[1] if levels else 0)
 
         ttk.Label(self, text="Húzz téglalapot a megtartandó rész köré. "
                              "A kép fájlja nem változik.").pack(anchor="w", padx=10,
@@ -346,24 +397,65 @@ class CropDialog(tk.Toplevel):
         self.canvas = tk.Canvas(self, width=self.w, height=self.h, bg="#666",
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack(padx=10)
-        self.canvas.create_image(0, 0, anchor="nw", image=self.img)
+        self.canvas.create_image(0, 0, anchor="nw", image=self.img, tags="img")
         self.canvas.bind("<ButtonPress-1>", lambda e: setattr(self, "_from", (e.x, e.y)))
         self.canvas.bind("<B1-Motion>", self._motion)
         self.canvas.bind("<ButtonRelease-1>", self._motion)
         ttk.Label(self, textvariable=self.msg).pack(anchor="w", padx=10, pady=4)
 
+        lv = ttk.Frame(self)
+        lv.pack(fill="x", padx=10)
+        for i, (txt, var) in enumerate((("Fényerő", self.br), ("Kontraszt", self.ct))):
+            ttk.Label(lv, text=txt).grid(row=i, column=0, sticky="w")
+            ttk.Scale(lv, from_=-100, to=100, variable=var, length=240,
+                      command=lambda _e: self._levels_changed()).grid(row=i, column=1,
+                                                                      sticky="ew", padx=6)
+            ttk.Label(lv, textvariable=var, width=5).grid(row=i, column=2, sticky="w")
+        lv.columnconfigure(1, weight=1)
+        ttk.Button(lv, text="Szintek alaphelyzetbe", command=self._levels_reset).grid(
+            row=0, column=3, rowspan=2, padx=8)
+
         foot = ttk.Frame(self)
         foot.pack(fill="x", padx=10, pady=(0, 10))
         self.btn = ttk.Button(foot, text="Körülvág", command=self._apply, state="disabled")
         self.btn.pack(side="left")
-        ttk.Button(foot, text="Teljes kép",
-                   command=lambda: self._done(None)).pack(side="left", padx=6)
+        ttk.Button(foot, text="Teljes kép, alaphelyzet",
+                   command=self._reset_all).pack(side="left", padx=6)
         ttk.Button(foot, text="Mégsem", command=self.destroy).pack(side="right")
         if crop:
             self.box = tuple(v * self.z for v in (crop.x0, crop.y0, crop.x1, crop.y1))
             self._draw()
+        if levels and any(levels):
+            self._levels_changed()
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self._apply())
+
+    # -- fényerő / kontraszt --
+    def _levels(self):
+        v = (int(self.br.get()), int(self.ct.get()))
+        return v if any(v) else None
+
+    def _levels_changed(self):
+        """Élő előnézet: a tábla a KICSI (megjelenített) pixmapra fut, ezért
+        azonnali — a natív felbontású átszámolás csak az alkalmazásnál kell."""
+        lv = self._levels()
+        pix = self.base_pix if lv is None else apply_levels(self.base_pix, level_lut(*lv))
+        self.img = tkimg(pix, "ppm")
+        self.canvas.delete("img")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.img, tags="img")
+        self.canvas.tag_lower("img")
+        if self.box is None:                   # vágás nélkül is lehet alkalmazni
+            self.btn.configure(text="Alkalmaz",
+                               state="normal" if lv else "disabled")
+
+    def _levels_reset(self):
+        self.br.set(0)
+        self.ct.set(0)
+        self._levels_changed()
+
+    def _reset_all(self):
+        self.on_crop(None, None)
+        self.destroy()
 
     def destroy(self):
         if self.doc:
@@ -380,6 +472,7 @@ class CropDialog(tk.Toplevel):
         self._draw()
 
     def _draw(self):
+        self.btn.configure(text="Körülvág")
         x0, y0, x1, y1 = self.box
         self.canvas.delete("box")
         self.canvas.create_rectangle(x0, y0, x1, y1, outline=COL_CROP, width=2, tags="box")
@@ -391,14 +484,16 @@ class CropDialog(tk.Toplevel):
         self.btn.configure(state="normal" if ok else "disabled")
 
     def _apply(self):
-        if not self.box:
+        if not self.box:                      # csak szintezés, vágás nélkül
+            if self._levels():
+                self._done(None)
             return
         x0, y0, x1, y1 = (v / self.z for v in self.box)
         if x1 - x0 > 5 and y1 - y0 > 5:
             self._done(pymupdf.Rect(x0, y0, x1, y1))
 
     def _done(self, rect):
-        self.on_crop(rect)
+        self.on_crop(rect, self._levels())
         self.destroy()
 
 
@@ -474,6 +569,7 @@ class PlacerTab(ttk.Frame):
         self.app = app
         self.src_path = self.doc = self.imgpdf = self.img_path = None
         self.img_crop = None             # a körülvágás a kép lapkoordinátáiban
+        self.img_levels = None           # (fényerő, kontraszt) vagy None
         self.page_no = 0
         self.base_scale = 1.0
         self.max_scale = 400.0
@@ -510,7 +606,7 @@ class PlacerTab(ttk.Frame):
         self.imgs.pack(fill="both", expand=True, pady=(8, 0))
         self.img_lbl = ttk.Label(left, text="(nincs kép)", foreground="#555", wraplength=320)
         self.img_lbl.pack(anchor="w", pady=(4, 0))
-        ttk.Button(left, text="Körülvágás…",
+        ttk.Button(left, text="Körülvágás, fényerő…",
                    command=self._crop_dialog).pack(anchor="w", pady=(2, 0))
 
         c = ttk.LabelFrame(left, text="Igazítás")
@@ -745,22 +841,22 @@ class PlacerTab(ttk.Frame):
         self.after(50, self._render_all)
 
     def _load_img(self, path):
-        self.img_crop = None             # új kép: a korábbi vágás nem öröklődik
+        self.img_crop = self.img_levels = None   # új kép: a korábbi állítás nem öröklődik
         self._set_img(path)
 
     def _crop_dialog(self):
         if not self.img_path:
             messagebox.showwarning("Hiányzik", "Előbb válassz arcképet.")
             return
-        CropDialog(self, self.img_path, self.img_crop, self._apply_crop)
+        CropDialog(self, self.img_path, self.img_crop, self._apply_crop, self.img_levels)
 
-    def _apply_crop(self, rect):
-        self.img_crop = rect
+    def _apply_crop(self, rect, levels=None):
+        self.img_crop, self.img_levels = rect, levels
         self._set_img(self.img_path)
 
     def _set_img(self, path):
         try:
-            imgpdf = open_image_pdf(path, self.img_crop)
+            imgpdf = open_image_pdf(path, self.img_crop, self.img_levels)
         except Exception as e:
             messagebox.showerror("Hiba", f"A kép nem tölthető be:\n{e}")
             return
@@ -770,7 +866,8 @@ class PlacerTab(ttk.Frame):
         r = imgpdf[0].rect
         self.img_lbl.configure(
             text=f"{os.path.basename(path)}  ({r.width:.0f}×{r.height:.0f} pt)" +
-                 (" · körülvágva" if self.img_crop else ""))
+                 (" · körülvágva" if self.img_crop else "") +
+                 (" · szintezve" if self.img_levels else ""))
         self.scale.set(100.0)
         self.angle.set(0.0)
         self._center()
@@ -3071,6 +3168,97 @@ def migracio_vegrehajt(folder: str, terv: list) -> tuple:
     return done, errs
 
 
+def file_sha1(path: str) -> str:
+    """Tartalom-ujjlenyomat: ugyanaz a szkennelt PDF két néven is lehet."""
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def audit_folder(parent: str, rules: list, depth: int = 2, on_step=None) -> dict:
+    """A munkamappa minden dolgozói PDF-jének EGYSZERI átnézése: bélyeg és
+    tartalom (13.6). Ez az egyetlen hely, ahol minden PDF-et megnyitunk — a
+    mátrix szándékosan csak a név szerint fel nem ismerteket nézi meg.
+    -> {"stampable": [(dolgozó, rel, út, szabály, alkönyvtár)],
+        "unknown": [(dolgozó, rel)],            # se bélyeg, se felismert név
+        "foreign": [(dolgozó, rel, bélyeg dolgozója)],
+        "mismatch": [(dolgozó, rel, bélyeg típusa, név szerinti típus)],
+        "dupes": [[(dolgozó, rel), …]], "seen": n}"""
+    res = {"stampable": [], "unknown": [], "foreign": [], "mismatch": [],
+           "dupes": [], "seen": 0}
+    by_hash = {}
+    for who in worker_dirs(parent):
+        folder = os.path.join(parent, who)
+        for rel in walk_files(folder, depth):
+            if is_noise(rel) or not rel.lower().endswith(".pdf"):
+                continue
+            path = os.path.join(folder, rel)
+            res["seen"] += 1
+            if on_step and res["seen"] % 20 == 0:
+                on_step(res["seen"])
+            st = read_stamp(path)
+            rule, amb = match_rule(rel, rules)
+            sub = rel.split(os.sep)[0] if os.sep in rel else ""
+            if not st:
+                # Utólag csak ott bélyegezhetünk, ahol a NÉV és a HELY együtt
+                # megadja, mit írjunk — találgatva nem bélyegzünk (13.6).
+                if rule is not None and not amb and sub in WORK_DIRS:
+                    res["stampable"].append((who, rel, path, rule, sub))
+                else:
+                    res["unknown"].append((who, rel))
+            else:
+                if strip_accents(st.get("dolgozo", "")) != strip_accents(who):
+                    res["foreign"].append((who, rel, st.get("dolgozo") or "?"))
+                if rule is not None and st.get("szabaly") and st["szabaly"] != rule.id:
+                    res["mismatch"].append((who, rel, st.get("tipus") or "?", rule.name))
+            try:
+                by_hash.setdefault(file_sha1(path), []).append((who, rel))
+            except OSError:
+                pass
+    res["dupes"] = sorted((v for v in by_hash.values() if len(v) > 1),
+                          key=lambda g: g[0])
+    return res
+
+
+def stamp_missing(items) -> tuple:
+    """A bélyegezhető iratok utólagos bélyegzése. -> (sikeres, [(út, hiba)])"""
+    ok, errs = 0, []
+    for who, rel, path, rule, sub in items:
+        if stamp_pdf_file(path, who, rule.name, rule.id, sub):
+            ok += 1
+        else:
+            errs.append((os.path.join(who, rel), "a bélyegzés nem sikerült"))
+    return ok, errs
+
+
+def text_rule(path: str, page: int, rules: list):
+    """Egy oldal szövegrétegéből a szabály (None, ha nincs szöveg vagy nem
+    egyértelmű). Ugyanaz a score(), ami a fájlneveket illeszti — csak az oldal
+    ELEJÉT nézzük (ott van a cím), különben egy hosszú irat minden szabályra
+    rálicitál. Szkennelt, OCR nélküli lapon nincs szövegréteg: ott None."""
+    if not path.lower().endswith(".pdf"):
+        return None
+    try:
+        d = pymupdf.open(path)
+        try:
+            txt = d[page].get_text() if 0 <= page < d.page_count else ""
+        finally:
+            d.close()
+    except Exception:
+        return None
+    if len(txt.strip()) < 40:
+        return None
+    nn = norm(txt[:1500])
+    rows = sorted(((score(nn, r), r) for r in rules), key=lambda x: -x[0])
+    if not rows or rows[0][0] <= 0:
+        return None
+    if len(rows) > 1 and rows[1][0] == rows[0][0]:
+        return None                       # holtverseny: ne tippeljünk
+    return rows[0][1]
+
+
 def open_path(path: str):
     try:
         if sys.platform == "win32":
@@ -3535,6 +3723,10 @@ class AttekintoTab(ttk.Frame):
                    command=lambda: open_path(self.parent_dir)).pack(side="left")
         ttk.Button(foot, text="Rendezés…",
                    command=self._open_tidy).pack(side="left", padx=6)
+        ttk.Button(foot, text="Ellenőrzés…",
+                   command=self._open_audit).pack(side="left")
+        ttk.Button(foot, text="Tömörítés…",
+                   command=self._open_shrink).pack(side="left", padx=6)
         ttk.Label(foot, textvariable=self.summary).pack(side="left", padx=16)
         self.msg_lbl = ttk.Label(foot, textvariable=self.msg)
         self.msg_lbl.pack(side="right")
@@ -4397,6 +4589,190 @@ class AttekintoTab(ttk.Frame):
         b.focus_set()
         win.bind("<Escape>", lambda e: win.destroy())
 
+    # ---------------- ellenőrzés és utólagos bélyegzés ----------------
+    def _open_audit(self):
+        """Minden PDF egyszeri átnézése: hol nincs bélyeg, hol idegen, hol tér el
+        a névtől, és mi a tartalom szerint duplikátum (13.6)."""
+        if not self.rows:
+            self._info("Nincs beolvasott mappa.", warn=True)
+            return
+        self._info("Ellenőrzés…")
+        self.update_idletasks()
+        try:
+            res = audit_folder(self.parent_dir, self.rules,
+                               on_step=lambda k: (self._info(f"Ellenőrzés… {k} PDF"),
+                                                  self.update_idletasks()))
+        except OSError as e:
+            self._info(f"Az ellenőrzés nem futott le: {e}", warn=True)
+            return
+        self._info(f"{res['seen']} PDF átnézve.", ok=True)
+
+        win = tk.Toplevel(self)
+        win.title("Ellenőrzés és utólagos bélyegzés")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        ttk.Label(win, wraplength=640, justify="left",
+                  text=f"{res['seen']} PDF átnézve. "
+                       f"{len(res['stampable'])} bélyegezhető utólag, "
+                       f"{len(res['foreign'])} idegen bélyeg, "
+                       f"{len(res['mismatch'])} eltérő típus, "
+                       f"{len(res['dupes'])} tartalom-azonos csoport.").pack(
+            anchor="w", padx=14, pady=(14, 6))
+
+        txt = tk.Text(win, width=88, height=22, wrap="none")
+        txt.pack(fill="both", expand=True, padx=14)
+
+        def section(title, lines):
+            if not lines:
+                return
+            txt.insert(tk.END, title + "\n")
+            for ln in lines:
+                txt.insert(tk.END, "   " + ln + "\n")
+            txt.insert(tk.END, "\n")
+
+        section(f"BÉLYEGEZHETŐ UTÓLAG ({len(res['stampable'])}) — a névből és a helyből",
+                [f"{w}\\{rel}  →  {rule.name} / {sub}"
+                 for w, rel, _p, rule, sub in res["stampable"][:200]])
+        section(f"IDEGEN BÉLYEG ({len(res['foreign'])}) — más dolgozó irata?",
+                [f"{w}\\{rel}  →  a bélyeg szerint: {other}"
+                 for w, rel, other in res["foreign"]])
+        section(f"A BÉLYEG ÉS A NÉV ELTÉR ({len(res['mismatch'])}) — a név az igazság",
+                [f"{w}\\{rel}  →  bélyeg: {bt} · név: {nt}"
+                 for w, rel, bt, nt in res["mismatch"]])
+        section(f"TARTALOM-AZONOS ({len(res['dupes'])} csoport)",
+                [" = ".join(f"{w}\\{rel}" for w, rel in g) for g in res["dupes"]])
+        section(f"BÉLYEG ÉS FELISMERT NÉV SINCS ({len(res['unknown'])}) — kézzel",
+                [f"{w}\\{rel}" for w, rel in res["unknown"][:60]])
+        if txt.index("end-1c") == "1.0":
+            txt.insert(tk.END, "Minden irat bélyegzett, és nincs ütközés.\n")
+        txt.configure(state="disabled")
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=12)
+
+        def do_stamp():
+            ok, errs = stamp_missing(res["stampable"])
+            win.destroy()
+            self.refresh()
+            if errs:
+                messagebox.showwarning(
+                    "Bélyegzés — részben",
+                    f"{ok} irat bélyegezve, {len(errs)} nem:\n\n" +
+                    "\n".join(f"{a}: {b}" for a, b in errs[:8]))
+            self._info(f"{ok} irat utólag bélyegezve." +
+                       (f" {len(errs)} hiba." if errs else ""),
+                       ok=not errs, warn=bool(errs))
+
+        if res["stampable"]:
+            ttk.Button(row, text=f"Bélyegzés ({len(res['stampable'])} irat)",
+                       command=do_stamp).pack(side="left")
+        ttk.Button(row, text="Bezárás", command=win.destroy).pack(side="right")
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ---------------- kötegelt tömörítés ----------------
+    def _open_shrink(self):
+        """Minden 5 MB feletti PDF tömörítése egy körben. Az előző példány a
+        dolgozó .eredeti mappájába kerül, és naplósort is kap."""
+        jobs = [(r.name, r.folder, rel, sz)
+                for r in self.rows for rel, sz in sorted(r.big.items())]
+        if not jobs:
+            self._info("Nincs 5 MB feletti PDF.", ok=True)
+            return
+        win = tk.Toplevel(self)
+        win.title("Kötegelt tömörítés")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        ttk.Label(win, wraplength=620, justify="left",
+                  text=f"{len(jobs)} PDF van a feltöltési korlát ({mb(UPLOAD_LIMIT)}) "
+                       f"fölött. A tömörítés csak a beágyazott képeket kódolja újra, "
+                       f"lépcsőnként; az előző példány a dolgozó {BACKUP_DIR} "
+                       f"mappájába kerül.").pack(anchor="w", padx=14, pady=(14, 6))
+        txt = tk.Text(win, width=80, height=14, wrap="none")
+        txt.pack(fill="both", expand=True, padx=14)
+        for who, _f, rel, sz in jobs:
+            txt.insert(tk.END, f"   {who}\\{rel} — {mb(sz)}\n")
+        txt.configure(state="disabled")
+        lbl = tk.StringVar(value="")
+        ttk.Label(win, textvariable=lbl).pack(anchor="w", padx=14, pady=(6, 0))
+        pb = ttk.Progressbar(win, maximum=len(jobs))
+        pb.pack(fill="x", padx=14, pady=4)
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=12)
+        self._shrink_stop = False
+        go = ttk.Button(row, text=f"Tömörítés ({len(jobs)} PDF)")
+        go.pack(side="left")
+        ttk.Button(row, text="Mégsem",
+                   command=lambda: (setattr(self, "_shrink_stop", True),
+                                    win.destroy())).pack(side="right")
+        go.configure(command=lambda: (go.state(["disabled"]),
+                                      self._shrink_jobs(jobs, win, pb, lbl)))
+        win.bind("<Escape>", lambda e: (setattr(self, "_shrink_stop", True),
+                                        win.destroy()))
+
+    def _shrink_jobs(self, jobs, win, pb, lbl, i=0, acc=None):
+        """Fájlonként egy shrink_later-lánc: a felület a lépcsők között él."""
+        acc = acc if acc is not None else {"ok": 0, "fail": [], "big": []}
+        if self._shrink_stop or i >= len(jobs):
+            if win.winfo_exists():
+                win.destroy()
+            self.refresh()
+            if acc["fail"]:
+                messagebox.showwarning(
+                    "Tömörítés — részben",
+                    f"{acc['ok']} PDF tömörítve, {len(acc['fail'])} nem:\n\n" +
+                    "\n".join(f"{a}: {b}" for a, b in acc["fail"][:8]))
+            if acc["big"]:
+                messagebox.showwarning(
+                    "A korlát fölött maradt",
+                    "A legerősebb lépcső után is a korlát fölött maradt:\n\n" +
+                    "\n".join(acc["big"][:8]) +
+                    "\n\nÉrdemes kevesebb oldalra bontani (Összeállító).")
+            self._info(f"{acc['ok']} PDF tömörítve." +
+                       (f" {len(acc['fail'])} hiba." if acc["fail"] else ""),
+                       ok=not acc["fail"], warn=bool(acc["fail"]))
+            return
+        who, folder, rel, sz = jobs[i]
+        path = os.path.join(folder, rel)
+        pb.configure(value=i)
+        lbl.set(f"{i + 1}/{len(jobs)}  {who}: {os.path.basename(rel)}")
+
+        def nxt():
+            self.after(1, lambda: self._shrink_jobs(jobs, win, pb, lbl, i + 1, acc))
+
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            d = pymupdf.open(path)
+            pages = d.page_count
+            d.close()
+        except Exception as e:
+            acc["fail"].append((f"{who}\\{rel}", str(e)[:80]))
+            nxt()
+            return
+
+        def done(out, step, err):
+            try:
+                if err:
+                    raise err
+                backup_existing(path)                  # a Visszavonás helye marad
+                write_pdf_verified(out, path, pages)
+                acc["ok"] += 1
+                if len(out) > UPLOAD_LIMIT:
+                    acc["big"].append(f"{who}\\{rel} — {mb(len(out))}")
+                r0, _ = match_rule(rel, self.rules)
+                log_row(self.parent_dir, path,
+                        os.path.join(who, os.path.dirname(rel)),
+                        os.path.basename(rel), r0.name if r0 else "",
+                        f"TOMORITVE {mb(sz)}->{mb(len(out))}")
+            except Exception as e:
+                acc["fail"].append((f"{who}\\{rel}", str(e)[:80]))
+            nxt()
+
+        shrink_later(self, data, on_done=done,
+                     on_step=lambda dpi, q: lbl.set(
+                         f"{i + 1}/{len(jobs)}  {who}: {os.path.basename(rel)} "
+                         f"— {dpi} DPI, Q{q}"))
+
     # ---------------- CSV ----------------
     def _export_csv(self):
         if not self.rows:
@@ -4820,6 +5196,8 @@ class ComposerTab(ttk.Frame):
         row.pack(fill="x", padx=6, pady=(2, 6))
         ttk.Button(row, text="0 · címke le", command=lambda: self._label(None)).pack(side="left")
         ttk.Button(row, text="Típusok…", command=self._edit_types).pack(side="right")
+        ttk.Button(p, text="Címke a szövegből (ahol van)",
+                   command=self._label_from_text).pack(fill="x", padx=6, pady=(0, 6))
 
         o = ttk.LabelFrame(right, text="Kimenet")
         o.pack(fill="both", expand=True)
@@ -4966,6 +5344,30 @@ class ComposerTab(ttk.Frame):
         self._refresh_out()
         if self.viewer and len(self.sel) == 1:
             self.viewer.show(next(iter(self.sel)), keep_view=True)
+
+    def _label_from_text(self):
+        """A címke nélküli oldalakra a doktípus a SZÖVEGRÉTEGBŐL (DocGen-PDF vagy
+        OCR-es szkenner). Szkennelt, szöveg nélküli lapon nem tud dönteni — azok
+        maradnak kézi címkézésre."""
+        rules = self._rules()
+        hit, miss = 0, 0
+        for it in self.items:
+            if it.doc is not None or it.bad:
+                continue
+            r = text_rule(it.path, it.page, rules)
+            t = next((t for t, rr in self.palette if rr and r and rr.id == r.id), None)
+            if t is None:
+                miss += 1
+                continue
+            if t not in self.docs:
+                self.docs[t] = OutDoc(t, self._default_suffix(t))
+            it.doc = self.docs[t]
+            hit += 1
+        self._redraw()
+        self._refresh_out()
+        self.app.status(f"Szövegréteg: {hit} oldal megcímkézve" +
+                        (f", {miss} oldalon nincs mire támaszkodni (kézzel)."
+                         if miss else "."))
 
     # ---------------- kimenet ----------------
     def _out_docs(self):
@@ -6153,6 +6555,126 @@ def _selftest() -> int:
            pg.rect.width > pg.rect.height and
            out.xref_stream_raw(pg.get_images()[0][0]) == jpeg)
         out.close()
+
+    print("FÉNYERŐ ÉS KONTRASZT")
+    ck("fényerő +40: a középszürke világosodik", level_lut(40, 0)[128] == 179,
+       level_lut(40, 0)[128])
+    ck("fényerő -40: sötétedik", level_lut(-40, 0)[128] == 77, level_lut(-40, 0)[128])
+    ck("a tábla nem fut ki 0..255-ből",
+       level_lut(100, 100)[255] == 255 and level_lut(-100, 100)[0] == 0)
+    ck("kontraszt: a 128 a tengely, a szélek szétnyílnak",
+       level_lut(0, 100)[128] == 128 and level_lut(0, 100)[160] > level_lut(0, 0)[160])
+    ck("kontraszt -100: minden a közép felé", level_lut(0, -100)[0] == 64,
+       level_lut(0, -100)[0])
+    ck("szintezés nélkül a tábla azonosság", level_lut(0, 0) == bytes(range(256)))
+    with tempfile.TemporaryDirectory() as td:
+        ip = os.path.join(td, "arc.jpg")                 # 200×400 px, középszürke
+        with open(ip, "wb") as f:
+            f.write(pymupdf.Pixmap(pymupdf.csRGB, 200, 400, bytes([128]) * 240000,
+                                   False).tobytes("jpeg"))
+        base = open_image_pdf(ip)
+        up = open_image_pdf(ip, None, (40, 0))
+        pb, pu = base[0].get_pixmap(), up[0].get_pixmap()
+        ck("a szintezett kép világosabb, a lap mérete marad",
+           pu.pixel(100, 200)[0] > pb.pixel(100, 200)[0] + 30 and
+           abs(up[0].rect.width - base[0].rect.width) < 1,
+           (pb.pixel(100, 200), pu.pixel(100, 200), up[0].rect))
+        ck("a natív felbontás megmarad (nem a 72 DPI-s alap)",
+           abs(image_px_scale(base) - 200 / base[0].rect.width) < 0.01,
+           image_px_scale(base))
+        vagott = open_image_pdf(ip, pymupdf.Rect(0, 0, 75, 150), (30, 10))
+        ck("vágás és szintezés együtt",
+           abs(vagott[0].rect.width - 75) < 2 and
+           vagott[0].get_pixmap().pixel(10, 10)[0] > 150, vagott[0].rect)
+        for d in (base, up, vagott):
+            d.close()
+
+    print("CÍMKE A SZÖVEGRÉTEGBŐL")
+    with tempfile.TemporaryDirectory() as td:
+        tp = os.path.join(td, "generalt.pdf")
+        d = pymupdf.open()
+        for title in ("Belföldi meghatalmazás", "Szálláshely-igazolás"):
+            pg = d.new_page()                            # cím + törzs, mint egy valódi irat
+            pg.insert_text((72, 100), title, fontsize=20)
+            pg.insert_text((72, 140), "Alulírott az alábbi nyilatkozatot teszem, "
+                                      "a jogkövetkezmények ismeretében.", fontsize=11)
+        d.new_page()                                     # üres: nincs mire támaszkodni
+        d.save(tp)
+        d.close()
+        ck("szövegréteg -> a cím szerinti szabály",
+           (text_rule(tp, 0, RULES).id, text_rule(tp, 1, RULES).id) ==
+           ("meghat", "szalli"),
+           (text_rule(tp, 0, RULES), text_rule(tp, 1, RULES)))
+        ck("szöveg nélküli oldal -> nincs találgatás", text_rule(tp, 2, RULES) is None)
+        ck("rossz oldalszám és nem PDF -> None",
+           text_rule(tp, 9, RULES) is None and text_rule("x.jpg", 0, RULES) is None)
+        sp = os.path.join(td, "szkennelt.pdf")           # kép, szövegréteg nélkül
+        d = pymupdf.open()
+        pg = d.new_page(width=595, height=842)
+        pg.insert_image(pg.rect, stream=pymupdf.Pixmap(
+            pymupdf.csRGB, 60, 80, bytes([200]) * 14400, False).tobytes("jpeg"))
+        d.save(sp)
+        d.close()
+        ck("szkennelt lap (OCR nélkül) -> None", text_rule(sp, 0, RULES) is None)
+
+    print("ELLENŐRZÉS ÉS UTÓLAGOS BÉLYEGZÉS")
+    with tempfile.TemporaryDirectory() as td:
+        anna = os.path.join(td, "Kiss Anna")
+        bela = os.path.join(td, "Nagy Béla")
+        aup, bup = os.path.join(anna, DIR_UP), os.path.join(bela, DIR_UP)
+        os.makedirs(aup)
+        os.makedirs(bup)
+
+        def pdf(path, pages=1, text=""):
+            d = pymupdf.open()
+            for _ in range(pages):
+                pg = d.new_page()
+                if text:
+                    pg.insert_text((72, 100), text, fontsize=12)
+            d.save(path)
+            d.close()
+            return path
+
+        jo = pdf(os.path.join(aup, "Kiss Anna Útlevél.pdf"))          # bélyegezhető
+        ismeretlen = pdf(os.path.join(aup, "scan0001.pdf"))           # se név, se bélyeg
+        idegen = pdf(os.path.join(aup, "Kiss Anna Meghatalmazás.pdf"))
+        stamp_pdf_file(idegen, "Nagy Béla", "Meghatalmazás", "meghat", DIR_UP)
+        elter = pdf(os.path.join(bup, "Nagy Béla Útlevél.pdf"))
+        stamp_pdf_file(elter, "Nagy Béla", "Szálláshely-igazolás", "szalli", DIR_UP)
+        dup1 = pdf(os.path.join(bup, "Nagy Béla Elfogadó nyilatkozat.pdf"), 2)
+        shutil.copy2(dup1, os.path.join(bup, "Nagy Béla Előzetes megállapodás.pdf"))
+
+        a = audit_folder(td, RULES)
+        ck("minden PDF egyszer át van nézve", a["seen"] == 6, a["seen"])
+        ck("bélyegezhető: amit a név ÉS a hely megad",
+           sorted(os.path.basename(x[1]) for x in a["stampable"]) ==
+           ["Kiss Anna Útlevél.pdf", "Nagy Béla Elfogadó nyilatkozat.pdf",
+            "Nagy Béla Előzetes megállapodás.pdf"],
+           [x[1] for x in a["stampable"]])
+        ck("felismerhetetlen név, bélyeg nélkül -> kézi",
+           [os.path.basename(r) for _w, r in a["unknown"]] == ["scan0001.pdf"],
+           a["unknown"])
+        ck("idegen bélyeg a másik dolgozó nevével",
+           a["foreign"] and a["foreign"][0][2] == "Nagy Béla", a["foreign"])
+        ck("a bélyeg és a név eltérése jelezve",
+           a["mismatch"] and a["mismatch"][0][2] == "Szálláshely-igazolás",
+           a["mismatch"])
+        ck("tartalom-azonos csoport (két néven ugyanaz)",
+           len(a["dupes"]) == 1 and len(a["dupes"][0]) == 2, a["dupes"])
+        ck("egyező tartalom = egyező ujjlenyomat",
+           file_sha1(dup1) == file_sha1(os.path.join(
+               bup, "Nagy Béla Előzetes megállapodás.pdf")) != file_sha1(jo))
+
+        ok, errs = stamp_missing(a["stampable"])
+        a2 = audit_folder(td, RULES)
+        ck("utólagos bélyegzés: a bélyegezhetők elfogytak",
+           (ok, errs) == (3, []) and not a2["stampable"], (ok, errs, a2["stampable"]))
+        st = read_stamp(jo)
+        ck("az utólagos bélyeg a névből és a helyből áll össze",
+           (st["dolgozo"], st["szabaly"], st["hely"]) ==
+           ("Kiss Anna", "utlevel", DIR_UP), st)
+        ck("a felismerhetetlen nevű továbbra is kézi",
+           len(a2["unknown"]) == 1 and not read_stamp(ismeretlen))
 
     print("ÖSSZEÁLLÍTÓ")
     ck("oldaltartomány: 1-3,5", page_ranges([0, 1, 2, 4]) == "1-3,5", page_ranges([0, 1, 2, 4]))

@@ -42,6 +42,17 @@ def ck(label, ok, info=""):
     print(("  PASS  " if ok else "  FAIL  ") + label + (f"   -> {info}" if info != "" else ""))
 
 
+def find_btn(w, prefix):
+    """ttk.Button a dialógusban, felirat-előtag szerint (a gombok Frame-ben élnek)."""
+    for c in w.winfo_children():
+        if c.winfo_class() == "TButton" and str(c.cget("text")).startswith(prefix):
+            return c
+        got = find_btn(c, prefix)
+        if got is not None:
+            return got
+    return None
+
+
 def mkdir(*p):
     d = os.path.join(*p)
     os.makedirs(d, exist_ok=True)
@@ -492,6 +503,25 @@ try:
     ck("a vágott arckép a mentett PDF-ben is vágott",
        abs(pl.pw_px / pl.ph_px - after.width / after.height) < 0.05, (pl.pw_px, pl.ph_px))
     d.close()
+    # Fényerő/kontraszt: élő előnézet, majd alkalmazás vágás nélkül is
+    cdl = pm.CropDialog(pl, arc, None, pl._apply_crop)
+    pump(0.2)
+    ck("szintezés nélkül az Alkalmaz tiltva", str(cdl.btn["state"]) == "disabled",
+       cdl.btn["state"])
+    cdl.br.set(60)
+    cdl._levels_changed()
+    pump(0.2)
+    ck("fényerő-csúszka: az Alkalmaz él", str(cdl.btn["state"]) == "normal")
+    cdl._apply()
+    pump(0.3)
+    piros = pl.imgpdf[0].get_pixmap().pixel(10, 10)
+    ck("a szintezett arckép világosabb, és a címke jelzi",
+       pl.img_levels == (60, 0) and piros[2] > 60 and
+       "szintezve" in pl.img_lbl.cget("text"), (pl.img_levels, piros))
+    pl._load_img(arc)
+    pump(0.2)
+    ck("új kép betöltése törli a szintezést", pl.img_levels is None)
+
     cd2 = pm.CropDialog(pl, arc, pl.img_crop, pl._apply_crop)
     pump(0.1)
     cd2._done(None)                                 # „Teljes kép”: a vágás visszavonva
@@ -699,6 +729,85 @@ try:
     ck("képekből: 5 MB fölött lépcsőzetes tömörítés, a kész PDF alatta",
        "lépcső:" in log and os.path.exists(out2) and os.path.getsize(out2) <= pm.UPLOAD_LIMIT,
        log[-300:])
+
+    print("CÍMKE A SZÖVEGRÉTEGBŐL")
+    szoveges = os.path.join(TMP, "generalt.pdf")
+    d = P.open()
+    for title in ("Belföldi meghatalmazás", "Szálláshely-igazolás"):
+        pg = d.new_page()
+        pg.insert_text((72, 100), title, fontsize=20)
+        pg.insert_text((72, 140), "Alulírott az alábbi nyilatkozatot teszem, "
+                                  "a jogkövetkezmények ismeretében.", fontsize=11)
+    d.new_page()                                   # üres oldal: marad kézi címkézésre
+    d.save(szoveges)
+    d.close()
+    app.show(kt)
+    kt._clear()
+    kt._add([szoveges])
+    wait(lambda: kt._thumb_job is None, 20)
+    kt._label_from_text()
+    pump(0.3)
+    got = [it.doc.doc_type if it.doc else None for it in kt.items]
+    ck("a szövegréteg szerint címkézve, az üres oldal érintetlen",
+       got[:2] == ["Belföldi meghatalmazás", "Szálláshely-igazolás"] and got[2] is None,
+       got)
+    kt._clear()
+
+    print("ELLENŐRZÉS ÉS UTÓLAGOS BÉLYEGZÉS")
+    kezi = os.path.join(anna_up, "scan0001.pdf")             # felismerhetetlen név
+    empty_pdf(kezi)
+    utolag = os.path.join(anna_up, "Kiss Anna Végzettséget igazoló okirat.pdf")
+    empty_pdf(utolag)                                        # bélyegezhető utólag
+    app.show(att)
+    att.refresh()
+    pump(0.3)
+    att._open_audit()
+    pump(0.3)
+    aw = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
+    body = [w for w in aw.winfo_children() if w.winfo_class() == "Text"][0]
+    report = body.get("1.0", "end")
+    ck("az ellenőrzés felsorolja a bélyegezhetőt és a kézit",
+       "Végzettséget igazoló okirat.pdf" in report and "scan0001.pdf" in report,
+       report[:160])
+    b = find_btn(aw, "Bélyegzés")
+    ck("van bélyegzés-gomb a találatok számával", b is not None and "(" in b.cget("text"),
+       b.cget("text") if b else "nincs")
+    b.invoke()
+    pump(0.5)
+    sv = pm.read_stamp(utolag)
+    ck("utólagos bélyegzés: a névből és a helyből",
+       (sv.get("dolgozo"), sv.get("szabaly"), sv.get("hely")) ==
+       ("Kiss Anna", "vegzett", pm.DIR_UP), sv)
+    ck("a felismerhetetlen nevű bélyeg nélkül maradt", pm.read_stamp(kezi) == {})
+    os.remove(kezi)
+    os.remove(utolag)
+
+    print("KÖTEGELT TÖMÖRÍTÉS")
+    noisy_pdf(big_pdf)                                 # újra 5 MB fölé
+    nagy0 = os.path.getsize(big_pdf)
+    att.refresh()
+    pump(0.3)
+    ck("az Áttekintő látja az 5 MB feletti PDF-et",
+       any(big_pdf.endswith(rel.replace("/", os.sep))
+           for r in att.rows for rel in r.big), nagy0)
+    att._open_shrink()
+    pump(0.3)
+    sw = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
+    stxt = [w for w in sw.winfo_children() if w.winfo_class() == "Text"][0]
+    ck("a tömörítés előnézete felsorolja a fájlt",
+       "Nagy Béla Útlevél.pdf" in stxt.get("1.0", "end"), stxt.get("1.0", "end")[:120])
+    find_btn(sw, "Tömörítés").invoke()
+    ok = wait(lambda: os.path.getsize(big_pdf) <= pm.UPLOAD_LIMIT, 120)
+    pump(0.3)
+    ck("kötegelt tömörítés: a fájl a korlát alá került",
+       ok and os.path.getsize(big_pdf) < nagy0,
+       f"{pm.mb(nagy0)} -> {pm.mb(os.path.getsize(big_pdf))}")
+    ck("az előző példány a .eredeti mappában van",
+       os.path.isfile(os.path.join(bela, pm.BACKUP_DIR, "Nagy Béla Útlevél.pdf")))
+    with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
+        last = list(csv.reader(f, delimiter=";"))[-1]
+    ck("naplósor a kötegelt tömörítésről",
+       last[5].startswith("TOMORITVE") and last[3] == "Nagy Béla Útlevél.pdf", last)
 
     print("IKTATÓ → ÖSSZEÁLLÍTÓ")
     kt._clear()

@@ -21,11 +21,16 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 A program **megjegyzi** az utoljára használt munkamappát, a mellékletek
 mappáját és az Iktatóban választott doktípust (`emlekezet.json`).
 
-## Arckép: körülvágás
+## Arckép: körülvágás, fényerő
 
-Az arckép szegélyét nem kell Paintben leszedni: **Körülvágás…** → húzz
-téglalapot a megtartandó rész köré → **Körülvág**. A **Teljes kép** visszavonja.
-A kép fájlja nem változik — a vágás csak a PDF-be helyezett példányra hat.
+Az arckép szegélyét nem kell Paintben leszedni: **Körülvágás, fényerő…** → húzz
+téglalapot a megtartandó rész köré → **Körülvág**. Ugyanitt két csúszka a
+**fényerőre** és a **kontrasztra**, élő előnézettel (vágás nélkül is
+alkalmazható). A **Teljes kép, alaphelyzet** mindkettőt visszavonja.
+
+A kép fájlja soha nem változik. A vágás veszteségmentes (a lap cropboxa);
+a fényerő/kontraszt viszont újrakódolja a képet (JPEG Q92, a beágyazott kép
+valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajta.
 
 ## A dolgozói mappa szerkezete
 
@@ -152,10 +157,13 @@ Egy köteg = egy dolgozó iratai (szkenneléskor így kell összerakni).
    oszlopsorrendjében). Utána a kijelölés a következő oldalra lép, így a köteg
    billentyűzetről is végigmehető. `0` / Backspace: címke le. A nagyítóban (dupla
    kattintás) ugyanígy működik. Címke nélküli oldal kimarad.
-4. Egy irat = az azonos címkéjű oldalak, a rács sorrendjében (vonszolással
+4. **Címke a szövegből (ahol van)** — ha az oldalnak van szövegrétege
+   (DocGen-PDF vagy OCR-es szkenner), a doktípus a tartalomból is megállapítható;
+   tiszta szkennelt kötegen nem tud dönteni, ott marad a számbillentyű.
+5. Egy irat = az azonos címkéjű oldalak, a rács sorrendjében (vonszolással
    átrendezhető). A **Kimenet** listában egy irat kijelölésével az oldalai is
    kijelölődnek, és az utótagja átírható.
-5. **Iktatás (N irat)** — egy összegzés után mind a dolgozó mappájába kerül, az
+6. **Iktatás (N irat)** — egy összegzés után mind a dolgozó mappájába kerül, az
    Iktató szabályai szerint (szabványos név, ütközésnél új név vagy felülírás
    `.eredeti\` mentéssel, napló, 5 MB fölött tömörítés). A **Visszavonás** az egész
    utolsó iktatást visszacsinálja, az oldalak visszakerülnek a rácsba.
@@ -202,6 +210,21 @@ A `!` utótag (pl. `F!`) továbbra is az 5 MB fölötti, nem feltölthető PDF-e
 jelenti, az `×2` pedig azt, hogy a feltölthetőben **több** PDF is van ugyanahhoz
 a típushoz (melyik a jó?). Az előkészített + aláírt példány együtt **nem**
 ütközés, az a normális állapot.
+
+## Ellenőrzés és kötegelt tömörítés (Áttekintő)
+
+Két gomb a mátrix alatt:
+
+- **Ellenőrzés…** — egyszer átnézi az összes dolgozói PDF-et, és felsorolja:
+  mi bélyegezhető **utólag** (a névből és a helyből), hol nincs se bélyeg, se
+  felismerhető név (kézi munka), hol van **idegen** dolgozó bélyege, hol tér el
+  a bélyeg a névtől, és mely fájlok **tartalom szerint azonosak** (két néven
+  ugyanaz). Egy gombbal megbélyegzi a bélyegezhetőket — ez hozza be a
+  visszamenőleges bélyeget.
+- **Tömörítés…** — minden 5 MB feletti PDF egy körben, előnézettel. Az előző
+  példány a dolgozó `.eredeti\` mappájába kerül, és naplósort is kap. Ami a
+  legerősebb lépcső után is a korlát fölött marad, név szerint felsorolva a
+  végén (ott kevesebb oldalra kell bontani).
 
 **Beadható** csak az, aminek minden kötelező iratához van korlát alatti PDF a
 `02_Feltoltheto`-ban. A gyökérben talált PDF-ről nem tudjuk, hogy aláírt-e,

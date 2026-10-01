@@ -385,3 +385,24 @@ közbeni szűkítés pedig megmarad.
 
 A GUI-teszt mindkét állapotot méri (kétes részlet → szűkített lista; teljes név
 → az összes mappa).
+
+## 17. Címke a szövegrétegből (2026-10-01)
+
+Új gomb a doktípus-paletta alatt: **„Címke a szövegből (ahol van)"**. A címke
+nélküli oldalakra a doktípust az oldal **szövegrétege** adja meg, ugyanazzal a
+`score()`-ral, ami a fájlneveket illeszti — nincs új felismerő logika.
+
+Három döntés:
+
+- **Csak az oldal eleje számít** (`txt[:1500]`). Egy teljes irat szövege sok
+  szabály kulcsszavát tartalmazza (a meghatalmazás szó egy megállapodásban is
+  előfordul); a cím viszont a lap tetején van. E nélkül a leghosszabb irat
+  nyerne, nem a helyes.
+- **Holtversenynél nem tippelünk** — ahogy a mátrix is `?`-et ad (11.).
+- **Kézi gomb, nem automatikus** a hozzáadáskor: a szkennelt lapon nincs
+  szövegréteg, tehát a köteg nagy részén nem tud dönteni, és egy csendben
+  rosszul címkézett oldal drágább, mint egy kattintás. A `0`/Backspace amúgy is
+  leveszi a címkét.
+
+**Mikor segít:** DocGen-PDF (van szövegrétege) vagy OCR-es szkenner. Tiszta
+szkennelt kötegen nem — ott a számbillentyűs címkézés marad (14.2).
