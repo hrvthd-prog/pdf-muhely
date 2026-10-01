@@ -505,3 +505,95 @@ Három dolog derült ki menet közben, és mindhárom javítást igényelt a ter
 - Nincs harmadik mappa (`00_Egyeb`) a fel nem ismert fájloknak.
 - Nincs általános 01/02 célválasztó az iktatásban — csak a formanyomtatvány jelölője. Egy ott hagyott kapcsoló csendben kivenné az iratot a beadhatóságból.
 - Nincs docx-metaadat és nincs iktatáskori bélyegzés (12.7).
+
+## 13. Egyszerűbb felület, körülvágás, emlékezet (2026-10-01)
+
+### 13.1 Hibajavítás: a fotó nélküli formanyomtatvány a feltölthetőbe ment
+
+**A tünet:** az aláírt formanyomtatvány arckép nélkül is a `02_Feltoltheto`-ba
+került, pedig a 12.4 szerint csak bepipált jelölővel kerülhet oda.
+
+**A gyökér-ok nem a logikában volt**, hanem a mentett szabályfájlban: a repóval
+szállított `attekinto-szabalyok.json` még az `arckep` mező **előtt** készült, a
+betöltő pedig `d.get("arckep", False)`-szal olvasta. Így a `forma` szabály
+`arckep`-je minden valódi gépen `False` lett — és a `target_subdir` helyesen,
+de hamis adatból dolgozva `02`-t adott. A GUI-teszt épp ezért **nem** fogta meg:
+ideiglenes mappában fut, szabályfájl nélkül, tehát a beépített (jó)
+alapértelmezést látta.
+
+**A javítás két rétegű**, mert a felhasználók gépén már ott van a régi fájl:
+
+1. `DEFAULT_ARCKEP = {r.id: r.arckep for r in DEFAULT_RULES}` — a kulcs nélküli
+   (régi) szabályfájlnál a jelölő a beépített alapértelmezésből pótlódik, nem
+   `False`-ra esik. Az id szerinti pótlás azért jó, mert a saját szabályokat
+   nem érinti (azoknál `False`), a `forma`-t viszont helyreteszi.
+2. A szállított JSON újraírva, benne a mezővel — friss telepítésnél se múljon
+   a pótláson.
+
+**Tanulság a hibaosztályra:** új `Rule`-mező esetén a `get(..., False)`
+alapértelmezés néma adatvesztés a már kint lévő fájlokban. Az önteszt ezért
+kapott egy esetet, ami **mezőt nem ismerő** szabályfájlt ír ki, és ellenőrzi,
+hogy a formanyomtatvány célja `01` marad.
+
+### 13.2 Felület: három munkafolyamat-fül + Eszközök
+
+A hat egyenrangú fül nem mutatta a munka sorrendjét, és a napi munkához csak
+három kell. Az új szerkezet (a felhasználó választása):
+
+| felső sáv | tartalom |
+|---|---|
+| `1 · Összeállító` | szkennelt köteg → iratok |
+| `2 · Iktató` | egy PDF a dolgozó mappájába |
+| `3 · Áttekintő` | mátrix: ki adható be |
+| `Eszközök` | alfülek: Arckép elhelyezés, Összefűzés, Raszterizálás |
+
+A sorszám a sorrendet mondja ki, az eseti műveletek egy szinttel lejjebb
+kerültek. Az `App.tabs` **kulcsai nem változtak** (a fülök egymást név szerint
+érik el) — csak a szülő widget és a feliratok. Két helyen kellett hozzányúlni:
+
+- `active_tab()` lemegy az Eszközök alfülére — különben az Arckép fül globális
+  gyorsbillentyűi (`Ctrl+←/→`) csendben elhallgatnának, mert a `_guard` az
+  `active_tab() is self` egyezésen áll.
+- `App.show(tab)` váltja a fület: alfülnél előbb a belső notebookot állítja.
+  A `goto_*` átirányítások ezt használják (`nb.select` helyett).
+
+Ritkítás a két legzsúfoltabb sávon (Iktató): a „Mappák frissítése” elhagyva —
+a felső sáv **Frissítés** gombja ugyanezt teszi —, a nagyítás `−`/`+` gombjai
+is, mert a görgő ugyanaz, és a mérték a címkén látszik. Az **Illeszt** maradt.
+
+### 13.3 Minimális képszerkesztő: körülvágás
+
+Eddig a szkennelt arckép szegélyét Paintben kellett leszedni. Az Arckép fül
+`Körülvágás…` gombja egy dialógust nyit: a képen téglalapot húzva a megtartandó
+rész jelölhető ki, a `Körülvág` alkalmazza, a `Teljes kép` visszavonja.
+
+**A megvalósítás egy sor**, mert a kép eddig is egylapos PDF-ként élt
+(`convert_to_pdf`): a vágás a lap **cropboxának** szűkítése
+(`open_image_pdf(path, crop)`). Innentől a `page.rect` is szűkebb, tehát az
+alapméret-számítás, az előnézet és a `show_pdf_page` **változtatás nélkül** a
+vágott képpel dolgozik. A kép fájlja soha nem módosul: a vágás a betöltött
+példány tulajdonsága, ezért visszavonható, és új kép betöltésekor nem öröklődik.
+
+Szándékosan **csak vágás** van: forgatás az elhelyezésnél amúgy adott,
+fényerő/kontraszt a szkennelt fotóknál nem volt kérés. Ha kell, ugyanebben a
+dialógusban a pixmapra tehető szűrő.
+
+### 13.4 Emlékezet: utoljára használt útvonalak és doktípus
+
+Új fájl a program mappájában: `emlekezet.json` (`recall` / `remember`).
+Megjegyzi a **munkamappát**, a **mellékletek** mappáját (Iktató és Összeállító
+forrásválasztója), a nyomtatvány- és arcképmappát, valamint az Iktatóban
+utoljára választott **doktípust**.
+
+Döntések:
+
+- **Külön fájl**, nem a szabályfájlban: gépenként más, és a `.gitignore`
+  engedélyező listája így automatikusan kihagyja — dolgozói útvonal nem kerül
+  a repóba. A frissítő sem nyúl hozzá (nincs a ZIP-ben).
+- **Útvonalat csak létező mappára ad vissza** (`recall`): pendrive vagy hálózati
+  meghajtó közben eltűnhet, és egy halott `initialdir` a párbeszédet
+  kiszámíthatatlan helyre nyitná.
+- **Csendben bukik** mentéskor: kényelmi funkció, nem akadályozhatja a munkát.
+- Az **arckép-jelölőt szándékosan NEM jegyzi meg** — az beragadva téves `02`-t
+  okozna (12.4). A doktípus megjegyzése ártalmatlan: a jelölő típusváltáskor
+  amúgy visszaáll.

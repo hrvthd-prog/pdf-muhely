@@ -10,7 +10,8 @@
       ],
       "required": true,
       "generated": true,
-      "width": 138
+      "width": 138,
+      "arckep": true
     },
     {
       "id": "elozetes",
@@ -24,7 +25,8 @@
       ],
       "required": true,
       "generated": true,
-      "width": 159
+      "width": 159,
+      "arckep": false
     },
     {
       "id": "elismer",
@@ -37,7 +39,8 @@
       ],
       "required": true,
       "generated": true,
-      "width": 260
+      "width": 260,
+      "arckep": false
     },
     {
       "id": "hozzaj",
@@ -50,7 +53,8 @@
       ],
       "required": true,
       "generated": true,
-      "width": 212
+      "width": 212,
+      "arckep": false
     },
     {
       "id": "meghat",
@@ -62,7 +66,8 @@
       ],
       "required": true,
       "generated": true,
-      "width": 230
+      "width": 230,
+      "arckep": false
     },
     {
       "id": "utlevel",
@@ -75,7 +80,8 @@
       ],
       "required": true,
       "generated": false,
-      "width": 209
+      "width": 209,
+      "arckep": false
     },
     {
       "id": "szallv",
@@ -88,7 +94,8 @@
       "any_of": [],
       "required": false,
       "generated": true,
-      "width": 62
+      "width": 62,
+      "arckep": false
     },
     {
       "id": "szalli",
@@ -101,7 +108,8 @@
       ],
       "required": false,
       "generated": false,
-      "width": 56
+      "width": 56,
+      "arckep": false
     },
     {
       "id": "vegzett",
@@ -115,7 +123,8 @@
       ],
       "required": false,
       "generated": false,
-      "width": 109
+      "width": 109,
+      "arckep": false
     },
     {
       "id": "nav",
@@ -128,7 +137,8 @@
       ],
       "required": false,
       "generated": false,
-      "width": 56
+      "width": 56,
+      "arckep": false
     },
     {
       "id": "munkalt",
@@ -140,7 +150,8 @@
       ],
       "required": false,
       "generated": false,
-      "width": 56
+      "width": 56,
+      "arckep": false
     }
   ],
   "name_width": 200,
