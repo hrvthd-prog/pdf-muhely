@@ -671,3 +671,63 @@ bélyegzés bármiért nem megy, **tiszta másolat kerül ki** (az üzenet vég�
   átláthatóságot továbbra is a mappaszerkezet adja.
 - **Ütközéskor a fájlnév nyer.** Ha a név felismerhető, a bélyeget meg sem
   nézzük: egy igazság van, a második csak ott szólal meg, ahol az első hallgat.
+
+### 13.6 Hat kért funkció (2026-10-01)
+
+A felhasználó választása egy javaslatlistából. Az **arckép auto-trim**, az
+**üres oldalak kiszűrése** és a **QR** szándékosan kimaradt (az utóbbi két repót
+és új függőséget érint, előbb mérés kell).
+
+#### Fényerő és kontraszt a vágódialógusban
+
+A `CropDialog` két csúszkát kapott (−100…100). A számolás **256 bájtos
+átalakító táblával** megy (`level_lut`), amit a `bytes.translate()` C-sebességgel
+alkalmaz — pixelenkénti Python-ciklus egy 2000×3000-es fotón másodpercekig
+tartana. Az élő előnézet a **kicsi, megjelenített** pixmapra fut, ezért azonnali.
+
+Egy fontos eltérés a vágástól: a vágás a cropbox szűkítése, tehát
+**veszteségmentes**; a szintezés viszont a képpontokat írja át, ezért
+**újrakódolja** a képet (JPEG, Q92). Ezért csak akkor fut le, ha tényleg
+állítottak rajta (`if not levels or not any(levels)`), és a felbontás nem a
+`get_pixmap()` 72 DPI-s alapja, hanem a beágyazott kép valódi mérete
+(`image_px_scale`) — különben a szkennelt fotó élessége elúszna.
+
+#### Ellenőrzés és utólagos bélyegzés (Áttekintő → „Ellenőrzés…")
+
+Ez tömi be a 13.5 egyetlen lyukát: a **már kint lévő iratokon nincs bélyeg**.
+Az `audit_folder` **egyszer** nyit meg minden dolgozói PDF-et, és öt dolgot ad:
+
+| csoport | mit jelent | tehetünk vele |
+|---|---|---|
+| `stampable` | nincs bélyeg, de a **név és a hely együtt** megadja, mit írjunk | egy gombbal bélyegezhető |
+| `unknown` | se bélyeg, se felismert név | kézi munka — **találgatva nem bélyegzünk** |
+| `foreign` | a bélyeg más dolgozót nevez meg | eltévedt irat, nézd meg |
+| `mismatch` | a bélyeg típusa ≠ a fájlnév típusa | a **név** az igazság (13.5) |
+| `dupes` | tartalom-azonos PDF-ek (SHA-1) két néven | melyik a jó? |
+
+Az `audit_folder` az **egyetlen** hely, ahol minden PDF-et megnyitunk; a mátrix
+szándékosan csak a név szerint fel nem ismerteket nézi meg (13.5), mert 40
+dolgozónál az összes PDF megnyitása minden frissítésnél lassú lenne. Ez tehát
+kézi, gombra induló művelet, ami állapotjelzést ad közben.
+
+Az utólagos bélyeg a **szabály nevét** írja `tipus`-nak (az Iktató-oldali
+típusnév a fájlnévből nem visszafejthető), a `szabaly`-t pedig a szabály
+id-jéből — az olvasó amúgy is az id-t keresi először.
+
+#### Kötegelt tömörítés (Áttekintő → „Tömörítés…")
+
+Eddig minden 5 MB feletti PDF-et egyenként kellett az Iktatóban tömöríteni.
+Most egy előnézet (dolgozó, fájl, méret), majd egy lánc, fájlonként
+`shrink_later`-rel — a felület a lépcsők között él, mint az Iktatóban. Minden
+fájlnál: `backup_existing` (a `.eredeti\` marad a visszaút), `write_pdf_verified`
+oldalszám-ellenőrzéssel, és **naplósor** (`TOMORITVE 18.3 MB->0.7 MB`). A bélyeg
+a tömörítést átéli (12.7), tehát nem kell újrabélyegezni.
+
+Ha a legerősebb lépcső után is a korlát fölött marad, a fájl **akkor is** a
+tömörített változatra cserélődik (az kisebb), de a dialógus végén névvel
+felsorolja őket — ott kevesebb oldalra kell bontani.
+
+#### Címke a szövegrétegből (Összeállító)
+
+Lásd `szetvago-terv.md` **17.**
+
