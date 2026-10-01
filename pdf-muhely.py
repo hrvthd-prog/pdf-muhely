@@ -215,12 +215,116 @@ def rasterize_doc(doc, dpi: int, pages=None):
     return flat
 
 
+def open_image_pdf(path, crop=None):
+    """A kép egylapos PDF-ként (így helyezhető, forgatható, méretezhető).
+    `crop`: a megtartandó rész a lap koordinátáiban — elég a cropbox szűkítése,
+    mert a lap rect-je ezzel együtt szűkül, és a show_pdf_page is csak ezt teszi
+    le. A kép fájlja így soha nem változik, a vágás visszavonható."""
+    src = pymupdf.open(path)
+    try:
+        doc = pymupdf.open("pdf", src.convert_to_pdf())
+    finally:
+        src.close()
+    if crop:
+        r = pymupdf.Rect(crop) & doc[0].rect          # a lapon kívüli részt levágja
+        if r.width > 1 and r.height > 1:
+            doc[0].set_cropbox(r)
+    return doc
+
+
+class CropDialog(tk.Toplevel):
+    """Minimális képszerkesztő: húzz téglalapot a megtartandó rész köré.
+    Csak vágás van — a szkennelt arckép szegélyének leszedéséhez ez kell.
+    ponytail: fényerő/kontraszt nincs (a forgatás az elhelyezésnél amúgy megvan);
+    ha kell, ugyanebben a dialógusban a pixmapra szűrő tehető."""
+
+    MAX_PX = 760                       # a nagyobb oldal legfeljebb ennyi képpont
+
+    def __init__(self, master, path, crop, on_crop):
+        super().__init__(master)
+        self.title("Arckép körülvágása — " + os.path.basename(path))
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+        self.on_crop = on_crop
+        self.doc = open_image_pdf(path)                # mindig a teljes képből
+        r = self.doc[0].rect
+        self.z = min(self.MAX_PX / max(r.width, r.height), 4.0)
+        pix = self.doc[0].get_pixmap(matrix=pymupdf.Matrix(self.z, self.z))
+        self.img = tkimg(pix, "ppm")
+        self.w, self.h = pix.width, pix.height
+        self.msg = tk.StringVar(value="")
+        self.box = None                                # (x0, y0, x1, y1) a vásznon
+        self._from = None
+
+        ttk.Label(self, text="Húzz téglalapot a megtartandó rész köré. "
+                             "A kép fájlja nem változik.").pack(anchor="w", padx=10,
+                                                                pady=(10, 4))
+        self.canvas = tk.Canvas(self, width=self.w, height=self.h, bg="#666",
+                                highlightthickness=0, cursor="crosshair")
+        self.canvas.pack(padx=10)
+        self.canvas.create_image(0, 0, anchor="nw", image=self.img)
+        self.canvas.bind("<ButtonPress-1>", lambda e: setattr(self, "_from", (e.x, e.y)))
+        self.canvas.bind("<B1-Motion>", self._motion)
+        self.canvas.bind("<ButtonRelease-1>", self._motion)
+        ttk.Label(self, textvariable=self.msg).pack(anchor="w", padx=10, pady=4)
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=10, pady=(0, 10))
+        self.btn = ttk.Button(foot, text="Körülvág", command=self._apply, state="disabled")
+        self.btn.pack(side="left")
+        ttk.Button(foot, text="Teljes kép",
+                   command=lambda: self._done(None)).pack(side="left", padx=6)
+        ttk.Button(foot, text="Mégsem", command=self.destroy).pack(side="right")
+        if crop:
+            self.box = tuple(v * self.z for v in (crop.x0, crop.y0, crop.x1, crop.y1))
+            self._draw()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self._apply())
+
+    def destroy(self):
+        if self.doc:
+            self.doc.close()
+            self.doc = None
+        super().destroy()
+
+    def _motion(self, e):
+        if not self._from:
+            return
+        x0, y0 = self._from
+        x, y = max(0, min(self.w, e.x)), max(0, min(self.h, e.y))
+        self.box = (min(x0, x), min(y0, y), max(x0, x), max(y0, y))
+        self._draw()
+
+    def _draw(self):
+        x0, y0, x1, y1 = self.box
+        self.canvas.delete("box")
+        self.canvas.create_rectangle(x0, y0, x1, y1, outline=COL_CROP, width=2, tags="box")
+        w, h = (x1 - x0) / self.z, (y1 - y0) / self.z
+        ok = w > 5 and h > 5
+        self.msg.set(f"kijelölés: {w:.0f} × {h:.0f} pt "
+                     f"({w / 72 * 25.4:.0f} × {h / 72 * 25.4:.0f} mm)"
+                     if ok else "a kijelölés túl kicsi")
+        self.btn.configure(state="normal" if ok else "disabled")
+
+    def _apply(self):
+        if not self.box:
+            return
+        x0, y0, x1, y1 = (v / self.z for v in self.box)
+        if x1 - x0 > 5 and y1 - y0 > 5:
+            self._done(pymupdf.Rect(x0, y0, x1, y1))
+
+    def _done(self, rect):
+        self.on_crop(rect)
+        self.destroy()
+
+
 class FileList(ttk.Frame):
     """Listbox + görgetősáv + Frissítés/Tallózás gombpár."""
 
-    def __init__(self, master, title, exts, on_pick, height=7):
+    def __init__(self, master, title, exts, on_pick, height=7, memory_key=""):
         super().__init__(master)
         self.exts, self.on_pick, self.folder = exts, on_pick, script_dir()
+        self.memory_key = memory_key          # a Tallózás megjegyzett mappája
         self._ok = False
 
         box = ttk.LabelFrame(self, text=title)
@@ -270,9 +374,12 @@ class FileList(ttk.Frame):
 
     def _browse(self):
         pat = " ".join("*" + e for e in (self.exts if isinstance(self.exts, tuple) else (self.exts,)))
-        p = filedialog.askopenfilename(title="Fájl kiválasztása", initialdir=self.folder,
+        start = recall(self.memory_key, self.folder) if self.memory_key else self.folder
+        p = filedialog.askopenfilename(title="Fájl kiválasztása", initialdir=start,
                                        filetypes=[("Támogatott", pat), ("Minden fájl", "*.*")])
         if p and self.on_pick:
+            if self.memory_key:
+                remember(self.memory_key, p)
             self.on_pick(p)
 
 
@@ -282,6 +389,7 @@ class PlacerTab(ttk.Frame):
         super().__init__(master)
         self.app = app
         self.src_path = self.doc = self.imgpdf = self.img_path = None
+        self.img_crop = None             # a körülvágás a kép lapkoordinátáiban
         self.page_no = 0
         self.base_scale = 1.0
         self.max_scale = 400.0
@@ -310,12 +418,16 @@ class PlacerTab(ttk.Frame):
         left.pack(side="left", fill="y", padx=8, pady=8)
         left.pack_propagate(False)
 
-        self.pdfs = FileList(left, "PDF nyomtatványok", (".pdf",), self._open_pdf, height=6)
+        self.pdfs = FileList(left, "PDF nyomtatványok", (".pdf",), self._open_pdf, height=6,
+                             memory_key="nyomtatvanyok")
         self.pdfs.pack(fill="both", expand=True)
-        self.imgs = FileList(left, "Arcképek", IMG_EXT, self._load_img, height=6)
+        self.imgs = FileList(left, "Arcképek", IMG_EXT, self._load_img, height=6,
+                             memory_key="arckepek")
         self.imgs.pack(fill="both", expand=True, pady=(8, 0))
         self.img_lbl = ttk.Label(left, text="(nincs kép)", foreground="#555", wraplength=320)
         self.img_lbl.pack(anchor="w", pady=(4, 0))
+        ttk.Button(left, text="Körülvágás…",
+                   command=self._crop_dialog).pack(anchor="w", pady=(2, 0))
 
         c = ttk.LabelFrame(left, text="Igazítás")
         c.pack(fill="x", pady=8)
@@ -549,10 +661,22 @@ class PlacerTab(ttk.Frame):
         self.after(50, self._render_all)
 
     def _load_img(self, path):
+        self.img_crop = None             # új kép: a korábbi vágás nem öröklődik
+        self._set_img(path)
+
+    def _crop_dialog(self):
+        if not self.img_path:
+            messagebox.showwarning("Hiányzik", "Előbb válassz arcképet.")
+            return
+        CropDialog(self, self.img_path, self.img_crop, self._apply_crop)
+
+    def _apply_crop(self, rect):
+        self.img_crop = rect
+        self._set_img(self.img_path)
+
+    def _set_img(self, path):
         try:
-            src = pymupdf.open(path)
-            imgpdf = pymupdf.open("pdf", src.convert_to_pdf())
-            src.close()
+            imgpdf = open_image_pdf(path, self.img_crop)
         except Exception as e:
             messagebox.showerror("Hiba", f"A kép nem tölthető be:\n{e}")
             return
@@ -560,7 +684,9 @@ class PlacerTab(ttk.Frame):
             self.imgpdf.close()
         self.imgpdf, self.img_path = imgpdf, path
         r = imgpdf[0].rect
-        self.img_lbl.configure(text=f"{os.path.basename(path)}  ({r.width:.0f}×{r.height:.0f} pt)")
+        self.img_lbl.configure(
+            text=f"{os.path.basename(path)}  ({r.width:.0f}×{r.height:.0f} pt)" +
+                 (" · körülvágva" if self.img_crop else ""))
         self.scale.set(100.0)
         self.angle.set(0.0)
         self._center()
@@ -976,6 +1102,7 @@ SUFFIX = "aláírt"
 LOG_NAME = "iktato-naplo.csv"
 BACKUP_DIR = ".eredeti"                    # felülírt példányok a dolgozó mappáján belül
 TYPES_FILE = "iktato-doktipusok.json"      # a szkript mappájában
+MEMORY_FILE = "emlekezet.json"             # utoljára használt útvonalak, doktípus
 
 # ── dolgozónkénti két alkönyvtár (kepek-pdf-terv.md 12.) ───────────────────
 # Ékezet nélkül és számozva: az Intézőben a folyamat sorrendjében látszanak, és
@@ -1026,6 +1153,53 @@ def save_types(items) -> bool:
         return True
     except OSError:
         return False
+
+
+# ── emlékezet (utoljára használt útvonalak, doktípus) ───────────────────────
+# Külön fájl, nem a szabályfájl mellé: gépenként más, és nem kerül a repóba
+# (a .gitignore engedélyező lista épp ezért nem sorolja fel).
+def memory_path() -> str:
+    return os.path.join(script_dir(), MEMORY_FILE)
+
+
+def recall(key: str, fallback: str = "") -> str:
+    """Az utoljára megjegyzett érték. Útvonalat csak akkor ad vissza, ha még
+    létezik — pendrive/hálózati meghajtó közben eltűnhetett."""
+    try:
+        with open(memory_path(), "r", encoding="utf-8") as f:
+            v = json.load(f).get(key, "")
+    except Exception:
+        return fallback
+    if not isinstance(v, str) or not v:
+        return fallback
+    if os.path.isabs(v) and not os.path.isdir(v):
+        return fallback
+    return v
+
+
+def remember(key: str, value: str):
+    """Mentés a következő indításra. Fájlútvonalból a mappáját jegyzi meg.
+    Csendben elbukik: ez kényelmi funkció, nem akadályozhatja a munkát."""
+    if not value:
+        return
+    if os.path.isabs(value) and not os.path.isdir(value):
+        value = os.path.dirname(value)
+        if not os.path.isdir(value):
+            return
+    try:
+        try:
+            with open(memory_path(), "r", encoding="utf-8") as f:
+                d = json.load(f)
+            d = d if isinstance(d, dict) else {}
+        except Exception:
+            d = {}
+        if d.get(key) == value:
+            return
+        d[key] = value
+        with open(memory_path(), "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
 
 
 # ── névképzés és rendezés ───────────────────────────────────────────────────
@@ -1386,7 +1560,8 @@ class IktatoTab(ttk.Frame):
         self._job = None
         self._busy = False               # tömörítés fut: új iktatás és visszavonás vár
 
-        self.doc_type = tk.StringVar(value="")
+        last = recall("doktipus")
+        self.doc_type = tk.StringVar(value=last if last in self.types else "")
         self.suffix = tk.StringVar(value=SUFFIX)
         # Fotóigényes nyomtatványnál: rajta van-e már az arckép. Típusváltáskor
         # szándékosan visszaáll — téves 02 aláírás/fotó nélküli iratot mondana
@@ -1401,6 +1576,8 @@ class IktatoTab(ttk.Frame):
         self.zoom_lbl = tk.StringVar(value="illesztve")
 
         self._build()
+        if self.doc_type.get():
+            self._type_chosen()      # a megjegyzett típushoz az utótag és a jelölő
         self._info("Rendezés: " + COLLATION +
                    " · Tallózás a középső gombbal · görgő = nagyítás · "
                    "jobb gomb = nézet mozgatása")
@@ -1431,8 +1608,7 @@ class IktatoTab(ttk.Frame):
         ent.pack(side="left")
         self.filter_text.trace_add("write", lambda *a: self._relayout())
 
-        ttk.Button(bar, text="Mappák frissítése",
-                   command=self._scan_dirs).pack(side="right")
+        # „Mappák frissítése” nincs: a felső sáv Frissítés gombja ugyanezt teszi.
 
         self.canvas = tk.Canvas(self, bg=COL_CANVAS, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=8, pady=4)
@@ -1457,13 +1633,9 @@ class IktatoTab(ttk.Frame):
         ttk.Button(nav, text="▶", width=3,
                    command=lambda: self._step_page(1)).pack(side="left")
 
-        ttk.Label(nav, text="Nagyítás:").pack(side="left", padx=(18, 4))
-        ttk.Button(nav, text="−", width=3,
-                   command=lambda: self._zoom_by(1 / ZOOM_STEP)).pack(side="left")
+        # Nagyítás: görgővel (a ± gombok elhagyva), a mérték a címke, az Illeszt marad.
         ttk.Label(nav, textvariable=self.zoom_lbl, width=9,
-                  anchor="center").pack(side="left")
-        ttk.Button(nav, text="+", width=3,
-                   command=lambda: self._zoom_by(ZOOM_STEP)).pack(side="left")
+                  anchor="center").pack(side="left", padx=(18, 0))
         ttk.Button(nav, text="Illeszt",
                    command=self._zoom_fit).pack(side="left", padx=4)
 
@@ -1766,9 +1938,11 @@ class IktatoTab(ttk.Frame):
     # ---------------- várólista ----------------
     def _browse_files(self):
         paths = filedialog.askopenfilenames(
-            title="PDF fájlok kiválasztása", initialdir=self.parent_dir,
+            title="PDF fájlok kiválasztása",
+            initialdir=recall("mellekletek", self.parent_dir),
             filetypes=[("PDF fájlok", "*.pdf")])
         if paths:
+            remember("mellekletek", paths[0])
             self._enqueue(paths)
 
     def _enqueue(self, paths):
@@ -1896,12 +2070,12 @@ class IktatoTab(ttk.Frame):
         """Az utótag a doktípusból: a DocGen-ből készülő (aláírandó) iratnál
         „aláírt”, a többinél (útlevél, igazolások) üres. Az Áttekintő szabályai
         tudják, melyik melyik; ismeretlen típusnál az utótag marad, ami volt."""
-        att = getattr(self.app, "tabs", {}).get("Áttekintő")
-        if att and self.doc_type.get():
-            r, _ = match_rule(target_name("X", self.doc_type.get()), att.rules)
+        if self.doc_type.get():
+            r, _ = match_rule(target_name("X", self.doc_type.get()), self._rules())
             if r:
                 self.suffix.set(SUFFIX if r.generated else "")
         self.arckep_kesz.set(False)          # típusváltáskor nem ragadhat be
+        remember("doktipus", self.doc_type.get())
         self._sync_arckep()
         self._update_name()
 
@@ -2230,6 +2404,10 @@ DEFAULT_RULES = [
          [], ["munkaltatoi"], False, False),
 ]
 
+# Az arckép-jelölő később született, mint az első szabályfájlok: ha a mentett
+# fájlban nincs ez a kulcs, innen jön az alapértelmezés (load_settings).
+DEFAULT_ARCKEP = {r.id: r.arckep for r in DEFAULT_RULES}
+
 NOISE_EXACT = {"thumbs.db", "desktop.ini", ".ds_store",
                "iktato-naplo.csv", "iktato-doktipusok.json"}
 
@@ -2297,7 +2475,10 @@ def load_settings() -> dict:
                     required=bool(d.get("required", False)),
                     generated=bool(d.get("generated", False)),
                     width=max(MIN_COL_W, min(MAX_COL_W, int(d.get("width", 56)))),
-                    arckep=bool(d.get("arckep", False)),
+                    # Kulcs nélküli (régi) szabályfájlnál NEM False: különben a
+                    # fotó nélküli formanyomtatvány a feltölthetőbe kerülne.
+                    arckep=bool(d.get("arckep",
+                                      DEFAULT_ARCKEP.get(str(d["id"]), False))),
                 ))
             except Exception:
                 continue
@@ -4582,7 +4763,11 @@ class ComposerTab(ttk.Frame):
         return "" if r and not r.generated else SUFFIX
 
     def _fill_who(self):
-        self.who_cb.configure(values=resolve_worker(self.who_text.get(), self.dirs)[1])
+        """A legördülő tartalma: a beírt részletre illeszkedő nevek — de ha a mező
+        már EGY dolgozót jelöl, mind a név, különben váltani csak visszatörölve
+        lehetne."""
+        who, hits = resolve_worker(self.who_text.get(), self.dirs)
+        self.who_cb.configure(values=self.dirs if who else hits)
 
     def _who_changed(self):
         self.who, hits = resolve_worker(self.who_text.get(), self.dirs)
@@ -4731,12 +4916,14 @@ class ComposerTab(ttk.Frame):
     # ---------------- lista ----------------
     def _add_files(self):
         pat = " ".join("*" + e for e in SRC_EXT)
-        self._add(filedialog.askopenfilenames(title="PDF-ek és képek kiválasztása",
-                                              initialdir=self.last_dir or self.folder,
-                                              filetypes=[("PDF és kép", pat)]))
+        self._add(filedialog.askopenfilenames(
+            title="PDF-ek és képek kiválasztása",
+            initialdir=self.last_dir or recall("mellekletek", self.folder),
+            filetypes=[("PDF és kép", pat)]))
 
     def _add_dir(self):
-        d = filedialog.askdirectory(title="A források mappája", initialdir=self.last_dir or self.folder)
+        d = filedialog.askdirectory(title="A források mappája",
+                                    initialdir=self.last_dir or recall("mellekletek", self.folder))
         if d:
             self._add([os.path.join(d, f) for f in list_files(d, SRC_EXT)])
 
@@ -4760,6 +4947,7 @@ class ComposerTab(ttk.Frame):
         if not new:
             return
         self.last_dir = os.path.dirname(new[0].path)
+        remember("mellekletek", self.last_dir)
         self.items += new
         self._redraw()
         self._thumbs()
@@ -5251,7 +5439,7 @@ class App(tk.Tk):
         self.title(f"PDF Műhely – offline · {app_version()}")
         self.geometry("1200x840")
         self.minsize(960, 680)
-        self.folder = tk.StringVar(value=script_dir())
+        self.folder = tk.StringVar(value=recall("munkamappa", script_dir()))
         self._status = tk.StringVar(value="Kész.")
 
         bar = ttk.Frame(self)
@@ -5261,19 +5449,27 @@ class App(tk.Tk):
         ttk.Button(bar, text="Módosítás…", command=self._pick_folder).pack(side="left")
         ttk.Button(bar, text="Frissítés", command=self.refresh_all).pack(side="left", padx=6)
 
+        # A felső sáv a munka sorrendje (ezért a sorszám), az eseti PDF-műveletek
+        # és az arcképre helyezés egy „Eszközök” alfülcsoportba kerültek: a napi
+        # munkához három fül kell, nem hat.
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tools = ttk.Notebook(self.nb)
         self.tabs = {
-            "Arckép elhelyezés": PlacerTab(self.nb, self),
-            "Összefűzés": MergeTab(self.nb, self),
             "Összeállító": ComposerTab(self.nb, self),
-            "Raszterizálás": RasterTab(self.nb, self),
             "Iktató": IktatoTab(self.nb, self),
             "Áttekintő": AttekintoTab(self.nb, self),
+            "Arckép elhelyezés": PlacerTab(self.tools, self),
+            "Összefűzés": MergeTab(self.tools, self),
+            "Raszterizálás": RasterTab(self.tools, self),
         }
-        for name, tab in self.tabs.items():
-            self.nb.add(tab, text=name)
+        for i, name in enumerate(("Összeállító", "Iktató", "Áttekintő"), 1):
+            self.nb.add(self.tabs[name], text=f"{i} · {name}")
+        self.nb.add(self.tools, text="Eszközök")
+        for name in ("Arckép elhelyezés", "Összefűzés", "Raszterizálás"):
+            self.tools.add(self.tabs[name], text=name)
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
+        self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
 
         ttk.Label(self, textvariable=self._status, relief="sunken", anchor="w").pack(
             fill="x", side="bottom")
@@ -5294,6 +5490,7 @@ class App(tk.Tk):
     def _pick_folder(self):
         d = filedialog.askdirectory(title="Munkamappa", initialdir=self.folder.get())
         if d:
+            remember("munkamappa", d)
             self.folder.set(d)
             self.refresh_all()
 
@@ -5302,10 +5499,20 @@ class App(tk.Tk):
             tab.set_folder(self.folder.get())
 
     def active_tab(self):
+        """A látható fül — az Eszközök alfüléig lemegy (gyorsbillentyűk!)."""
         try:
-            return self.nametowidget(self.nb.select())
+            w = self.nametowidget(self.nb.select())
+            return self.nametowidget(w.select()) if w is self.tools else w
         except Exception:
             return None
+
+    def show(self, tab):
+        """Váltás erre a fülre, az Eszközök alfülére is."""
+        if tab.master is self.tools:
+            self.tools.select(tab)
+            self.nb.select(self.tools)
+        else:
+            self.nb.select(tab)
 
     def status(self, txt):
         self._status.set(txt)
@@ -5331,7 +5538,7 @@ class App(tk.Tk):
         if path:
             ikt._enqueue([path])
         ikt._type_chosen()
-        self.nb.select(ikt)
+        self.show(ikt)
 
     def goto_composer(self, path, who=""):
         """Az Iktatóból: egy többoldalas köteg az Összeállítóba, a dolgozóval."""
@@ -5339,11 +5546,11 @@ class App(tk.Tk):
         tab._add([path])
         if who.strip() and not tab.who_text.get().strip():
             tab.who_text.set(who)
-        self.nb.select(tab)
+        self.show(tab)
 
     def goto_arckep(self, folder):
         self.tabs["Arckép elhelyezés"].set_folder(folder)
-        self.nb.select(self.tabs["Arckép elhelyezés"])
+        self.show(self.tabs["Arckép elhelyezés"])
 
 
 # ── önteszt ─────────────────────────────────────────────────────────────────
@@ -5412,8 +5619,38 @@ def _selftest() -> int:
        rules_from({"rules": [asdict(x) for x in RULES]})[1].any_of ==
        RULES[1].any_of)
 
-    print("BEOLVASÁS A KÉT ALKÖNYVTÁRRAL")
+    print("RÉGI SZABÁLYFÁJL ÉS EMLÉKEZET")
     import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        g = globals()
+        old_sd = g["script_dir"]
+        g["script_dir"] = lambda: td
+        try:
+            # A mezőt nem ismerő (régi) szabályfájl: az arckép-jelölő NEM veszhet
+            # el, különben a fotó nélküli formanyomtatvány a feltölthetőbe kerül.
+            legacy = [{k: v for k, v in asdict(r).items() if k != "arckep"}
+                      for r in DEFAULT_RULES]
+            with open(settings_path(), "w", encoding="utf-8") as f:
+                json.dump({"rules": legacy}, f)
+            R = rules_from(load_settings())
+            ck("régi szabályfájl: az arckép-jelölő az alapértelmezésből pótlódik",
+               next(r for r in R if r.id == "forma").arckep)
+            ck("célmappa régi szabályfájllal is 01, amíg nincs fotó",
+               target_subdir("Tart_eng_formanyomtatvány", R, False) == DIR_PREP)
+            remember("mellekletek", td)
+            ck("emlékezet: útvonal visszaolvasható", recall("mellekletek") == td)
+            remember("doktipus", "Útlevél")
+            ck("emlékezet: a doktípus is megmarad", recall("doktipus") == "Útlevél")
+            remember("mellekletek", os.path.join(td, "x.pdf"))
+            ck("emlékezet: fájlútvonalból a mappa", recall("mellekletek") == td)
+            with open(memory_path(), "w", encoding="utf-8") as f:
+                json.dump({"munkamappa": os.path.join(td, "nincs-ilyen")}, f)
+            ck("emlékezet: eltűnt mappa helyett a tartalék",
+               recall("munkamappa", "tartalék") == "tartalék")
+        finally:
+            g["script_dir"] = old_sd
+
+    print("BEOLVASÁS A KÉT ALKÖNYVTÁRRAL")
     with tempfile.TemporaryDirectory() as td:
         who = os.path.join(td, "Teszt Elek")
         up = os.path.join(who, DIR_UP)
@@ -5689,6 +5926,19 @@ def _selftest() -> int:
                     .tobytes("jpeg"))
         _, w, h = image_page_jpeg(big, 0, 150, 65, False)
         ck("nagy kép -> hosszabb oldal 150 DPI × A4", abs(max(w, h) - 150 * A4_LONG_IN) <= 1, (w, h))
+        full = open_image_pdf(p)                      # 400×200 px -> 300×150 pt
+        fr = full[0].rect
+        cr = open_image_pdf(p, pymupdf.Rect(0, 0, fr.width / 2, fr.height))
+        cpix = cr[0].get_pixmap()
+        ck("körülvágás: a lap feleződik, és csak a fehér fél marad",
+           abs(cr[0].rect.width - fr.width / 2) < 1 and
+           cpix.pixel(cpix.width - 2, cpix.height // 2)[0] > 200,
+           (cr[0].rect, cpix.pixel(cpix.width - 2, cpix.height // 2)))
+        wide = open_image_pdf(p, pymupdf.Rect(-50, -50, 5000, 5000))
+        ck("lapon kívüli vágás: nem hiba, a lap marad",
+           wide[0].rect.width == fr.width, wide[0].rect)
+        for d in (full, cr, wide):
+            d.close()
         out = pymupdf.open()
         jpeg, w, h = image_page_jpeg(p, 0, 200, 75, False)
         add_image_page(out, jpeg, w, h, 200, True)

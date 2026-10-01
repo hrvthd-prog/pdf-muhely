@@ -390,7 +390,10 @@ try:
 
     print("ARCKÉP ELHELYEZÉS")
     pl = app.tabs["Arckép elhelyezés"]
-    app.nb.select(pl)
+    app.show(pl)
+    pump(0.2)
+    ck("az Eszközök alfülére váltás: a gyorsbillentyűk is ide szólnak",
+       app.active_tab() is pl, app.active_tab())
     arc = os.path.join(TMP, "arc.png")              # álló kép, felső negyede piros
     P.Pixmap(P.csRGB, 100, 200, bytes((255, 0, 0) * 5000 + (0, 0, 255) * 15000), False).save(arc)
 
@@ -429,6 +432,41 @@ try:
     pm.tkimg = tkimg0
     ck("forgatott arckép: a mentett PDF = előnézet (lapforgatással is)",
        all(p == o and len(p) == 1 for _, _, p, o in got), got)
+
+    # Körülvágás: a felső negyed (piros) marad meg
+    pl._load_img(arc)
+    pump(0.2)
+    before = pl.imgpdf[0].rect
+    cd = pm.CropDialog(pl, arc, None, pl._apply_crop)
+    pump(0.2)
+    cdc = cd.canvas
+    cdc.event_generate("<ButtonPress-1>", x=2, y=2)
+    cdc.event_generate("<B1-Motion>", x=cd.w - 2, y=int(cd.h * 0.2))
+    pump(0.2)
+    ck("vonszolás: a Körülvág gomb él", str(cd.btn["state"]) == "normal", cd.btn["state"])
+    cd._apply()
+    pump(0.2)
+    after = pl.imgpdf[0].rect
+    pcrop = pl.imgpdf[0].get_pixmap()
+    ck("körülvágás: a kép lapja szűkül, a megtartott (piros) rész marad",
+       after.height < before.height / 2 and
+       pcrop.pixel(pcrop.width // 2, pcrop.height // 2)[0] > 200 and
+       "körülvágva" in pl.img_lbl.cget("text"),
+       (before, after, pcrop.pixel(pcrop.width // 2, pcrop.height // 2)))
+    kesz3 = os.path.join(TMP, "vagott.pdf")
+    pl._write(kesz3)
+    d = P.open(kesz3)
+    ck("a vágott arckép a mentett PDF-ben is vágott",
+       abs(pl.pw_px / pl.ph_px - after.width / after.height) < 0.05, (pl.pw_px, pl.ph_px))
+    d.close()
+    cd2 = pm.CropDialog(pl, arc, pl.img_crop, pl._apply_crop)
+    pump(0.1)
+    cd2._done(None)                                 # „Teljes kép”: a vágás visszavonva
+    pump(0.2)
+    ck("Teljes kép: a vágás visszavonható",
+       pl.img_crop is None and pl.imgpdf[0].rect == before, pl.imgpdf[0].rect)
+    pl._load_img(arc)
+    pump(0.2)
 
     # Iktatás a feltölthetőbe: a kör zárása 01 -> fotó -> 02
     pl.set_folder(anna)
@@ -487,6 +525,20 @@ try:
        [it.page for it in kt.items] == list(range(6)) and all(it.thumb for it in kt.items))
     kt.who_text.set("kiss")
     ck("dolgozó a mező részletéből", kt.who == "Kiss Anna", kt.who_msg.get())
+    kt.who_text.set("dolgozó 1")          # kétes részlet: 11 találat
+    kt._fill_who()
+    szukitett = list(kt.who_cb.cget("values"))
+    kt.who_text.set("Kiss Anna")          # már EGY dolgozót jelöl
+    kt._fill_who()
+    ck("a legördülő kiválasztás után is mind a nevet adja (nem kell visszatörölni)",
+       len(kt.who_cb.cget("values")) == len(kt.dirs) > 11,
+       (len(kt.who_cb.cget("values")), len(kt.dirs)))
+    ck("kétes részletnél viszont szűkít",
+       len(szukitett) == 10 and all(x.startswith("Dolgozó 1") for x in szukitett),
+       szukitett)
+    kt.who_text.set("kiss anna")
+    ck("a forrásmappa megjegyezve", pm.recall("mellekletek") == os.path.dirname(koteg),
+       pm.recall("mellekletek"))
 
     def key(k, w=None):
         w = w or c

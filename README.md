@@ -7,13 +7,25 @@ használ.
 A dokumentumokat a [DocGen](https://github.com/hrvthd-prog/DocGen) generálja,
 ez az eszköz a nyomtatás–aláírás–szkennelés utáni lépéseket segíti.
 
+A felső sáv a munka sorrendje; az eseti műveletek az **Eszközök** fül
+alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
+
 | Fül | Mire való |
 |---|---|
-| Arckép elhelyezés | fénykép ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
-| Összefűzés / Raszterizálás | PDF-műveletek |
-| Összeállító | szkennelt kötegből és képekből iratok: az oldalak számbillentyűvel doktípust kapnak, egyetlen Iktatással mind a dolgozó mappájába kerül |
-| Iktató | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva |
-| Áttekintő | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
+| **1 · Összeállító** | szkennelt kötegből és képekből iratok: az oldalak számbillentyűvel doktípust kapnak, egyetlen Iktatással mind a dolgozó mappájába kerül |
+| **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva |
+| **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
+| Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
+| Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
+
+A program **megjegyzi** az utoljára használt munkamappát, a mellékletek
+mappáját és az Iktatóban választott doktípust (`emlekezet.json`).
+
+## Arckép: körülvágás
+
+Az arckép szegélyét nem kell Paintben leszedni: **Körülvágás…** → húzz
+téglalapot a megtartandó rész köré → **Körülvág**. A **Teljes kép** visszavonja.
+A kép fájlja nem változik — a vágás csak a PDF-be helyezett példányra hat.
 
 ## A dolgozói mappa szerkezete
 
@@ -135,6 +147,7 @@ A forrás köteg-PDF változatlan marad.
 | `attekinto-szabalyok.json` — az Áttekintő irattípusai, kulcsszavai | a program mappájában | igen (alapértelmezés) |
 | `iktato-doktipusok.json` — az Iktató doktípus-listája | a program mappájában | igen, ha létrejön |
 | `verzio.json` — a verziószám | a program mappájában | igen, **gép írja** |
+| `emlekezet.json` — utolsó útvonalak, doktípus | a program mappájában | **nem** (gépenként más) |
 | `iktato-naplo.csv` — az iktatás naplója | a munkamappában | **nem** |
 | `.eredeti\` — felülírt iratok előző példánya | a dolgozó mappájában | **nem** |
 
@@ -235,7 +248,7 @@ ZIP*). Kicsomagolni nem kell:
 amelyek a ZIP-ben is szerepelnek és tényleg különböznek (bájtra hasonlít
 össze). A dolgozói mappák, a napló és a `.eredeti\` mentések nincsenek a
 ZIP-ben, tehát hozzájuk sem nyúlhat; a **beállításfájlokat**
-(`attekinto-szabalyok.json`, `iktato-doktipusok.json`) csak akkor hozza létre,
+(`attekinto-szabalyok.json`, `iktato-doktipusok.json`, `emlekezet.json`) csak akkor hozza létre,
 ha még nincsenek — a helyben testreszabott szabályok megmaradnak.
 
 Ez nem ígéret, hanem mért tulajdonság: a `test/frissit.py` felépít egy hamis

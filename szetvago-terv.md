@@ -369,3 +369,19 @@ A dolgozónkénti két alkönyvtár terve a `kepek-pdf-terv.md` 12. fejezetében
 **Ami nem változik:** a rács, a címkézés, a számbillentyűs továbblépés, a `shrink_later`-es tömörítés, a `write_pdf_verified`, a `backup_existing` és a kötegszintű Visszavonás. A `.eredeti\` viszont a dolgozó **gyökerébe** kerül, nem a `02_Feltoltheto` alá (a felhasználó döntése) — ez a `backup_existing`-ben egy egysoros felmenés, a `undo_copy` a tárolt utat használja, tehát érintetlen.
 
 **Teszt:** a GUI-teszt kötegfolyamata kapjon egy formanyomtatvány-iratot mindkét jelölőállásban, és ellenőrizze a célmappát; az önteszt a `target_subdir` tiszta függvényt méri.
+
+## 16. A dolgozó-legördülő javítása (2026-10-01)
+
+A `Dolgozó` mező legördülőjét a `postcommand` a beírt szövegre **szűkítette**
+(`resolve_worker(...)[1]`, a találatok). Amíg üres a mező, ez hasznos —
+kiválasztás után viszont a mezőben egy teljes név áll, tehát pontosan egy
+találat van: a lista egyelemű lett, és másik dolgozóra csak a név
+**visszatörlésével** lehetett váltani.
+
+A javítás: ha a mező szövege már **egy** dolgozót jelöl (`resolve_worker` első
+visszatérési értéke nem `None`), a legördülő **mind a nevet** adja; kétes
+részletnél marad a szűkítés. Így a legördülő váltásra is használható, a beírás
+közbeni szűkítés pedig megmarad.
+
+A GUI-teszt mindkét állapotot méri (kétes részlet → szűkített lista; teljes név
+→ az összes mappa).
