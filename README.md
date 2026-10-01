@@ -104,6 +104,30 @@ A címsorban látszik a verzió (pl. `v1.4 (2026-09-25)`). Ha a PyMuPDF túl ré
 tömörítéshez vagy a JPEG-minőség állításához, az app induláskor szól
 (1.26.7-tel tesztelve); a többi funkció ilyenkor is működik.
 
+## Bélyeg: a dolgozó és a típus a PDF-ben
+
+Minden iktatott irat kap egy **bélyeget** a PDF metaadatában (`/Keywords`):
+
+```
+pdf-muhely=1;dolgozo=Kiss Anna;tipus=Útlevél;szabaly=utlevel;hely=02_Feltoltheto;datum=2026-10-01
+```
+
+Ez **átnevezést és áthelyezést túlél** (a tömörítést is), ezért:
+
+- az **Áttekintő** akkor is a típusához számítja az iratot, ha a nevét átírták
+  (`IMG_20260101_0001.pdf`) — a hiánylista jelzi: „átnevezve";
+- a **Rendezés** a bélyeg szerint viszi vissza a helyére (tipp helyett
+  bizonyíték);
+- ha egy iraton **más dolgozó** bélyege van, a hiánylista `IDEGEN` sorral szól.
+
+**A fájlnév marad az elsődleges igazság:** a bélyeget csak ott nézzük meg, ahol
+a nevet egyik szabály sem ismeri fel. A sima iktatás másolása a bélyeget
+**növekményes** függelékként kapja, tehát a forrás bájtjai a célban is
+megvannak; ha a bélyegzés nem sikerül, az irat bélyeg nélkül, de hibátlanul
+kerül a helyére. A szkennelt lapon az iktatás **előtt** nincs bélyeg (a
+nyomtatás–aláírás–szkennelés kör mindent elveszít), és visszamenőleg sem
+keletkezik. Döntés és korlátok: `kepek-pdf-terv.md` 13.5.
+
 ## Az 5 MB-os feltöltési korlát
 
 A portálra egy fájl legfeljebb 5 MB lehet. A korlát szándékosan a szigorúbb

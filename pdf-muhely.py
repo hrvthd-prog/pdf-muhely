@@ -82,6 +82,85 @@ def open_checked(path: str):
 CLEAN_META = {"producer": "pdf-muhely", "creator": "", "title": "",
               "author": "", "subject": "", "keywords": ""}
 
+# ── bélyeg: dolgozó és doktípus a PDF metaadatában (kepek-pdf-terv.md 13.5) ──
+# A /Keywords mezőbe írjuk, mert az átnevezést túléli, és a tömörítést is (mért
+# tulajdonság, 12.7). A fájlnév marad az ELSŐDLEGES igazság: a bélyeg csak ott
+# szólal meg, ahol a név nem ismerhető fel.
+STAMP_KEY = "pdf-muhely"
+STAMP_FIELDS = (STAMP_KEY, "dolgozo", "tipus", "szabaly", "hely", "datum")
+
+
+def stamp_keywords(who: str, doc_type: str, rule_id: str = "", sub: str = "",
+                   old: str = "") -> str:
+    """A bélyeg szövege. A más eredetű kulcsszavak megmaradnak — a DocGen-bélyeg
+    is (azt a producer és a keywords együtt hordozza, has_docgen_stamp)."""
+    def clean(v):
+        return re.sub(r"[;=]", " ", str(v or "")).strip()
+    parts = [f"{STAMP_KEY}=1", f"dolgozo={clean(who)}", f"tipus={clean(doc_type)}"]
+    if rule_id:
+        parts.append(f"szabaly={clean(rule_id)}")
+    if sub:
+        parts.append(f"hely={clean(sub)}")
+    parts.append("datum=" + datetime.date.today().isoformat())
+    keep = [t.strip() for t in (old or "").split(";")
+            if t.strip() and t.split("=")[0].strip() not in STAMP_FIELDS]
+    return ";".join(keep + parts)
+
+
+def parse_stamp(keywords: str) -> dict:
+    """A kulcsszavakból a bélyeg; üres dict, ha nincs benne."""
+    d = {}
+    for t in (keywords or "").split(";"):
+        k, sep, v = t.partition("=")
+        if sep:
+            d[k.strip()] = v.strip()
+    return d if STAMP_KEY in d else {}
+
+
+def read_stamp(path: str) -> dict:
+    """Egy PDF bélyege (dolgozo, tipus, szabaly, hely, datum); {} ha nincs."""
+    try:
+        d = pymupdf.open(path)
+    except Exception:
+        return {}
+    try:
+        return parse_stamp((d.metadata or {}).get("keywords") or "")
+    finally:
+        d.close()
+
+
+def set_stamp(doc, who: str, doc_type: str, rule_id: str = "", sub: str = ""):
+    """Bélyeg egy megnyitott dokumentumra, mentés előtt."""
+    m = dict(doc.metadata or {})
+    m["keywords"] = stamp_keywords(who, doc_type, rule_id, sub, m.get("keywords"))
+    doc.set_metadata(m)
+
+
+def stamp_pdf_file(path: str, who: str, doc_type: str, rule_id: str = "",
+                   sub: str = "") -> bool:
+    """Bélyeg egy már kiírt PDF-re, NÖVEKMÉNYES mentéssel: a fájl eddigi bájtjai
+    érintetlenek, a bélyeg függelékként kerül rá. -> sikerült-e (az oldalszámmal
+    és a visszaolvasott bélyeggel igazolva). Hiba esetén False, a hívó dönt —
+    a bélyeg kényelmi adat, nem iktatási feltétel."""
+    try:
+        d = pymupdf.open(path)
+        try:
+            pages = d.page_count
+            set_stamp(d, who, doc_type, rule_id, sub)
+            d.save(path, incremental=True, encryption=pymupdf.PDF_ENCRYPT_KEEP)
+        finally:
+            d.close()
+        d = pymupdf.open(path)
+        try:
+            ok = (d.page_count == pages and
+                  parse_stamp((d.metadata or {}).get("keywords") or "").get("dolgozo")
+                  == re.sub(r"[;=]", " ", who or "").strip())
+        finally:
+            d.close()
+        return ok
+    except Exception:
+        return False
+
 VERZIO_FILE = "verzio.json"          # a tools/verzio.py írja minden commitnál
 
 
@@ -180,12 +259,17 @@ def shrink_later(widget, data: bytes, on_done, on_step=None):
     widget.after(1, tick)
 
 
-def write_pdf_verified(data: bytes, dst: str, pages: int):
-    """PDF-bájtok kiírása .part néven, oldalszám-ellenőrzés, majd atomi átnevezés."""
+def write_pdf_verified(data: bytes, dst: str, pages: int, stamp=None):
+    """PDF-bájtok kiírása .part néven, oldalszám-ellenőrzés, majd atomi átnevezés.
+    `stamp`: (dolgozó, doktípus, szabály-id, alkönyvtár) — ha a bélyegzés nem
+    sikerül, a tiszta bájtok mennek ki, az iktatás nem bukhat el tőle."""
     tmp = dst + ".part"
     try:
         with open(tmp, "wb") as f:
             f.write(data)
+        if stamp and not stamp_pdf_file(tmp, *stamp):
+            with open(tmp, "wb") as f:
+                f.write(data)
         d = pymupdf.open(tmp)
         n = d.page_count
         d.close()
@@ -619,7 +703,7 @@ class PlacerTab(ttk.Frame):
                     backup = backup_existing(dst)
             self.app.status("Iktatás…")
             self.update_idletasks()
-            self._write(dst)
+            self._write(dst, (self.who, dt, r.id if r else "", DIR_UP))
         except Exception as e:
             traceback.print_exc()
             if backup and os.path.exists(backup):
@@ -864,7 +948,7 @@ class PlacerTab(ttk.Frame):
         messagebox.showinfo("Kész", f"Elmentve:\n{dst}" + (f"\n\n{note}" if note else ""))
         self.app.refresh_all()
 
-    def _write(self, dst):
+    def _write(self, dst, stamp=None):
         w, h = self._size_pt()
         a = math.radians(float(self.angle.get()))
         bw = abs(w * math.cos(a)) + abs(h * math.sin(a))     # forgatott befoglaló doboz
@@ -881,9 +965,13 @@ class PlacerTab(ttk.Frame):
             page.show_pdf_page(target, self.imgpdf, 0,
                                rotate=rot - float(self.angle.get()), keep_proportion=True)
             if not self.raster.get():
+                if stamp:
+                    set_stamp(out, *stamp)
                 out.save(dst, garbage=4, deflate=True)
                 return
-            flat = rasterize_doc(out, self.dpi.get())
+            flat = rasterize_doc(out, self.dpi.get())      # ez CLEAN_META-t tesz rá
+            if stamp:
+                set_stamp(flat, *stamp)
             flat.save(dst, garbage=4, deflate=True)
             flat.close()
         finally:
@@ -1559,6 +1647,7 @@ class IktatoTab(ttk.Frame):
         self._hot = None
         self._job = None
         self._busy = False               # tömörítés fut: új iktatás és visszavonás vár
+        self.stamped = False             # sikerült-e a bélyeg az utolsó iktatásnál
 
         last = recall("doktipus")
         self.doc_type = tk.StringVar(value=last if last in self.types else "")
@@ -2116,9 +2205,13 @@ class IktatoTab(ttk.Frame):
             self._render_preview()
             return
 
+        rules = self._rules()
         folder = os.path.join(self.parent_dir, dir_name,
-                              target_subdir(self.doc_type.get(), self._rules(),
+                              target_subdir(self.doc_type.get(), rules,
                                             self.arckep_kesz.get()))
+        r = doc_type_rule(self.doc_type.get(), rules)
+        stamp = (dir_name, self.doc_type.get(), r.id if r else "",
+                 os.path.basename(folder))
         try:
             os.makedirs(folder, exist_ok=True)
         except OSError as e:
@@ -2128,7 +2221,7 @@ class IktatoTab(ttk.Frame):
                    doc_type=self.doc_type.get(),
                    name=target_name(dir_name, self.doc_type.get(), self.suffix.get()),
                    size=os.path.getsize(src), collision=False, overwritten=False,
-                   backup=None, shrunk=None)
+                   backup=None, shrunk=None, stamp=stamp)
         shrink = False
         if job["size"] > UPLOAD_LIMIT:
             shrink = messagebox.askyesnocancel(
@@ -2163,7 +2256,7 @@ class IktatoTab(ttk.Frame):
                                  f"Tömörítés… {dpi} DPI, Q{q} (a lépcsők között a felület él)"),
                              on_done=lambda out, step, err: self._shrink_done(job, out, step, err))
                 return
-            self._copy_verified(src, job["dst"])
+            self._copy_verified(src, job["dst"], stamp)
         except Exception as e:
             self._copy_failed(job, e)
             return
@@ -2178,7 +2271,7 @@ class IktatoTab(ttk.Frame):
             d = pymupdf.open(job["src"])
             pages = d.page_count
             d.close()
-            write_pdf_verified(data, job["dst"], pages)
+            write_pdf_verified(data, job["dst"], pages, job["stamp"])
         except Exception as e:
             self._copy_failed(job, e)
             return
@@ -2234,7 +2327,8 @@ class IktatoTab(ttk.Frame):
             self._info(f"✔ {job['dir_name']}\\{job['sub']} → {name}" +
                        (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
                        (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
-                        if job["shrunk"] else ""), ok=True)
+                        if job["shrunk"] else "") +
+                       ("" if self.stamped else " · bélyeg nélkül"), ok=True)
 
     def _ask_collision(self, name):
         """new | overwrite | cancel — alapértelmezés az új név."""
@@ -2274,10 +2368,14 @@ class IktatoTab(ttk.Frame):
         win.wait_window()
         return res["v"]
 
-    def _copy_verified(self, src, dst):
-        """Másolás .part néven, ellenőrzés, majd atomi átnevezés."""
+    def _copy_verified(self, src, dst, stamp=None):
+        """Másolás .part néven, ellenőrzés, bélyegzés, majd atomi átnevezés.
+        A másolás továbbra is bájtazonos, a bélyeg NÖVEKMÉNYES függelék — a
+        forrás bájtjai a célban is megvannak (13.5). Ha a bélyegzés nem megy,
+        tiszta másolat kerül ki: a bélyeg kényelmi adat, nem iktatási feltétel."""
         tmp = dst + ".part"
         total = os.path.getsize(src)
+        self.stamped = bool(stamp)
         try:
             if total > BIG_FILE:
                 done = 0
@@ -2301,6 +2399,9 @@ class IktatoTab(ttk.Frame):
             d.close()
             if n < 1:
                 raise IOError("A másolat nem nyitható meg PDF-ként.")
+            if stamp and not stamp_pdf_file(tmp, *stamp):
+                shutil.copy2(src, tmp)                 # bélyeg nélkül, de hibátlanul
+                self.stamped = False
             os.replace(tmp, dst)
         except Exception:
             if os.path.exists(tmp):
@@ -2690,6 +2791,10 @@ class PersonRow:
     extra_pdfs: list = field(default_factory=list)
     other: list = field(default_factory=list)
     big: dict = field(default_factory=dict)      # 5 MB feletti PDF-ek: rel. út -> méret
+    # Bélyeg-alapú felismerés (13.5): amit a NÉV nem adott meg, de a bélyeg igen,
+    # és amin MÁS dolgozó bélyege van (eltévedt irat).
+    by_stamp: list = field(default_factory=list)
+    foreign: list = field(default_factory=list)   # [(rel. út, a bélyeg dolgozója)]
     subdirs: int = 0
     error: str = None
 
@@ -2817,6 +2922,18 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
             if n > UPLOAD_LIMIT:
                 row.big[rel] = n
         rule, amb = match_rule(rel, rules)
+        if rule is None and ext == ".pdf":
+            # Átnevezett irat: a fájlnév nem ismerhető fel, a bélyeg igen. Csak itt
+            # nyitjuk meg a PDF-et — a felismert nevűeknél nincs rá ok (13.5).
+            st_info = read_stamp(os.path.join(folder, rel))
+            if st_info:
+                if strip_accents(st_info.get("dolgozo", "")) != strip_accents(name):
+                    row.foreign.append((rel, st_info.get("dolgozo") or "?"))
+                rule = next((r for r in rules if r.id == st_info.get("szabaly")), None)
+                if rule is None and st_info.get("tipus"):
+                    rule, amb = match_rule(target_name(name, st_info["tipus"]), rules)
+                if rule is not None:
+                    row.by_stamp.append(rel)
         if rule is None:
             if ext == ".pdf":
                 row.extra_pdfs.append(rel)
@@ -2903,6 +3020,14 @@ def migracio_terv(folder: str, rules: list, depth: int = 3) -> list:
         if ext not in (".pdf", ".docx"):
             out.append((rel, None, "nem irat", True))
             continue
+        if ext == ".pdf":
+            # A bélyeg bizonyíték, nem tipp: ide iktattuk, tehát ide tartozik —
+            # akkor is, ha közben átnevezték (13.5).
+            st_info = read_stamp(os.path.join(folder, rel))
+            if st_info.get("hely") in WORK_DIRS:
+                out.append((rel, st_info["hely"],
+                            f"bélyeg: {st_info.get('tipus') or '?'}", True))
+                continue
         rule, _amb = match_rule(rel, rules)
         if rule is None:
             out.append((rel, None, "nem ismeri fel egyik szabály sem", True))
@@ -4080,6 +4205,12 @@ class AttekintoTab(ttk.Frame):
                          (f" … ({len(r.unsorted)} db)" if len(r.unsorted) > 4 else ""))
             for name, files in r.duplicates:
                 L.append(f"    több PDF:    {name} — " + ", ".join(f'„{f}"' for f in files))
+            if r.by_stamp:
+                L.append("    átnevezve:   " +
+                         ", ".join(f'„{f}"' for f in r.by_stamp[:3]) +
+                         " (a bélyeg alapján felismerve)")
+            for f, w in r.foreign:
+                L.append(f'    IDEGEN:      „{f}" bélyege: {w}')
             if not r.photos:
                 L.append("    arckép hiányzik")
             elif len(r.photos) > 1:
@@ -4099,6 +4230,8 @@ class AttekintoTab(ttk.Frame):
                 extra += f"   ⚠ {len(r.unsorted)} besorolatlan fájl"
             if r.duplicates:
                 extra += "   ⚠ több PDF: " + ", ".join(n for n, _ in r.duplicates)
+            if r.foreign:
+                extra += "   ⚠ idegen bélyeg: " + ", ".join(w for _, w in r.foreign)
             L.append(f"{r.name} …… {r.ready_required}/{nreq} kötelező · "
                      f"{r.ready_optional}/{nopt} ajánlott{extra}")
         return "\n".join(L)
@@ -5285,6 +5418,8 @@ class ComposerTab(ttk.Frame):
         out, b["out"] = b["out"], None
         try:
             out.set_metadata(dict(CLEAN_META, title=os.path.splitext(job["name"])[0]))
+            r = doc_type_rule(job["doc"].doc_type, self._rules())
+            set_stamp(out, b["who"], job["doc"].doc_type, r.id if r else "", job["sub"])
             pages = out.page_count
             data = out.tobytes(garbage=4, deflate=True)
         except Exception as e:
@@ -5863,6 +5998,77 @@ def _selftest() -> int:
            t[os.path.basename(stamped)])
         ck("bélyeg nélkül + utótaggal -> 02",
            t[os.path.basename(plain)][1] == DIR_UP, t[os.path.basename(plain)])
+
+    print("BÉLYEG: DOLGOZÓ ÉS DOKTÍPUS A METAADATBAN")
+    kw = stamp_keywords("Kiss Anna", "Útlevél", "utlevel", DIR_UP)
+    st0 = parse_stamp(kw)
+    ck("a bélyeg mind a négy adatot hordozza",
+       (st0["dolgozo"], st0["tipus"], st0["szabaly"], st0["hely"]) ==
+       ("Kiss Anna", "Útlevél", "utlevel", DIR_UP), st0)
+    ck("idegen kulcsszó megmarad (a DocGen-jel is)",
+       "docgen" in stamp_keywords("X", "Y", old="docgen;meghat"))
+    ck("újrabélyegzés nem duplázza a kulcsokat",
+       stamp_keywords("Nagy Béla", "Útlevél", old=kw).count("dolgozo=") == 1)
+    ck("a pontosvessző és az egyenlőségjel kiesik a névből",
+       parse_stamp(stamp_keywords("A;B=C", "T"))["dolgozo"] == "A B C")
+    ck("bélyeg nélküli kulcsszó -> üres", parse_stamp("docgen;meghat") == {})
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "a.pdf")
+        d = pymupdf.open()
+        d.new_page()
+        d.new_page()
+        d.set_metadata({"producer": "DocGen 10.62", "keywords": "docgen;meghat"})
+        d.save(f)
+        d.close()
+        before = open(f, "rb").read()
+        ok = stamp_pdf_file(f, "Kiss Anna", "Meghatalmazás", "meghat", DIR_UP)
+        after = open(f, "rb").read()
+        ck("bélyegzés növekményes: az eddigi bájtok érintetlenek",
+           ok and after.startswith(before) and len(after) > len(before),
+           (ok, len(before), len(after)))
+        chk = pymupdf.open(f)
+        pages = chk.page_count
+        chk.close()
+        ck("a DocGen-bélyeg és az oldalszám megmarad",
+           has_docgen_stamp(f) and pages == 2, (has_docgen_stamp(f), pages))
+        ck("a fájlból visszaolvasva ugyanaz",
+           read_stamp(f)["tipus"] == "Meghatalmazás", read_stamp(f))
+        ck("bélyeg nélküli és nem létező fájl -> üres",
+           read_stamp(os.path.join(td, "nincs.pdf")) == {})
+
+    # Átnevezés: a NÉV az elsődleges igazság, a bélyeg a tartalék (13.5)
+    with tempfile.TemporaryDirectory() as td:
+        who = os.path.join(td, "Kiss Anna")
+        up = os.path.join(who, DIR_UP)
+        os.makedirs(up)
+        ren = os.path.join(up, "scan0042.pdf")        # értelmetlen szkennernév
+        d = pymupdf.open()
+        d.new_page()
+        d.save(ren)
+        d.close()
+        r0 = scan(td, RULES, 1)[0]
+        ck("bélyeg nélkül az átnevezett irat csak melléklet",
+           r0.docs["utlevel"].cell == "·" and not r0.by_stamp,
+           (r0.docs["utlevel"].cell, r0.extra_pdfs))
+        stamp_pdf_file(ren, "Kiss Anna", "Útlevél", "utlevel", DIR_UP)
+        r1 = scan(td, RULES, 1)[0]
+        rel = os.path.join(DIR_UP, "scan0042.pdf")
+        ck("bélyeggel az átnevezett irat a típusához számít, és jelezve van",
+           r1.docs["utlevel"].cell == "F" and r1.by_stamp == [rel] and not r1.foreign,
+           (r1.docs["utlevel"].cell, r1.by_stamp))
+        ck("a felismert nevű iratot nem írja felül a bélyeg (a név az igazság)",
+           match_rule("Kiss Anna Útlevél.pdf", RULES)[0].id == "utlevel")
+        stamp_pdf_file(ren, "Nagy Béla", "Útlevél", "utlevel", DIR_UP)
+        r2 = scan(td, RULES, 1)[0]
+        ck("más dolgozó bélyege -> IDEGEN jelzés",
+           r2.foreign == [(rel, "Nagy Béla")], r2.foreign)
+        stamp_pdf_file(ren, "Kiss Anna", "Útlevél", "utlevel", DIR_UP)
+        moved = os.path.join(who, "akarmi.pdf")       # kiesett a gyökérbe, átnevezve
+        os.replace(ren, moved)
+        terv = {t[0]: t for t in migracio_terv(who, RULES)}
+        ck("Rendezés: a bélyeg bizonyíték, visszaviszi a 02-be",
+           terv["akarmi.pdf"][1] == DIR_UP and terv["akarmi.pdf"][3] is True,
+           terv["akarmi.pdf"])
 
     print("IKTATÓ-TÍPUS ↔ ÁTTEKINTŐ-SZABÁLY")
     for t in DOC_TYPES_DEFAULT:

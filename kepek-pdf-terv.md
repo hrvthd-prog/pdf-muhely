@@ -459,6 +459,8 @@ Amiért mégis csak egy ponton használjuk:
 
 Ezért a bélyeg **egyetlen dolgot dönt el**: generált-e a PDF vagy szkennelt (12.6). Ott bizonyíték, és nem lehet átnevezéssel elrontani.
 
+> **2026-10-01:** ez a döntés **bővült** — a bélyeg immár a dolgozót és a doktípust is hordozza, a fájlnév elsődlegességének megtartásával. Lásd **13.5**.
+
 **Ami nagyságrenddel többet adna, de nincs a tervben:** a papírra nyomtatott QR/vonalkód az egyetlen jel, ami átéli a kört — akkor a szkennelt köteget az Összeállító magától szét tudná osztani, és a kézi címkézés nagyrészt elmaradna. Ára: dekóder-dependencia (`zxing-cpp`/`pyzbar`) egy ma kétfüggőségű offline eszközben, plusz mérés, hogy a helyi szkennerbeállítással olvasható-e. Csak mérés után döntendő.
 
 ### 12.8 Fázisok
@@ -597,3 +599,75 @@ Döntések:
 - Az **arckép-jelölőt szándékosan NEM jegyzi meg** — az beragadva téves `02`-t
   okozna (12.4). A doktípus megjegyzése ártalmatlan: a jelölő típusváltáskor
   amúgy visszaáll.
+
+### 13.5 Bélyeg: dolgozó és doktípus a metaadatban (2026-10-01)
+
+**A kérdés:** elhelyezhető-e a PDF-ben, hogy tőlünk származik, melyik dolgozóé
+és milyen típusú — hogy egy **átnevezés** ne vigye el ezt a tudást.
+
+Igen, és a 12.7 tiltása nem volt elvi, hanem a „második igazság" kockázatáról
+szólt. A bővítés ezért **két felhasználói döntésen** áll:
+
+1. **Bélyeg az Iktató másolatára is** (nem csak amit a program újraír) — ez a
+   napi fő útvonal, a szkennerből jövő PDF.
+2. **A fájlnév marad az elsődleges igazság**, a bélyeg tartalék.
+
+#### A bélyeg helye és alakja
+
+A PDF `/Keywords` mezője, pontosvesszős `kulcs=érték` párokban:
+
+```
+pdf-muhely=1;dolgozo=Kiss Anna;tipus=Útlevél;szabaly=utlevel;hely=02_Feltoltheto;datum=2026-10-01
+```
+
+- **Miért a `keywords`:** átnevezést és másolást túlél, és mérés szerint az
+  5 MB-os tömörítést is (12.7) — a `shrink_steps` újra megnyitja és visszaírja.
+- **Az idegen kulcsszavak megmaradnak:** a `stamp_keywords` csak a *saját*
+  kulcsait cseréli. Így a **DocGen-bélyeg sem sérül** (azt a `producer` és a
+  `keywords` együtt hordozza), tehát a Rendezés generált/szkennelt döntése áll.
+- A `szabaly` (szabály-id) a gépi azonosító, a `tipus` az olvasható név; a
+  `hely` az az alkönyvtár, ahova iktattuk. A `;` és `=` az értékekből kiesik.
+
+#### Hogyan kerül rá — és mit adtunk fel
+
+| útvonal | hogyan |
+|---|---|
+| Összeállító | `set_stamp` a memóriabeli iraton, kiírás előtt (iratonként, a saját `hely`-ével) |
+| Arckép elhelyezés | ugyanaz, a raszterizálás **után** (a `rasterize_doc` `CLEAN_META`-t tesz rá, ott elveszne) |
+| Iktató, sima másolás | `stamp_pdf_file` a `.part`-on, **növekményes** mentéssel |
+| Iktató, tömörítő útvonal | `write_pdf_verified(..., stamp=…)` |
+
+**A bájtazonos másolás garanciája helyére a növekményes bélyegzés lépett**
+(a felhasználó döntése). Ez a lehető legkisebb engedmény: a növekményes mentés
+**függelékként** írja a változást, tehát a forrásfájl bájtjai a célban
+*előtagként* továbbra is bitre ott vannak — ezt a GUI-teszt közvetlenül méri
+(`startswith`), nem csak a méretet. Az ellenőrzés sorrendje: méret = forrás →
+megnyitható PDF → bélyegzés → oldalszám és visszaolvasott bélyeg. Ha a
+bélyegzés bármiért nem megy, **tiszta másolat kerül ki** (az üzenet végén
+„· bélyeg nélkül"): a bélyeg kényelmi adat, nem iktatási feltétel.
+
+#### Mire használjuk (a név az elsődleges)
+
+- **Áttekintő:** csak ott nyitja meg a PDF-et, ahol a **fájlnevet egyik szabály
+  sem ismerte fel**. Ha ott van bélyeg, az irat a típusához számít — tehát egy
+  átnevezett (`IMG_20260101_0001.pdf`) iktatott irat nem esik ki a mátrixból.
+  A hiánylista jelzi: „átnevezve … (a bélyeg alapján felismerve)".
+- **Rendezés:** a bélyeg **bizonyíték, nem tipp** — a `hely` szerint viszi
+  vissza a fájlt (`biztos=True`), a találgatós ág elé.
+- **Idegen irat:** ha a bélyeg más dolgozót nevez meg, a hiánylistában
+  `IDEGEN` sor, a beadható soroknál `⚠ idegen bélyeg`. Ez **csak** a név szerint
+  fel nem ismert fájlokra néz — minden PDF megnyitása egy 40 dolgozós
+  munkamappában lassú lenne, és a név szerint felismert fájl amúgy is a saját
+  helyén van.
+
+#### Amit a bélyeg nem tud
+
+- **A nyomtatás–aláírás–szkennelés kör mindent elveszít.** A szkennerből jövő
+  lap csak az iktatáskor kap bélyeget — azelőtt nincs mit olvasni. Ezt továbbra
+  is csak papírra nyomott QR/vonalkód oldaná meg (12.7 vége).
+- **Visszamenőleg nincs bélyeg:** a már kint lévő iratok csak újraiktatással
+  kapnák meg.
+- **Az Intézőben nem látszik** (a `keywords` nincs oszlopként) — az
+  átláthatóságot továbbra is a mappaszerkezet adja.
+- **Ütközéskor a fájlnév nyer.** Ha a név felismerhető, a bélyeget meg sem
+  nézzük: egy igazság van, a második csak ott szólal meg, ahol az első hallgat.

@@ -302,6 +302,10 @@ try:
     bak = os.path.join(bela, pm.BACKUP_DIR, "Nagy Béla Útlevél.pdf")
     ck("helyben tömörítve 5 MB alá", os.path.getsize(big_pdf) <= pm.UPLOAD_LIMIT < size0,
        f"{pm.mb(size0)} -> {pm.mb(os.path.getsize(big_pdf))}")
+    sb = pm.read_stamp(big_pdf)
+    ck("a tömörített példány is bélyeget kap (dolgozó + típus)",
+       (sb.get("dolgozo"), sb.get("tipus"), sb.get("hely")) ==
+       ("Nagy Béla", "Útlevél", pm.DIR_UP), sb)
     ck("az eredeti a .eredeti\\ mappában", os.path.exists(bak) and os.path.getsize(bak) == size0)
     app.nb.select(att)
     pump(0.4)
@@ -311,6 +315,35 @@ try:
     ikt._undo()
     ck("Visszavonás: az eredeti visszaállt", os.path.getsize(big_pdf) == size0 and
        not os.path.exists(bak), ikt.msg.get())
+
+    # Sima (nem tömörítő) iktatás: a bélyeg növekményes függelék, a forrás bájtjai
+    # a célban is megvannak — a bájtazonos másolás helyére ez az ellenőrzés lép.
+    kicsi = os.path.join(TMP, "kicsi.pdf")
+    empty_pdf(kicsi)
+    ikt.queue.clear()
+    ikt.doc_type.set("Szálláshely-igazolás")
+    ikt._type_chosen()
+    ikt._enqueue([kicsi])
+    ikt._do_copy("Kiss Anna")
+    pump(0.3)
+    cel = os.path.join(anna_up, "Kiss Anna Szálláshely-igazolás.pdf")
+    sk = pm.read_stamp(cel)
+    ck("sima iktatás: bélyeg és a forrás bájtjai a célban",
+       (sk.get("dolgozo"), sk.get("tipus")) == ("Kiss Anna", "Szálláshely-igazolás") and
+       open(cel, "rb").read().startswith(open(kicsi, "rb").read()) and ikt.stamped,
+       sk)
+    # Átnevezve is felismeri: a mátrix a bélyegből sorol be
+    atnevezve = os.path.join(anna_up, "IMG_20260101_0001.pdf")
+    os.replace(cel, atnevezve)
+    app.show(att)
+    att.refresh()
+    pump(0.4)
+    ra = next(x for x in att.rows if x.name == "Kiss Anna")
+    ck("átnevezett iktatott irat: a bélyeg alapján a helyén számít",
+       ra.docs["szalli"].cell == "F" and
+       ra.by_stamp == [os.path.join(pm.DIR_UP, "IMG_20260101_0001.pdf")],
+       (ra.docs["szalli"].cell, ra.by_stamp))
+    os.remove(atnevezve)
 
     # ═══════════════════════════ Összeállító ═══════════════════════════════
     print("ÖSSZEÁLLÍTÓ: KÉPEK")
@@ -480,6 +513,10 @@ try:
     pump(0.2)
     kesz2 = os.path.join(anna_up, "Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf")
     ck("az arcképes irat a feltölthető mappába került", os.path.isfile(kesz2), kesz2)
+    sp = pm.read_stamp(kesz2)
+    ck("az arcképes irat bélyeget kap",
+       (sp.get("dolgozo"), sp.get("tipus")) == ("Kiss Anna", "Tart_eng_formanyomtatvány"),
+       sp)
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
         last = list(csv.reader(f, delimiter=";"))[-1]
     ck("naplósor az arckép-iktatásról",
@@ -611,6 +648,10 @@ try:
     ck("Forma (fotó nélkül) az előkészítettbe, a vonszolt sorrendben",
        pdf_info(forma, pm.DIR_PREP)[0] == ["oldal 2", "oldal 1"],
        pdf_info(forma, pm.DIR_PREP))
+    sf = pm.read_stamp(os.path.join(anna, pm.DIR_PREP, forma))
+    ck("Összeállító: iratonkénti bélyeg a cél alkönyvtárával",
+       (sf.get("dolgozo"), sf.get("tipus"), sf.get("hely")) ==
+       ("Kiss Anna", "Tart_eng_formanyomtatvány", pm.DIR_PREP), sf)
     ck("ütközés: új néven (2), a régi érintetlen",
        pdf_info(elo2)[0] == ["oldal 3", "oldal 4"] and pdf_info(os.path.basename(elo))[0] == [""])
     ck("Útlevél: a szerkesztett utótaggal, elforgatva (/Rotate 90)",
