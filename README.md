@@ -34,8 +34,8 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
 
 ## A felület
 
-Sötét parancsfejléc (név, verzió, munkamappa) a benne folytatódó fülsávval,
-világos munkaterület, alul állapotsor. A gombok, mezők, fülek, jelölők és
+Világos, levegős felület: fejléc (név, verzió, munkamappa) akcentuscsíkkal,
+alatta a fülsáv, középen a munkaterület, alul állapotsor. A gombok, mezők, fülek, jelölők és
 csúszkák grafikája **kódból készül** futásidőben (élsimított, lekerekített,
 lágy árnyékkal), az ikonokkal együtt — nincs hozzá képfájl és nincs új
 függőség. Részletek és indoklás: `kepek-pdf-terv.md` 13.7.
