@@ -11,13 +11,17 @@ Függőség: pymupdf (a tkinter a Python része). Semmilyen hálózati művelete
 
 import os
 import re
+import tempfile
 import csv
 import sys
 import hashlib
 import json
 import math
+import queue
 import shutil
 import ctypes
+import threading
+import subprocess
 import locale
 import inspect
 import datetime
@@ -268,6 +272,106 @@ def shrink_pdf(data: bytes, limit: int = UPLOAD_LIMIT):
             next(g)
     except StopIteration as s:
         return s.value
+
+
+def shrink_cli(argv) -> int:
+    """`--tomorit <be.pdf> <ki.pdf> [korlát]` — ez fut a KÜLÖN FOLYAMATBAN.
+    A lépcsőket a kimenetre írja, hogy a felület vissza tudja olvasni."""
+    try:
+        be, ki = argv[0], argv[1]
+        limit = int(argv[2]) if len(argv) > 2 else UPLOAD_LIMIT
+        with open(be, "rb") as f:
+            data = f.read()
+        g = shrink_steps(data, limit)
+        try:
+            while True:
+                dpi, q = next(g)
+                print(f"LEPCSO {dpi} {q}", flush=True)
+        except StopIteration as st:
+            out, lepcso = st.value
+        with open(ki, "wb") as f:
+            f.write(out)
+        print(f"KESZ {lepcso[0]} {lepcso[1]}" if lepcso else "KESZ - -", flush=True)
+        return 0
+    except Exception as e:
+        print(f"HIBA {type(e).__name__}: {e}", flush=True)
+        return 1
+
+
+def shrink_process(widget, data: bytes, on_done, on_step=None):
+    """Ugyanaz, mint a shrink_later, de KÜLÖN FOLYAMATBAN (13.10).
+
+    Miért nem szál: a PyMuPDF a tömörítés alatt végig fogja a GIL-t — mérve a
+    főszál 4,5%-ot kap, tehát a felület szálakkal MÉG jobban befagyna. Külön
+    folyamattal 92%-ot kap. Ha a folyamat nem indítható (pl. furcsa környezet),
+    visszaesünk a régi, after()-láncos útra, hogy a funkció ne vesszen el."""
+    try:
+        be = tempfile.mktemp(suffix=".be.pdf")
+        ki = tempfile.mktemp(suffix=".ki.pdf")
+        with open(be, "wb") as f:
+            f.write(data)
+        proc = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--tomorit", be, ki,
+             str(UPLOAD_LIMIT)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return shrink_later(widget, data, on_done, on_step)
+
+    def takarit():
+        for f in (be, ki):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    # A gyermek a lépcsőket soronként írja ki; egy olvasószál továbbítja őket.
+    # Szálat ITT szabad: a csővezeték olvasása I/O, ott a GIL nincs lefogva.
+    sorok = queue.Queue()
+
+    def olvas():
+        try:
+            for sor in proc.stdout:
+                sorok.put(sor.strip())
+        except Exception:
+            pass
+        finally:
+            sorok.put(None)
+
+    threading.Thread(target=olvas, daemon=True).start()
+    allapot = {"lepcso": None, "err": None, "vege": False}
+
+    def tick():
+        while True:
+            try:
+                sor = sorok.get_nowait()
+            except queue.Empty:
+                break
+            if sor is None:
+                allapot["vege"] = True
+            elif sor.startswith("LEPCSO") and on_step:
+                r = sor.split()
+                on_step(int(r[1]), int(r[2]))
+            elif sor.startswith("KESZ"):
+                r = sor.split()
+                allapot["lepcso"] = None if r[1] == "-" else (int(r[1]), int(r[2]))
+            elif sor.startswith("HIBA"):
+                allapot["err"] = RuntimeError(sor[5:])
+        if not (allapot["vege"] and proc.poll() is not None):
+            widget.after(80, tick)
+            return
+        out, err = None, allapot["err"]
+        try:
+            if err is None:
+                with open(ki, "rb") as f:
+                    out = f.read()
+        except OSError as e:
+            err = e
+        takarit()
+        on_done(out, allapot["lepcso"], err)
+
+    widget.after(50, tick)
 
 
 def shrink_later(widget, data: bytes, on_done, on_step=None):
@@ -2477,10 +2581,12 @@ class IktatoTab(ttk.Frame):
                     with open(src, "rb") as f:
                         data = f.read()
                 self._busy = True
-                shrink_later(self, data,
-                             on_step=lambda dpi, q: self._info(
-                                 f"Tömörítés… {dpi} DPI, Q{q} (a lépcsők között a felület él)"),
-                             on_done=lambda out, step, err: self._shrink_done(job, out, step, err))
+                shrink_process(self, data,
+                               on_step=lambda dpi, q: self._info(
+                                   f"Tömörítés… {dpi} DPI, Q{q} "
+                                   "(külön folyamatban, a felület él)"),
+                               on_done=lambda out, step, err: self._shrink_done(
+                                   job, out, step, err))
                 return
             if job["data"] is not None:        # kiemelt oldal: bájtok a memóriából
                 write_pdf_verified(job["data"], job["dst"], 1, stamp)
@@ -2792,6 +2898,7 @@ C_OK = UI["ok"]
 C_WARN = UI["warn"]
 
 ROW_H = 24
+ROW_BUFFER = 14            # ennyi sort rajzolunk a látható sávon túl (13.10)
 HDR_PAD_TOP = 18          # a „KÖTELEZŐ / ajánlott” sávnak
 HDR_PAD_BOT = 5
 HDR_LINE = 12             # egy fejlécsor magassága
@@ -3779,6 +3886,7 @@ class AttekintoTab(ttk.Frame):
         self.rules = rules_from(self.settings)
         self.rows = []
         self.view_rows = []
+        self._drawn = (-1, -1)          # a legutóbb kirajzolt sortartomány
         self.sort_col = "name"
         self.sort_desc = False
         self.sel = None
@@ -3897,14 +4005,22 @@ class AttekintoTab(ttk.Frame):
     def _yview(self, *a):
         self.c_name.yview(*a)
         self.c_data.yview(*a)
-        self._pin_all()
+        self._after_scroll()
 
     def _wheel(self, e):
         d = -1 if e.delta > 0 else 1
         self.c_name.yview_scroll(d, "units")
         self.c_data.yview_scroll(d, "units")
-        self._pin_all()
+        self._after_scroll()
         return "break"
+
+    def _after_scroll(self):
+        """Görgetés után csak akkor rajzolunk újra, ha a látható sáv kicsúszott
+        a kirajzolt (pufferelt) tartományból — így a görgetés sima marad."""
+        self._pin_all()
+        kezd, veg = self._rows_view(self.c_data)
+        if not (self._drawn[0] <= kezd and veg <= self._drawn[1]):
+            self._redraw()
 
     def _hwheel(self, e):
         """Vízszintes görgetés; a Dolgozó oszlop fix, csak az adatok gördülnek."""
@@ -4025,6 +4141,21 @@ class AttekintoTab(ttk.Frame):
     def _rh(self):
         return self.settings["row_height"]
 
+    def _rows_view(self, c, puffer=0):
+        """A sorok tartománya: ami LÁTSZIK (+ puffer). 150 dolgozónál a mátrix
+        4700 vászonelem volt, pedig egyszerre ~25 sor fér ki — a Tk minden
+        újrafestéskor mindet átrajzolta (13.10). A puffer azért kell, hogy
+        görgetéskor ne kelljen minden lépésnél újrarajzolni."""
+        rh = max(1, self._rh())
+        try:
+            top = max(0.0, c.canvasy(0) - self.hdr_h)
+            magas = max(1, c.winfo_height())
+        except Exception:
+            return 0, len(self.view_rows)
+        start = max(0, int(top // rh) - puffer)
+        end = min(len(self.view_rows), int((top + magas) // rh) + 1 + puffer)
+        return start, end
+
     # ---------------- rajzolás ----------------
     def _measure(self, s):
         return self.f_hdr.measure(s)
@@ -4080,6 +4211,7 @@ class AttekintoTab(ttk.Frame):
         wrapped = self._wrap_headers(cols)
         self._draw_names()
         self._draw_data(cols, wrapped)
+        self._drawn = self._rows_view(self.c_data, ROW_BUFFER)
 
     def _draw_names(self):
         c = self.c_name
@@ -4093,7 +4225,9 @@ class AttekintoTab(ttk.Frame):
         c.create_text(8, H - HDR_PAD_BOT - HDR_LINE / 2, anchor="w",
                       text="Dolgozó" + arrow, font=("Segoe UI", 9, "bold"),
                       tags=("hdr::name", "hdr"))
-        for i, r in enumerate(self.view_rows):
+        kezd, veg = self._rows_view(c, ROW_BUFFER)
+        for i in range(kezd, veg):
+            r = self.view_rows[i]
             y = H + i * rh
             bg = C_SEL if r is self.sel else (C_ROW_ALT if i % 2 else C_BG)
             c.create_rectangle(0, y, W, y + rh, fill=bg, outline=C_GRID)
@@ -4150,7 +4284,9 @@ class AttekintoTab(ttk.Frame):
         self._draw_header_text(c, x_ready + W_READY / 2, rl, True, C_TEXT)
 
         nreq_all = sum(1 for r in self.rules if r.required)
-        for i, row in enumerate(self.view_rows):
+        kezd, veg = self._rows_view(c, ROW_BUFFER)
+        for i in range(kezd, veg):
+            row = self.view_rows[i]
             y = self.hdr_h + i * rh
             base = C_SEL if row is self.sel else (C_ROW_ALT if i % 2 else C_BG)
             c.create_rectangle(0, y, total, y + rh, fill=base, outline="")
@@ -4175,8 +4311,12 @@ class AttekintoTab(ttk.Frame):
                     txt, fill = f"{txt}×{len(st.pdf)}", C_AMB    # melyik a jó?
                 if st and any(p in row.big for p in st.pdf):
                     txt, fill = txt + "!", C_BIG      # 5 MB fölött: nem feltölthető
-                c.create_rectangle(xs[j] + 1, y + 1, xs[j] + rule.width - 1,
-                                   y + rh - 1, fill=fill, outline="")
+                if fill != base:          # üres cellánál a sor háttere látszik:
+                    # a vele azonos színű téglalap láthatatlan, de a Tk minden
+                    # újrafestéskor átrajzolná — 150 dolgozónál ez a cellák
+                    # harmada volt feleslegesen (13.10).
+                    c.create_rectangle(xs[j] + 1, y + 1, xs[j] + rule.width - 1,
+                                       y + rh - 1, fill=fill, outline="")
                 c.create_text(xs[j] + rule.width / 2, y + rh / 2, text=txt,
                               font=("Segoe UI", 9,
                                     "bold" if txt in ("P", "DP") else "normal"),
@@ -4931,10 +5071,10 @@ class AttekintoTab(ttk.Frame):
                 acc["fail"].append((f"{who}\\{rel}", str(e)[:80]))
             nxt()
 
-        shrink_later(self, data, on_done=done,
-                     on_step=lambda dpi, q: lbl.set(
-                         f"{i + 1}/{len(jobs)}  {who}: {os.path.basename(rel)} "
-                         f"— {dpi} DPI, Q{q}"))
+        shrink_process(self, data, on_done=done,
+                       on_step=lambda dpi, q: lbl.set(
+                           f"{i + 1}/{len(jobs)}  {who}: {os.path.basename(rel)} "
+                           f"— {dpi} DPI, Q{q}"))
 
     # ---------------- CSV ----------------
     def _export_csv(self):
@@ -6018,9 +6158,11 @@ class ComposerTab(ttk.Frame):
             return
         self._write_log(f"  {job['name']}: {mb(len(data))} — a korlát ({mb(UPLOAD_LIMIT)}) "
                         "fölött, tömörítés…")
-        shrink_later(self, data,
-                     on_step=lambda dpi, q: self._write_log(f"    lépcső: {dpi} DPI, Q{q}"),
-                     on_done=lambda d, step, err: self._doc_save(job, d, pages, step, err, True))
+        shrink_process(self, data,
+                       on_step=lambda dpi, q: self._write_log(
+                           f"    lépcső: {dpi} DPI, Q{q}"),
+                       on_done=lambda d, step, err: self._doc_save(
+                           job, d, pages, step, err, True))
 
     def _doc_save(self, job, data, pages, step=None, err=None, shrunk=False):
         """Ellenőrzött kiírás a dolgozó mappájába — az Iktató szabályai szerint."""
@@ -7438,6 +7580,19 @@ def _selftest() -> int:
     ck("ha már az első lépcső elég, ott megáll",
        shrink_pdf(small, limit=len(small))[1] == SHRINK_STEPS[0])
     with tempfile.TemporaryDirectory() as td:
+        be, ki = os.path.join(td, "be.pdf"), os.path.join(td, "ki.pdf")
+        with open(be, "wb") as f:
+            f.write(raw)
+        kod = shrink_cli([be, ki, str(UPLOAD_LIMIT)])
+        ck("külön folyamat ága (--tomorit): kiírja a tömörített PDF-et",
+           kod == 0 and os.path.getsize(ki) <= UPLOAD_LIMIT < os.path.getsize(be),
+           (kod, mb(os.path.getsize(ki))))
+        d2 = pymupdf.open(ki)
+        ck("és az oldalszám megmarad", d2.page_count == 2, d2.page_count)
+        d2.close()
+        ck("hiányzó bemenetnél hibakóddal áll le, nem némán",
+           shrink_cli([os.path.join(td, "nincs.pdf"), ki]) == 1)
+    with tempfile.TemporaryDirectory() as td:
         dst = os.path.join(td, "x.pdf")
         try:
             write_pdf_verified(small, dst, 3)
@@ -7747,6 +7902,9 @@ def _selftest() -> int:
 
 
 if __name__ == "__main__":
+    if "--tomorit" in sys.argv:          # külön folyamatban futó tömörítés
+        i = sys.argv.index("--tomorit")
+        sys.exit(shrink_cli(sys.argv[i + 1:]))
     if "--test" in sys.argv:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # átirányítva is (cp1250)
         sys.exit(_selftest())
