@@ -731,3 +731,71 @@ felsorolja őket — ott kevesebb oldalra kell bontani.
 
 Lásd `szetvago-terv.md` **17.**
 
+
+### 13.7 A felület: kódból rajzolt gombok és modern téma (2026-10-02)
+
+**A kérés:** impozáns, de jól használható felület, saját magunk generálta
+gombokkal, modern megjelenésben.
+
+#### A kulcsdöntés: a grafika a miénk, a widget marad ttk
+
+A gombok, mezők, fülek, jelölők és csúszkák háttérgrafikáját **futásidőben
+rajzoljuk** (pymupdf → élsimított PNG → `PhotoImage`), és
+`ttk.Style.element_create(..., "image", …)`-szal **9-slice képelemként** kötjük
+a témába. Ettől a widget **igazi `ttk.Button` marad**:
+
+- minden meglévő hívás (`state(["disabled"])`, `invoke()`, `cget("text")`),
+- a 98 GUI-teszt egy sora sem változott emiatt,
+- az állapotok (`active`, `pressed`, `disabled`, `focus`, `selected`) a ttk
+  motorjától jönnek, nem nekünk kell egérfigyelést írni.
+
+Az alternatíva (saját `Canvas`-gomb osztály) ugyanezt a látványt adta volna, de
+újra kellett volna írni az állapotkezelést, a fókuszt, a billentyűkezelést és a
+teszteket. **A legkisebb kód, ami a kért látványt adja.**
+
+#### Mi készül kódból
+
+| elem | hogyan |
+|---|---|
+| gomb, mező, fül, kártya | `round_png` — lekerekített téglalap, opcionális árnyékkal és színátmenettel |
+| lágy árnyék | három egyre nagyobb, egyre halványabb lekerekített alak a forma alatt (nincs elmosás-szűrő, és nem is kell) |
+| színátmenet | vízszintes sávok; a sáv **a sarok köríve szerint beljebb kezd**, különben az utolsó sáv visszaszögletesítené a formát |
+| 17 ikon | `ICON_PATHS` — vonalrajz 24-es rácson, a feliratból társítva (`BTN_LOOK`) |
+| jelölő, rádió, chevron, csúszkagomb | `_box_png`, `_radio_png`, `_chev_png`, `_dot_png` |
+| vászon-elemek (csempe, oldalkártya, vászongomb) | `round_pts` + `canvas_card` — a Tk vászon nem tud rádiuszt |
+
+Két apró, de fontos részlet, amit mérés derített ki:
+
+- A ttk a **`*.Scale.slider`** és **`*.Scrollbar.thumb`** *nevű* elem alapján
+  pozicionál. Saját néven (`Modern.sthumb`) a csúszkagomb a bal szélre ragadt —
+  ezért a beépített neveket írjuk felül.
+- A `pix.n` **tartalmazza** az alfát, a minta lépésköze tehát `n`, nem `n+1`.
+
+#### Az ikonok társítása a feliratból
+
+A `BTN_LOOK` egy helyen mondja meg, melyik feliratú gomb melyik ikont és
+stílust kapja; a `decorate()` ezt járja végig rekurzívan. Így a kódban lévő
+~60 gombhívás egyike sem változott, és **a dialógusok is megkapják**: a
+`root.bind_class("Toplevel", "<Map>", …)` minden később nyíló ablakra lefuttatja.
+ponytail: felirat szerinti társítás — új gomb ikon nélkül is rendben van, és az
+önteszt méri, hogy minden bejegyzés létező ikonra mutat.
+
+#### Szerkezet
+
+- **Sötét parancsfejléc**: név, verzió, munkamappa — és a fülsáv is **ebben**
+  folytatódik, fehér „pirula” a kiválasztott fülön. Így egy összefüggő fejléc
+  lett belőle, a tartalom pedig világos lapon ül.
+- **Állapotsor** alul, színes ponttal; a `pack` miatt a **fülek előtt** kerül a
+  helyére, különben kis ablakban kiszorulna.
+- **Egy paletta** (`UI`) adja a ttk-téma, a vásznak és a mátrix színeit is —
+  eddig kétféle rajzolás kétféle színkészlettel ment.
+- A **doktípus-színek** (`LABEL_COLORS`) azonos tónusú készletre cserélve; az
+  önteszt méri, hogy mindegyiken olvasható marad a fehér szöveg.
+- Az ablak mérete a **képernyőhöz** igazodik: a fix 1200×840 egy 864 képpont
+  magas munkaállomáson a tálca alá lógott.
+
+#### Hogyan látja a következő fejlesztő, mit változtatott
+
+`python tools/ui-kep.py <fül> <kimenet.png>` — demóadattal elindítja az appot és
+lefotózza az ablakot (a dialógust is). A GUI-teszt a **működést** méri, a
+megjelenést nem: ez a fotó az egyetlen visszacsatolás a látványra.

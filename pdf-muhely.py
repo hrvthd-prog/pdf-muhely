@@ -80,6 +80,35 @@ def open_checked(path: str):
     return doc
 
 
+# ── felületi paletta (kepek-pdf-terv.md 13.7) ───────────────────────────────
+# Egy helyen minden szín: a ttk-téma, a vásznak és a mátrix is ebből él, így nem
+# csúszhat szét a kétféle rajzolás (widget vs. canvas).
+UI = {
+    "bg":        "#f4f6fa",   # oldal háttér
+    "card":      "#ffffff",   # panel, csempe, mátrix
+    "line":      "#dfe4ec",   # vonalak, keretek
+    "line_soft": "#eaeef5",
+    "ink":       "#121820",   # szöveg
+    "ink_soft":  "#5c6676",   # másodlagos szöveg
+    "accent":    "#2563eb",   # elsődleges művelet
+    "accent_hi": "#1d4ed8",
+    "accent_lo": "#1e40af",
+    "accent_bg": "#e8efff",   # akcentus halvány háttér (kijelölés)
+    "hover":     "#eef2f9",
+    "ok":        "#157347",
+    "warn":      "#c62828",
+    "dark":      "#2c3650",   # előnézeti vászon (a fejléc családjából)
+    "head":      "#131c33",   # fejlécsáv és a fülek háttere
+    "head_hi":   "#223156",   # fejléc: kiemelt felület (mező, ghost gomb)
+    "head_ink":  "#eef3ff",
+    "head_mute": "#9eb0d8",
+    "shadow":    "#0b1a3a",   # a lágy árnyék alapszíne (kis átlátszósággal)
+}
+FONT_UI = ("Segoe UI", 10)
+FONT_SB = ("Segoe UI Semibold", 10)
+FONT_SM = ("Segoe UI", 9)
+FONT_H1 = ("Segoe UI Semibold", 14)
+
 CLEAN_META = {"producer": "pdf-muhely", "creator": "", "title": "",
               "author": "", "subject": "", "keywords": ""}
 
@@ -674,7 +703,8 @@ class PlacerTab(ttk.Frame):
 
         right = ttk.Frame(self)
         right.pack(side="right", fill="both", expand=True, padx=(0, 8), pady=8)
-        self.canvas = tk.Canvas(right, bg="#666", highlightthickness=0, cursor="fleur", takefocus=1)
+        self.canvas = tk.Canvas(right, bg=COL_CANVAS, highlightthickness=0,
+                                cursor="fleur", takefocus=1, height=180)
         hb = ttk.Scrollbar(right, orient="horizontal", command=self.canvas.xview)
         vb = ttk.Scrollbar(right, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=hb.set, yscrollcommand=vb.set)
@@ -1303,13 +1333,13 @@ MAX_FULL_PATH = 255
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 6.0, 1.15
 
-COL_TILE_BG = "#eef1f5"
-COL_TILE_BG_HOT = "#cfe6ff"
-COL_TILE_LINE = "#9aa7b4"
-COL_TILE_LINE_HOT = "#1e6fd9"
-COL_CANVAS = "#5f6672"
-COL_WARN = "#b00020"
-COL_OK = "#1d6b28"
+COL_TILE_BG = UI["card"]
+COL_TILE_BG_HOT = UI["accent_bg"]
+COL_TILE_LINE = UI["line"]
+COL_TILE_LINE_HOT = UI["accent"]
+COL_CANVAS = UI["dark"]
+COL_WARN = UI["warn"]
+COL_OK = UI["ok"]
 COL_CROP = "#ffb300"
 
 
@@ -1796,7 +1826,8 @@ class IktatoTab(ttk.Frame):
 
         # „Mappák frissítése” nincs: a felső sáv Frissítés gombja ugyanezt teszi.
 
-        self.canvas = tk.Canvas(self, bg=COL_CANVAS, highlightthickness=0)
+        self.canvas = tk.Canvas(self, bg=COL_CANVAS, highlightthickness=0,
+                                height=180)       # kért méret: kis ablakban se
         self.canvas.pack(fill="both", expand=True, padx=8, pady=4)
         self.canvas.bind("<Configure>", lambda e: self._schedule())
 
@@ -1923,12 +1954,13 @@ class IktatoTab(ttk.Frame):
 
     def _draw_tile(self, name, x, y):
         c = self.canvas
-        r = c.create_rectangle(x, y, x + TILE_W, y + TILE_H,
-                               fill=COL_TILE_BG, outline=COL_TILE_LINE, width=1,
-                               tags=("tile", f"tile::{name}"))
+        tags = ("tile", f"tile::{name}")
+        r = canvas_card(c, x, y, x + TILE_W, y + TILE_H, 9, fill=COL_TILE_BG,
+                        outline=COL_TILE_LINE, shadow=("#222b42", "#2a3450"),
+                        tags=tags)
         label = name if len(name) <= 20 else name[:19] + "…"
         c.create_text(x + TILE_W / 2, y + TILE_H / 2, text=label,
-                      font=("Segoe UI", 9), tags=("tile", f"tile::{name}"))
+                      font=FONT_SB, fill=UI["ink"], tags=tags)
         self.tile_rects[name] = (x, y, x + TILE_W, y + TILE_H)
         return r
 
@@ -1999,21 +2031,22 @@ class IktatoTab(ttk.Frame):
         self._update_name()
 
     def _btn(self, cx, cy, text, cmd):
-        """Vászonra rajzolt gomb — az előnézetnél, ahol a szem úgyis van."""
+        """Vászonra rajzolt gomb — ugyanaz a nyelv, mint a ttk-gomboké:
+        lekerekített fehér lap, halk árnyékkal."""
         c = self.canvas
-        t = c.create_text(cx, cy, text=text, fill="#1b1f24",
-                          font=("Segoe UI", 9), tags=("preview", "cbtn"))
+        t = c.create_text(cx, cy, text=text, fill=UI["ink"],
+                          font=FONT_UI, tags=("preview", "cbtn"))
         x1, y1, x2, y2 = c.bbox(t)
-        r = c.create_rectangle(x1 - 10, y1 - 4, x2 + 10, y2 + 4,
-                               fill="#dfe5ec", outline="#8d949e",
-                               tags=("preview", "cbtn"))
+        r = canvas_card(c, x1 - 14, y1 - 7, x2 + 14, y2 + 7, 9, fill=UI["card"],
+                        outline=UI["line"], shadow=("#1d2639", "#243050"),
+                        tags=("preview", "cbtn"))
         c.tag_raise(t, r)
         for i in (r, t):
             c.tag_bind(i, "<Button-1>", lambda e, f=cmd: (f(), "break")[1])
             c.tag_bind(i, "<Enter>",
-                       lambda e, rr=r: c.itemconfig(rr, fill="#eef3f9"))
+                       lambda e, rr=r: c.itemconfig(rr, fill=UI["accent_bg"]))
             c.tag_bind(i, "<Leave>",
-                       lambda e, rr=r: c.itemconfig(rr, fill="#dfe5ec"))
+                       lambda e, rr=r: c.itemconfig(rr, fill=UI["card"]))
         return r
 
     def _page_image(self, path, pageno, max_w, max_h):
@@ -2230,6 +2263,7 @@ class IktatoTab(ttk.Frame):
         return None
 
     def _highlight(self, name):
+        # (a csempe polygon, nem rectangle — az itemconfig fill/outline ugyanaz)
         if name == self._hot:
             return
         if self._hot:
@@ -2609,25 +2643,25 @@ DEFAULT_ARCKEP = {r.id: r.arckep for r in DEFAULT_RULES}
 NOISE_EXACT = {"thumbs.db", "desktop.ini", ".ds_store",
                "iktato-naplo.csv", "iktato-doktipusok.json"}
 
-# ── színek ──────────────────────────────────────────────────────────────────
-C_BG = "#ffffff"
-C_GRID = "#d6dbe1"
-C_HDR = "#eef1f5"
-C_HDR_OPT = "#f6f7f9"
-C_TEXT = "#1b1f24"
-C_MUTED = "#8a929b"
-C_P = "#cdeccd"
-C_D = "#ffeaa7"
-C_DP = "#b6e3b6"
-C_NONE = "#f4f6f8"
-C_AMB = "#ffd0a0"
-C_BIG = "#ffb3b3"          # 5 MB feletti (nem feltölthető) PDF
-C_UNSORTED = "#e0d4f0"     # besorolatlan: se 01_Elokeszitett, se 02_Feltoltheto
-C_ROW_ALT = "#fafbfc"
-C_SEL = "#cfe6ff"
-C_CUR = "#1e6fd9"
-C_OK = "#1d6b28"
-C_WARN = "#b00020"
+# ── a mátrix színei (a palettából, hogy a két rajzolás ne csússzon szét) ────
+C_BG = UI["card"]
+C_GRID = UI["line"]
+C_HDR = "#eef2f8"
+C_HDR_OPT = "#f7f9fc"
+C_TEXT = UI["ink"]
+C_MUTED = "#98a2b3"
+C_P = "#d4f2de"            # kész (feltölthető)
+C_D = "#fdeec8"            # előkészített
+C_DP = "#bde9cb"           # mindkettő
+C_NONE = "#f7f9fc"
+C_AMB = "#ffe2bd"          # kétértelmű
+C_BIG = "#ffd9dc"          # 5 MB feletti (nem feltölthető) PDF
+C_UNSORTED = "#e6dffb"     # besorolatlan: se 01_Elokeszitett, se 02_Feltoltheto
+C_ROW_ALT = "#fbfcfe"
+C_SEL = UI["accent_bg"]
+C_CUR = UI["accent"]
+C_OK = UI["ok"]
+C_WARN = UI["warn"]
 
 ROW_H = 24
 HDR_PAD_TOP = 18          # a „KÖTELEZŐ / ajánlott” sávnak
@@ -4829,9 +4863,11 @@ PRESETS = (("Irodai · 200 DPI", 200, 75),     # (felirat, DPI, JPEG-minőség)
 A4_LONG_IN = 842 / 72                         # az A4 hosszabb oldala hüvelykben
 SRC_EXT = IMG_EXT + (".pdf",)
 PANEL_W = 300                                 # a jobb oldali panel szélessége
-LABEL_COLORS = ("#1e6fd9", "#d9480f", "#2b8a3e", "#ae3ec9", "#c77700", "#0b7285",
-                "#c2255c", "#5c940d", "#364fc7", "#862e9c", "#495057")
-COL_NOLABEL = "#868e96"                       # a palettán már nem szereplő típus
+# Azonos tónusú, egymástól jól megkülönböztethető készlet — fehér szöveggel
+# mindegyik olvasható marad (a régi, teljesen telített színek harsányak voltak).
+LABEL_COLORS = ("#2f6fe4", "#0f8f8f", "#7c4dd6", "#c07c0a", "#d6456b",
+                "#2f8f4e", "#4455c7", "#cd6329", "#1a7fa8", "#9a3fb5", "#5b6678")
+COL_NOLABEL = "#8b94a6"                       # a palettán már nem szereplő típus
 
 
 def image_page_jpeg(path, rot, dpi, quality, gray, page=0):
@@ -5135,7 +5171,8 @@ class ComposerTab(ttk.Frame):
 
         grid = ttk.Frame(left)
         grid.pack(fill="both", expand=True, padx=8, pady=4)
-        self.canvas = tk.Canvas(grid, bg=COL_CANVAS, highlightthickness=0, takefocus=1)
+        self.canvas = tk.Canvas(grid, bg=COL_CANVAS, highlightthickness=0,
+                                takefocus=1, height=180)
         sb = ttk.Scrollbar(grid, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=sb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -5572,10 +5609,11 @@ class ComposerTab(ttk.Frame):
             x, y = self._xy(i)
             hot = it in self.sel
             short, color = self._look(it.doc.doc_type) if it.doc else (None, None)
-            c.create_rectangle(x, y, x + CELL_W, y + CELL_H,
-                               fill=COL_TILE_BG_HOT if hot else COL_TILE_BG,
-                               outline=color or (COL_TILE_LINE_HOT if hot else COL_TILE_LINE),
-                               width=3 if color else (2 if hot else 1))
+            canvas_card(c, x, y, x + CELL_W, y + CELL_H, 10,
+                        fill=COL_TILE_BG_HOT if hot else COL_TILE_BG,
+                        outline=color or (COL_TILE_LINE_HOT if hot else COL_TILE_LINE),
+                        width=3 if color else (2 if hot else 1),
+                        shadow=("#222b42", "#2a3450"))
             cx, cy = x + CELL_W / 2, y + 8 + THUMB / 2
             if it.thumb:
                 c.create_image(cx, cy, image=it.thumb)
@@ -5583,17 +5621,21 @@ class ComposerTab(ttk.Frame):
                 c.create_text(cx, cy, text=it.bad or "…", font=("Segoe UI", 9),
                               fill=COL_WARN if it.bad else "#8a929b")
             if color:                                  # a címke sávja
-                c.create_rectangle(x, y, x + CELL_W, y + 17, fill=color, outline=color)
-                c.create_text(cx, y + 9, text=short, fill="white", font=("Segoe UI", 9, "bold"))
+                c.create_polygon(round_pts(x + 1, y + 1, x + CELL_W - 1, y + 19, 9),
+                                 fill=color, outline=color)
+                c.create_rectangle(x + 1, y + 11, x + CELL_W - 1, y + 19,
+                                   fill=color, outline=color)
+                c.create_text(cx, y + 10, text=short, fill="white", font=FONT_SB)
             name = it.label() if it.paged() else f"{i + 1}. {it.label()}"
             name = name if len(name) <= 26 else name[:25] + "…"
-            c.create_text(cx, y + CELL_H - 12, text=name, font=("Segoe UI", 8))
+            c.create_text(cx, y + CELL_H - 12, text=name, font=FONT_SM,
+                          fill=UI["ink_soft"])
         n = len(self.items)
         rows = (n + self._cols() - 1) // self._cols()
         c.configure(scrollregion=(0, 0, c.winfo_width(), GAP + rows * (CELL_H + GAP)))
         if not n:
-            c.create_text(max(200, c.winfo_width()) / 2, 90, fill="#e8e8e8", justify="center",
-                          font=("Segoe UI", 11),
+            c.create_text(max(200, c.winfo_width()) / 2, 90, fill="#c7d0e6",
+                          justify="center", font=("Segoe UI", 11),
                           text="Nincs oldal.\nAdj hozzá PDF-et vagy képeket — a sorrend "
                                "vonszolással állítható.\nJelöld ki az oldalakat, és nyomj "
                                "számot (1–9): ez lesz a doktípusuk.\nCtrl+kattintás: több oldal · "
@@ -5970,28 +6012,619 @@ class ComposerTab(ttk.Frame):
 
 
 # ───────────────────────────────── főablak ─────────────────────────────────
+# ── kódból rajzolt felületi grafika ─────────────────────────────────────────
+# A gombok, mezők és fülek háttere nem beépített ttk-grafika, hanem itt rajzolt,
+# élsimított kép (pymupdf → PNG → PhotoImage), 9-slice képelemként a témába
+# kötve. Így a widget MARAD igazi ttk.Button — minden meglévő hívás, állapot
+# (active/pressed/disabled) és teszt változatlanul működik —, a megjelenés
+# viszont a miénk. A képeket referenciában kell tartani, különben a Tk eldobja.
+_UI_KEEP = []
+_UI_READY = []
+
+
+def _page(w, h):
+    doc = pymupdf.open()
+    return doc, doc.new_page(width=w, height=h)
+
+
+def _png(doc, page, scale=1):
+    """Átlátszó hátterű PNG a lapról (a sarkok így bármilyen háttéren jók)."""
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=True)
+    doc.close()
+    return pix.tobytes("png")
+
+
+def _round(shape, r, radius, fill=None, border=None, width=1.0, opacity=1.0,
+           grad=None):
+    """Lekerekített téglalap a formára. `grad`: (felső szín, alsó szín) —
+    vízszintes sávokból rakjuk ki, mert a PDF-rajzolónak nincs színátmenete."""
+    if grad:
+        c1, c2 = _rgb(grad[0]), _rgb(grad[1])
+        steps = max(4, int(r.height))
+        rad = min(radius, r.height / 2, r.width / 2)
+        for i in range(steps):
+            t = i / (steps - 1)
+            y0 = r.y0 + r.height * i / steps
+            y1 = min(y0 + r.height / steps + 0.5, r.y1)
+            d = min(y0 - r.y0, r.y1 - y1)            # távolság a lap szélétől
+            dx = (rad - math.sqrt(max(0.0, rad * rad - (rad - d) ** 2))
+                  if d < rad else 0.0)               # a sarok köríve
+            sh = shape.page.new_shape()
+            sh.draw_rect(pymupdf.Rect(r.x0 + dx, y0, r.x1 - dx, y1))
+            sh.finish(fill=tuple(c1[k] + (c2[k] - c1[k]) * t for k in range(3)),
+                      color=None, width=0)
+            sh.commit()
+        if border:
+            sh = shape.page.new_shape()
+            sh.draw_rect(r, radius=min(0.5, radius / min(r.width, r.height)))
+            sh.finish(fill=None, color=_rgb(border), width=width)
+            sh.commit()
+        return
+    if radius > 0:
+        shape.draw_rect(r, radius=min(0.5, radius / min(r.width, r.height)))
+    else:
+        shape.draw_rect(r)                 # szögletes (pl. gördítősáv sínje)
+    shape.finish(fill=_rgb(fill) if fill else None,
+                 color=_rgb(border) if border else None,
+                 width=width if border else 0,
+                 fill_opacity=opacity, stroke_opacity=opacity)
+    shape.commit()
+
+
+def round_png(size: int, radius: float, fill, border=None, width=1.0,
+              accent_bar=None, shadow=0.0, grad=None, pad=0.0) -> bytes:
+    """Lekerekített téglalap PNG-ben. `size` négyzet (9-slice-hoz), `radius`
+    képpontban. `accent_bar`: (szín, magasság) alsó jelzősáv — a kiválasztott
+    fülhöz."""
+    doc, page = _page(size, size)
+    m = width / 2 + 0.25 + pad
+    r = pymupdf.Rect(m, m, size - m, size - m)
+    if shadow:
+        # Lágy árnyék elmosás nélkül: néhány egyre nagyobb, egyre halványabb
+        # lekerekített téglalap a forma alatt. Három réteg már simának látszik.
+        for k, op in ((2.6, 0.07), (1.7, 0.09), (0.9, 0.11)):
+            sh = page.new_shape()
+            _round(sh, pymupdf.Rect(r.x0 - k * 0.5, r.y0 - k * 0.2 + shadow * 0.5,
+                                    r.x1 + k * 0.5, r.y1 + k + shadow * 0.5),
+                   radius + k, fill=UI["shadow"], opacity=op)
+    shape = page.new_shape()
+    if fill is None and not grad:
+        shape.commit()                      # átlátszó (pl. nem aktív fül)
+    else:
+        _round(shape, r, radius, fill=fill, border=border, width=width, grad=grad)
+    if accent_bar:
+        col, hh = accent_bar
+        shape = page.new_shape()
+        shape.draw_rect(pymupdf.Rect(radius * 0.6, size - hh, size - radius * 0.6, size))
+        shape.finish(fill=_rgb(col), color=None, width=0)
+        shape.commit()
+    return _png(doc, page)
+
+
+def _rgb(c):
+    """„#rrggbb” -> (r, g, b) 0..1 — a pymupdf így kéri."""
+    c = c.lstrip("#")
+    return tuple(int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def round_pts(x0, y0, x1, y1, r):
+    """Lekerekített téglalap pontsora a tk.Canvas create_polygon-hoz (a vászon
+    nem tud rádiuszt). Sarkonként öt pont elég simának látszik."""
+    r = max(1.0, min(r, (x1 - x0) / 2, (y1 - y0) / 2))
+    k = r * 0.4477                               # köríves sarok közelítése
+    return [x0 + r, y0, x1 - r, y0, x1 - k, y0, x1, y0 + k, x1, y0 + r,
+            x1, y1 - r, x1, y1 - k, x1 - k, y1, x1 - r, y1,
+            x0 + r, y1, x0 + k, y1, x0, y1 - k, x0, y1 - r,
+            x0, y0 + r, x0, y0 + k, x0 + k, y0]   # a polygon magától zár
+
+
+def canvas_card(c, x0, y0, x1, y1, r=8, fill=None, outline=None, width=1,
+                shadow=None, tags=()):
+    """Lekerekített „kártya” a vásznon, opcionális lágy árnyékkal. -> az alakzat."""
+    if shadow:
+        for k, col in ((3, shadow[0]), (1.5, shadow[1])):
+            c.create_polygon(round_pts(x0 + 1, y0 + k * 0.6, x1 - 1, y1 + k, r + k),
+                             fill=col, outline="", smooth=False, tags=tags)
+    return c.create_polygon(round_pts(x0, y0, x1, y1, r), fill=fill or "",
+                            outline=outline or "", width=width, smooth=False,
+                            tags=tags)
+
+
+ICON_PATHS = {
+    # (pontsorok, zárt-e) — 24×24-es rácson, stroke stílusban
+    "folder": ([[(3, 7), (9, 7), (11, 9.5), (21, 9.5), (21, 19), (3, 19)]], True),
+    "refresh": ([[(20, 12), (20, 17.5), (14.5, 17.5)],
+                 [(4, 12), (4, 6.5), (9.5, 6.5)],
+                 [(5.5, 16), (8, 19), (12, 20), (16.5, 18.5), (19, 15)],
+                 [(18.5, 8), (16, 5), (12, 4), (7.5, 5.5), (5, 9)]], False),
+    "search": ([[(10.5, 4.5), (15, 6.5), (16.5, 11), (14.5, 15.5), (10, 17),
+                 (5.5, 15), (4, 10.5), (6, 6), (10.5, 4.5)],
+                [(15, 15.5), (20, 20.5)]], False),
+    "sort": ([[(4, 7), (20, 7)], [(4, 12), (15, 12)], [(4, 17), (10, 17)]], False),
+    "compress": ([[(12, 3), (12, 10)], [(9, 7), (12, 10), (15, 7)],
+                  [(12, 21), (12, 14)], [(9, 17), (12, 14), (15, 17)],
+                  [(3, 12), (21, 12)]], False),
+    "stamp": ([[(6, 20), (18, 20)], [(7, 17), (17, 17)],
+               [(9, 17), (9, 11), (15, 11), (15, 17)],
+               [(10, 11), (10, 6), (14, 6), (14, 11)]], False),
+    "crop": ([[(7, 3), (7, 17), (21, 17)], [(3, 7), (17, 7), (17, 21)]], False),
+    "doc": ([[(6, 3), (14, 3), (18, 7), (18, 21), (6, 21)]],
+            True),
+    "sliders": ([[(4, 8), (20, 8)], [(4, 16), (20, 16)],
+                 [(9, 5.5), (9, 10.5)], [(16, 13.5), (16, 18.5)]], False),
+    "archive": ([[(12, 3), (12, 14)], [(8, 10), (12, 14), (16, 10)],
+                 [(4, 17), (4, 21), (20, 21), (20, 17)]], False),
+    "undo": ([[(4, 11), (4, 5)], [(4, 11), (10, 11)],
+              [(5, 13), (8, 18), (14, 20), (19, 17), (20.5, 12)]], False),
+    "plus": ([[(12, 4), (12, 20)], [(4, 12), (20, 12)]], False),
+    "trash": ([[(4, 7), (20, 7)], [(10, 4), (14, 4)],
+               [(6, 7), (7, 21), (17, 21), (18, 7)]], False),
+    "save": ([[(12, 3), (12, 14)], [(8, 10), (12, 14), (16, 10)],
+              [(4, 18), (4, 21), (20, 21), (20, 18)]], False),
+    "tag": ([[(4, 10), (10, 4), (20, 4), (20, 14), (14, 20), (4, 10)]], True),
+    "split": ([[(5, 5), (19, 19)], [(19, 5), (5, 19)]], False),
+    "check": ([[(5, 13), (10, 18), (19, 6)]], False),
+    "close": ([[(6, 6), (18, 18)], [(18, 6), (6, 18)]], False),
+}
+
+
+def icon_png(name: str, px: int = 17, color=None, width=1.7) -> bytes:
+    """Ikon kódból: vonalrajz a 24-es rácson, a kért képpontméretre rajzolva."""
+    paths, closed = ICON_PATHS[name]
+    k = px / 24.0
+    doc, page = _page(px, px)
+    shape = page.new_shape()
+    for pts in paths:
+        p0 = pymupdf.Point(pts[0][0] * k, pts[0][1] * k)
+        for x, y in pts[1:]:
+            p1 = pymupdf.Point(x * k, y * k)
+            shape.draw_line(p0, p1)
+            p0 = p1
+    shape.finish(color=_rgb(color or UI["ink_soft"]), width=width * k * 1.4,
+                 closePath=False, lineJoin=1, lineCap=1)
+    shape.commit()
+    return _png(doc, page)
+
+
+def ui_icon(name: str, color=None, px: int = 17):
+    """PhotoImage-gyorsítótár az ikonokhoz (kulcs: név + szín + méret)."""
+    key = (name, color, px)
+    for k, img in _UI_KEEP:
+        if k == key:
+            return img
+    img = tk.PhotoImage(data=icon_png(name, px, color))
+    _UI_KEEP.append((key, img))
+    return img
+
+
+# Melyik gombra melyik ikon és melyik stílus kerül. Egy helyen, felirat szerint:
+# ponytail: így a ~60 gombhívás egyike sem változik. Új gomb ikon nélkül is jó.
+BTN_LOOK = {
+    "Mappa megnyitása": ("folder", 0), "Módosítás": ("folder", 0),
+    "Mappa hozzáadása": ("folder", 0), "Frissítés": ("refresh", 0),
+    "Mappák frissítése": ("refresh", 0), "Rendezés": ("sort", 0),
+    "Ellenőrzés": ("search", 0), "Tömörítés": ("compress", 1),
+    "Bélyegzés": ("stamp", 1), "Körülvágás": ("crop", 0),
+    "Hiánylista": ("doc", 0), "CSV export": ("doc", 0),
+    "Beállítások": ("sliders", 0), "Típusok": ("sliders", 0),
+    "Iktatás": ("archive", 1), "Visszavonás": ("undo", 0),
+    "PDF / kép hozzáadása": ("plus", 0), "Kijelölt törlése": ("trash", 0),
+    "Mind törlése": ("trash", 0), "Sorból kivesz": ("trash", 0),
+    "Mentés": ("save", 1), "Mentés másként": ("save", 1),
+    "Címke a szövegből": ("tag", 0), "Szétosztás": ("split", 0),
+    "Mentés szövegfájlba": ("save", 0), "Körülvág": ("crop", 1),
+    "Alkalmaz": ("check", 1), "Mégsem": ("close", 0), "Bezárás": ("close", 0),
+}
+
+
+def decorate(widget):
+    """Ikon és elsődleges stílus a gombokra a feliratuk szerint, rekurzívan.
+    Minden ablakra (fülek, dialógusok) ugyanez fut — egy szabály, egy hely."""
+    for w in widget.winfo_children():
+        if w.winfo_class() == "TButton":
+            try:
+                txt = str(w.cget("text"))
+            except tk.TclError:
+                txt = ""
+            hit = next((v for k, v in BTN_LOOK.items() if txt.startswith(k)), None)
+            if hit and not w.cget("image"):
+                name, primary = hit
+                w.configure(image=ui_icon(name, "#ffffff" if primary else None),
+                            compound="left", style="Accent.TButton" if primary
+                            else "TButton")
+        decorate(w)
+
+
+def build_theme(root):
+    """A ttk-téma felépítése: a gombok, mezők, fülek és jelölők grafikája a fenti
+    rajzolókból. A clam az alap, mert annak minden elemét át lehet írni."""
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    root.configure(background=UI["bg"])
+    root.option_add("*Font", FONT_UI)
+    root.option_add("*TCombobox*Listbox.font", FONT_UI)
+    root.option_add("*TCombobox*Listbox.background", UI["card"])
+    root.option_add("*TCombobox*Listbox.foreground", UI["ink"])
+    root.option_add("*TCombobox*Listbox.selectBackground", UI["accent"])
+    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*Text.font", FONT_SM)
+    root.option_add("*Toplevel.background", UI["bg"])
+    root.option_add("*Canvas.highlightThickness", 0)
+    root.option_add("*Text.relief", "flat")
+    root.option_add("*Text.borderWidth", 0)
+    root.option_add("*Text.highlightThickness", 1)
+    root.option_add("*Text.highlightBackground", UI["line"])
+    root.option_add("*Text.highlightColor", UI["line"])
+    root.option_add("*Text.padX", 10)
+    root.option_add("*Text.padY", 8)
+    root.option_add("*Text.background", UI["card"])
+    root.option_add("*Text.foreground", UI["ink"])
+    root.option_add("*Listbox.relief", "flat")
+    root.option_add("*Listbox.borderWidth", 0)
+    root.option_add("*Listbox.highlightThickness", 0)
+    root.option_add("*Listbox.background", UI["card"])
+    root.option_add("*Listbox.foreground", UI["ink"])
+    root.option_add("*Listbox.selectBackground", UI["accent_bg"])
+    root.option_add("*Listbox.selectForeground", UI["ink"])
+    root.option_add("*Listbox.activeStyle", "none")
+
+    def img(data):
+        i = tk.PhotoImage(data=data)
+        _UI_KEEP.append((None, i))
+        return i
+
+    def nine(name, specs, border, padding, sticky="nsew"):
+        """9-slice képelem: az első kép az alap, a többi állapotonként."""
+        base, rest = specs[0], specs[1:]
+        spec = [(*states, img(data)) for states, data in rest]
+        st.element_create(name, "image", img(base), *spec,
+                          border=border, sticky=sticky, padding=padding)
+
+    if not _UI_READY:                       # elemet csak egyszer lehet létrehozni
+        R, S, P = 9, 26, 2                  # rádiusz, képméret, árnyékhely
+        nine("Modern.button", [
+            round_png(S, R, UI["card"], UI["line"], 1.1, shadow=1.0, pad=P),
+            (("disabled",), round_png(S, R, "#f2f4f8", UI["line_soft"], 1.0, pad=P)),
+            (("pressed",), round_png(S, R, "#e7ecf5", "#c9d3e4", 1.1, pad=P)),
+            (("active",), round_png(S, R, "#ffffff", "#bccbe6", 1.2, shadow=1.8,
+                                    pad=P)),
+            (("focus",), round_png(S, R, UI["card"], UI["accent"], 1.6, shadow=1.0,
+                                   pad=P)),
+        ], R + P, (13, 5))
+        nine("Accent.button", [
+            round_png(S, R, None, None, 0, shadow=1.6, pad=P,
+                      grad=("#3b74f0", UI["accent"])),
+            (("disabled",), round_png(S, R, "#c2cfea", None, 0, pad=P)),
+            (("pressed",), round_png(S, R, UI["accent_lo"], None, 0, pad=P)),
+            (("active",), round_png(S, R, None, None, 0, shadow=2.4, pad=P,
+                                    grad=("#4a80f5", UI["accent_hi"]))),
+        ], R + P, (14, 5))
+        nine("Ghost.button", [
+            round_png(S, R, UI["head_hi"], None, 0, pad=P),
+            (("pressed",), round_png(S, R, "#1a2746", None, 0, pad=P)),
+            (("active",), round_png(S, R, "#2c3e68", None, 0,
+                                    pad=P)),
+        ], R + P, (13, 5))
+        nine("Modern.field", [
+            round_png(S, 8, UI["card"], UI["line"], 1.2, pad=P),
+            (("disabled",), round_png(S, 8, "#f2f4f8", UI["line_soft"], 1.0, pad=P)),
+            (("focus",), round_png(S, 8, UI["card"], UI["accent"], 1.6, pad=P)),
+        ], 8 + P, (9, 6))
+        nine("Dark.field", [
+            round_png(S, 8, UI["head_hi"], "#2e3f68", 1.0, pad=P),
+            (("focus",), round_png(S, 8, UI["head_hi"], "#5b86f0", 1.4, pad=P)),
+        ], 8 + P, (9, 6))
+        nine("Modern.tab", [
+            round_png(S, R, None, None, 0, pad=P),
+            (("selected",), round_png(S, R, UI["card"], None, 0, shadow=2.2, pad=P)),
+            (("active",), round_png(S, R, UI["head_hi"], None, 0, pad=P)),
+        ], R + P, (17, 7))
+        nine("Light.tab", [
+            round_png(S, R, None, None, 0, pad=P),
+            (("selected",), round_png(S, R, UI["card"], UI["line"], 1.1, shadow=1.4,
+                                      pad=P)),
+            (("active",), round_png(S, R, UI["hover"], None, 0, pad=P)),
+        ], R + P, (16, 8))
+        nine("Modern.card", [round_png(S, R, UI["card"], UI["line"], 1.1,
+                                       shadow=1.2, pad=P)], R + P, (3, 3))
+        for o in ("Horizontal", "Vertical"):
+            vert = o == "Vertical"
+            nine(f"{o}.Scale.trough",
+                 [_bar_png(18, 6, "#dde3ee", vertical=vert)], 8, (0, 0),
+                 "ns" if vert else "ew")
+            st.element_create(f"{o}.Scale.slider", "image", img(_dot_png(17)),
+                              ("pressed", img(_dot_png(17, UI["accent_lo"]))),
+                              ("active", img(_dot_png(17, UI["accent_hi"]))))
+            nine(f"{o}.Scrollbar.trough",
+                 [round_png(16, 0, UI["bg"], None, 0)], 2, (0, 0))
+            nine(f"{o}.Scrollbar.thumb", [
+                round_png(16, 5, "#c6cfdf", None, 0, pad=2.5),
+                (("pressed",), round_png(16, 5, UI["accent"], None, 0, pad=2.5)),
+                (("active",), round_png(16, 5, "#9fabc2", None, 0, pad=2.5)),
+            ], 7, (0, 0))
+        st.element_create("Modern.radio", "image", img(_radio_png(16)),
+                          ("disabled", img(_radio_png(16, border=UI["line_soft"]))),
+                          ("selected", img(_radio_png(16, True))),
+                          ("active", img(_radio_png(16, border=UI["accent"]))))
+        st.element_create("Modern.chev", "image", img(_chev_png(16)),
+                          ("disabled", img(_chev_png(16, "#c3cad6"))))
+        box = 17
+        st.element_create("Modern.check", "image", img(_box_png(box)),
+                          ("disabled", img(_box_png(box, border=UI["line_soft"],
+                                                    fill="#f2f4f8"))),
+                          ("selected", img(_box_png(box, checked=True))),
+                          ("active", img(_box_png(box, border=UI["accent"]))))
+        _UI_READY.append(True)
+
+    st.layout("TButton", [("Modern.button", {"sticky": "nsew", "children": [
+        ("Button.padding", {"sticky": "nsew", "children": [
+            ("Button.label", {"sticky": "nsew"})]})]})])
+    st.layout("Accent.TButton", [("Accent.button", {"sticky": "nsew", "children": [
+        ("Button.padding", {"sticky": "nsew", "children": [
+            ("Button.label", {"sticky": "nsew"})]})]})])
+    st.layout("TNotebook.Tab", [("Modern.tab", {"sticky": "nsew", "children": [
+        ("Notebook.padding", {"side": "top", "sticky": "nsew", "children": [
+            ("Notebook.label", {"side": "top", "sticky": ""})]})]})])
+    st.layout("TEntry", [("Modern.field", {"sticky": "nsew", "children": [
+        ("Entry.padding", {"sticky": "nsew", "children": [
+            ("Entry.textarea", {"sticky": "nsew"})]})]})])
+    st.layout("Dark.TEntry", [("Dark.field", {"sticky": "nsew", "children": [
+        ("Entry.padding", {"sticky": "nsew", "children": [
+            ("Entry.textarea", {"sticky": "nsew"})]})]})])
+    st.layout("Ghost.TButton", [("Ghost.button", {"sticky": "nsew", "children": [
+        ("Button.padding", {"sticky": "nsew", "children": [
+            ("Button.label", {"sticky": "nsew"})]})]})])
+    st.layout("Light.TNotebook.Tab", [("Light.tab", {"sticky": "nsew", "children": [
+        ("Notebook.padding", {"side": "top", "sticky": "nsew", "children": [
+            ("Notebook.label", {"side": "top", "sticky": ""})]})]})])
+    st.layout("TCombobox", [("Modern.field", {"sticky": "nsew", "children": [
+        ("Combobox.padding", {"sticky": "nsew", "children": [
+            ("Modern.chev", {"side": "right", "sticky": ""}),
+            ("Combobox.textarea", {"sticky": "nsew"})]})]})])
+    st.layout("TLabelframe", [("Modern.card", {"sticky": "nsew"})])
+
+    st.configure(".", background=UI["bg"], foreground=UI["ink"], font=FONT_UI,
+                 borderwidth=0, focuscolor=UI["accent"])
+    st.configure("TButton", font=FONT_UI, foreground=UI["ink"], anchor="center")
+    st.map("TButton", foreground=[("disabled", "#a7b0bf")])
+    st.configure("Accent.TButton", font=FONT_SB, foreground="#ffffff")
+    st.map("Accent.TButton", foreground=[("disabled", "#eef2fb")])
+    st.configure("TLabel", background=UI["bg"], foreground=UI["ink"])
+    st.configure("TFrame", background=UI["bg"])
+    st.configure("Card.TFrame", background=UI["card"])
+    st.configure("Title.TLabel", background=UI["card"], foreground=UI["ink"],
+                 font=FONT_SB)
+    st.configure("Muted.TLabel", background=UI["card"], foreground=UI["ink_soft"],
+                 font=FONT_SM)
+    st.configure("Status.TLabel", background=UI["card"], foreground=UI["ink_soft"],
+                 font=FONT_SM, padding=(4, 6))
+    st.configure("Foot.TFrame", background=UI["card"])
+    st.configure("TLabelframe", background=UI["card"])
+    st.configure("TLabelframe.Label", background=UI["card"], foreground=UI["ink_soft"],
+                 font=FONT_SB)
+    st.configure("TNotebook", background=UI["head"], borderwidth=0,
+                 bordercolor=UI["bg"], lightcolor=UI["bg"], darkcolor=UI["bg"],
+                 tabmargins=(14, 5, 14, 0))
+    st.configure("TNotebook.Tab", font=FONT_SB, foreground=UI["head_mute"],
+                 padding=0)
+    st.map("TNotebook.Tab", foreground=[("selected", UI["accent"]),
+                                        ("active", UI["head_ink"])])
+    st.configure("Light.TNotebook", background=UI["bg"], borderwidth=0,
+                 tabmargins=(2, 6, 2, 0))
+    st.configure("Light.TNotebook.Tab", font=FONT_SB, foreground=UI["ink_soft"],
+                 padding=0)
+    st.map("Light.TNotebook.Tab", foreground=[("selected", UI["accent"])])
+    st.configure("Head.TFrame", background=UI["head"])
+    st.configure("Head.TLabel", background=UI["head"], foreground=UI["head_ink"])
+    st.configure("HeadTitle.TLabel", background=UI["head"], foreground="#ffffff",
+                 font=("Segoe UI Semibold", 12))
+    st.configure("HeadMuted.TLabel", background=UI["head"],
+                 foreground=UI["head_mute"], font=FONT_SM)
+    st.configure("Ghost.TButton", font=FONT_UI, foreground=UI["head_ink"])
+    st.configure("Dark.TEntry", foreground=UI["head_ink"],
+                 fieldbackground=UI["head_hi"], insertcolor="#ffffff")
+    st.configure("TEntry", foreground=UI["ink"], fieldbackground=UI["card"],
+                 insertcolor=UI["accent"], padding=(2, 3))
+    st.configure("TCombobox", foreground=UI["ink"], fieldbackground=UI["card"],
+                 background=UI["card"], bordercolor=UI["line"],
+                 arrowcolor=UI["ink_soft"], arrowsize=14, padding=(6, 4))
+    st.map("TCombobox", fieldbackground=[("readonly", UI["card"])],
+           bordercolor=[("focus", UI["accent"])],
+           arrowcolor=[("disabled", "#c3cad6")])
+    st.configure("TSpinbox", fieldbackground=UI["card"], bordercolor=UI["line"],
+                 arrowcolor=UI["ink_soft"], padding=(4, 3))
+    st.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nsew", "children": [
+        ("Modern.check", {"side": "left", "sticky": ""}),
+        ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+            ("Checkbutton.label", {"sticky": "nsew"})]})]})])
+    st.configure("TCheckbutton", background=UI["bg"], foreground=UI["ink"],
+                 padding=(2, 3), focusthickness=0)
+    st.map("TCheckbutton", foreground=[("disabled", "#a7b0bf")])
+    st.layout("TRadiobutton", [("Radiobutton.padding", {"sticky": "nsew", "children": [
+        ("Modern.radio", {"side": "left", "sticky": ""}),
+        ("Radiobutton.focus", {"side": "left", "sticky": "w", "children": [
+            ("Radiobutton.label", {"sticky": "nsew"})]})]})])
+    st.configure("TRadiobutton", background=UI["bg"], foreground=UI["ink"],
+                 padding=(2, 3), focusthickness=0)
+    for o in ("Horizontal", "Vertical"):      # nyilak nélküli, karcsú gördítősáv
+        st.layout(f"{o}.TScrollbar", [(f"{o}.Scrollbar.trough", {
+            "sticky": "nswe", "children": [
+                (f"{o}.Scrollbar.thumb", {"sticky": "nswe", "unit": 1})]})])
+    st.configure("TScale", background=UI["bg"])
+    st.configure("TProgressbar", background=UI["accent"], troughcolor="#e3e9f3",
+                 bordercolor=UI["line"], lightcolor=UI["accent"],
+                 darkcolor=UI["accent"], thickness=8)
+    st.configure("TScrollbar", background="#cfd7e4", troughcolor=UI["bg"],
+                 bordercolor=UI["bg"], arrowcolor=UI["ink_soft"], width=12)
+    st.map("TScrollbar", background=[("active", UI["ink_soft"])])
+    st.configure("Treeview", background=UI["card"], fieldbackground=UI["card"],
+                 foreground=UI["ink"], borderwidth=0, rowheight=22)
+    st.map("Treeview", background=[("selected", UI["accent_bg"])],
+           foreground=[("selected", UI["ink"])])
+    st.configure("TSeparator", background=UI["line"])
+    # Minden később nyíló ablak (dialógus) ugyanazt a kezelést kapja: a gombok
+    # ikont és elsődleges stílust a feliratukból — egy kötés, nincs hívási hely.
+    root.bind_class("Toplevel", "<Map>", lambda e: decorate(e.widget), add="+")
+    return st
+
+
+def _chev_png(px: int = 16, color=None) -> bytes:
+    """Lefelé mutató chevron a legördülőkhöz."""
+    doc, page = _page(px + 6, px)
+    sh = page.new_shape()
+    k = px / 16.0
+    sh.draw_line(pymupdf.Point(4 * k, 6.5 * k), pymupdf.Point(8 * k, 10.5 * k))
+    sh.draw_line(pymupdf.Point(8 * k, 10.5 * k), pymupdf.Point(12 * k, 6.5 * k))
+    sh.finish(color=_rgb(color or UI["ink_soft"]), width=1.6 * k, closePath=False,
+              lineCap=1, lineJoin=1)
+    sh.commit()
+    return _png(doc, page)
+
+
+def _bar_png(size: int, thick: int, color, vertical: bool = False) -> bytes:
+    """A csúszka sínje: a közepén futó vékony, lekerekített sáv."""
+    doc, page = _page(size, size)
+    a = (size - thick) / 2
+    r = (pymupdf.Rect(a, 0.5, a + thick, size - 0.5) if vertical
+         else pymupdf.Rect(0.5, a, size - 0.5, a + thick))
+    _round(page.new_shape(), r, thick / 2, fill=color)
+    return _png(doc, page)
+
+
+def _dot_png(size: int, color=None) -> bytes:
+    """Csúszkagomb: fehér korong akcentus gyűrűvel."""
+    doc, page = _page(size, size)
+    sh = page.new_shape()
+    sh.draw_circle(pymupdf.Point(size / 2, size / 2), size / 2 - 1.6)
+    sh.finish(fill=(1, 1, 1), color=_rgb(color or UI["accent"]), width=2.4)
+    sh.commit()
+    return _png(doc, page)
+
+
+def _radio_png(size: int, checked: bool = False, border=None) -> bytes:
+    """Rádiógomb-jelölő: kör, bejelölve akcentus gyűrű + pötty."""
+    doc, page = _page(size + 7, size)
+    c, rr = size / 2.0, size / 2.0 - 1.0
+    sh = page.new_shape()
+    sh.draw_circle(pymupdf.Point(c, c), rr)
+    sh.finish(fill=_rgb(UI["card"]),
+              color=_rgb(UI["accent"] if checked else (border or "#b6c0d2")),
+              width=1.6 if checked else 1.3)
+    sh.commit()
+    if checked:
+        sh = page.new_shape()
+        sh.draw_circle(pymupdf.Point(c, c), rr * 0.45)
+        sh.finish(fill=_rgb(UI["accent"]), color=None, width=0)
+        sh.commit()
+    return _png(doc, page)
+
+
+def _box_png(size: int, checked: bool = False, fill=None, border=None) -> bytes:
+    """Jelölőnégyzet jobb oldali térközzel — a felirat ne tapadjon rá."""
+    doc, page = _page(size + 7, size)
+    r = pymupdf.Rect(0.8, 0.8, size - 0.8, size - 0.8)
+    sh = page.new_shape()
+    _round(sh, r, 5, fill=UI["accent"] if checked else (fill or UI["card"]),
+           border=UI["accent_hi"] if checked else (border or "#b6c0d2"), width=1.3)
+    if checked:
+        sh = page.new_shape()
+        k = size / 24.0
+        pts = [(6, 12.5), (10.5, 17), (18, 7.5)]
+        p0 = pymupdf.Point(pts[0][0] * k, pts[0][1] * k)
+        for x, y in pts[1:]:
+            p1 = pymupdf.Point(x * k, y * k)
+            sh.draw_line(p0, p1)
+            p0 = p1
+        sh.finish(color=(1, 1, 1), width=2.2 * k, closePath=False, lineJoin=1,
+                  lineCap=1)
+        sh.commit()
+    return _png(doc, page)
+
+
+def _check_png(size: int) -> bytes:
+    """Bepipált jelölő: akcentus háttér + fehér pipa — kódból, hogy a jelölő is
+    a többi elemmel egy nyelvet beszéljen."""
+    doc, page = _page(size, size)
+    shape = page.new_shape()
+    shape.draw_rect(pymupdf.Rect(0.6, 0.6, size - 0.6, size - 0.6),
+                    radius=5 / size)
+    shape.finish(fill=_rgb(UI["accent"]), color=_rgb(UI["accent_hi"]), width=1.0)
+    shape.commit()
+    shape = page.new_shape()
+    k = size / 24.0
+    pts = [(6, 12.5), (10, 17), (18, 7)]
+    p0 = pymupdf.Point(pts[0][0] * k, pts[0][1] * k)
+    for x, y in pts[1:]:
+        p1 = pymupdf.Point(x * k, y * k)
+        shape.draw_line(p0, p1)
+        p0 = p1
+    shape.finish(color=(1, 1, 1), width=2.1 * k, closePath=False, lineJoin=1,
+                 lineCap=1)
+    shape.commit()
+    return _png(doc, page)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"PDF Műhely – offline · {app_version()}")
-        self.geometry("1200x840")
-        self.minsize(960, 680)
+        # Az ablak a KÉPERNYŐHÖZ igazodik: a korábbi fix 1200×840 egy 864 képpont
+        # magas munkaállomáson a tálca alá lógott (13.7).
+        w = max(960, min(1320, self.winfo_screenwidth() - 120))
+        h = max(650, min(900, self.winfo_screenheight() - 110))
+        self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+24")
+        self.minsize(940, 620)
+        build_theme(self)
         self.folder = tk.StringVar(value=recall("munkamappa", script_dir()))
         self._status = tk.StringVar(value="Kész.")
 
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=10, pady=(10, 0))
-        ttk.Label(bar, text="Munkamappa:").pack(side="left")
-        ttk.Entry(bar, textvariable=self.folder).pack(side="left", fill="x", expand=True, padx=8)
-        ttk.Button(bar, text="Módosítás…", command=self._pick_folder).pack(side="left")
-        ttk.Button(bar, text="Frissítés", command=self.refresh_all).pack(side="left", padx=6)
+        # Fejléc: sötét sáv a névvel, a verzióval és a munkamappával; a fülsáv
+        # ugyanebben a sávban folytatódik, így egy összefüggő „parancsfejléc”
+        # lesz belőle (13.7).
+        head = ttk.Frame(self, style="Head.TFrame")
+        head.pack(fill="x")
+        inner = ttk.Frame(head, style="Head.TFrame")
+        inner.pack(fill="x", padx=18, pady=(9, 7))
+        mark = tk.Canvas(inner, width=32, height=32, highlightthickness=0,
+                         bg=UI["head"])
+        mark.pack(side="left")
+        canvas_card(mark, 1, 1, 31, 31, 9, fill=UI["accent"])
+        canvas_card(mark, 1, 1, 31, 16, 9, fill="#3b74f0")
+        mark.create_text(16, 17, text="PM", fill="#ffffff",
+                         font=("Segoe UI Semibold", 11))
+        tit = ttk.Frame(inner, style="Head.TFrame")
+        tit.pack(side="left", padx=(12, 28))
+        ttk.Label(tit, text="PDF Műhely", style="HeadTitle.TLabel").pack(anchor="w")
+        ttk.Label(tit, text=f"offline eszköztár · {app_version()}",
+                  style="HeadMuted.TLabel").pack(anchor="w")
+        ttk.Button(inner, text="Frissítés", style="Ghost.TButton",
+                   command=self.refresh_all).pack(side="right")
+        ttk.Button(inner, text="Módosítás…", style="Ghost.TButton",
+                   command=self._pick_folder).pack(side="right", padx=8)
+        ttk.Entry(inner, textvariable=self.folder, style="Dark.TEntry",
+                  font=FONT_SM).pack(side="right", fill="x", expand=True,
+                                     padx=(0, 6))
+        ttk.Label(inner, text="MUNKAMAPPA", style="HeadMuted.TLabel").pack(
+            side="right", padx=(0, 10))
 
         # A felső sáv a munka sorrendje (ezért a sorszám), az eseti PDF-műveletek
         # és az arcképre helyezés egy „Eszközök” alfülcsoportba kerültek: a napi
         # munkához három fül kell, nem hat.
+        # Az állapotsor a fülek ELŐTT kerül a helyére: a pack a korábban
+        # becsomagoltnak ad helyet először, különben kis ablakban kiszorulna.
+        foot = ttk.Frame(self, style="Foot.TFrame")
+        foot.pack(fill="x", side="bottom")
+        ttk.Separator(foot, orient="horizontal").pack(fill="x")
+        self._dot = tk.Canvas(foot, width=16, height=24, highlightthickness=0,
+                              bg=UI["card"])
+        self._dot.pack(side="left", padx=(12, 0))
+        self._dot.create_oval(5, 10, 12, 17, fill=UI["ok"], outline="")
+        ttk.Label(foot, textvariable=self._status, style="Status.TLabel",
+                  anchor="w").pack(side="left", fill="x", expand=True)
+
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=10)
-        self.tools = ttk.Notebook(self.nb)
+        self.nb.pack(fill="both", expand=True)
+        self.tools = ttk.Notebook(self.nb, style="Light.TNotebook")
         self.tabs = {
             "Összeállító": ComposerTab(self.nb, self),
             "Iktató": IktatoTab(self.nb, self),
@@ -6008,8 +6641,7 @@ class App(tk.Tk):
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
 
-        ttk.Label(self, textvariable=self._status, relief="sunken", anchor="w").pack(
-            fill="x", side="bottom")
+        decorate(self)                   # ikonok és elsődleges stílus a gombokra
         self.refresh_all()
         self.after(300, self._check_deps)
 
@@ -6555,6 +7187,46 @@ def _selftest() -> int:
            pg.rect.width > pg.rect.height and
            out.xref_stream_raw(pg.get_images()[0][0]) == jpeg)
         out.close()
+
+    print("FELÜLET: KÓDBÓL RAJZOLT GRAFIKA")
+    data = round_png(26, 9, UI["card"], UI["line"], 1.1, shadow=1.0, pad=2)
+    pix = pymupdf.Pixmap(data)
+
+    def alpha(px, x, y):                     # a pix.n már tartalmazza az alfát
+        return px.samples[(y * px.width + x) * px.n + px.n - 1]
+
+    ck("gombkép: PNG, alfacsatornával, a kért méretben",
+       data[:8] == b"\x89PNG\r\n\x1a\n" and (pix.width, pix.height) == (26, 26)
+       and pix.alpha, (data[:4], pix.width, pix.height, pix.alpha))
+    ck("a sarok átlátszó, a közép tömör — ettől lekerekített a gomb",
+       alpha(pix, 1, 1) < 40 and alpha(pix, 13, 13) == 255,
+       (alpha(pix, 1, 1), alpha(pix, 13, 13)))
+    ck("a kitöltés a paletta kártyaszíne",
+       pix.pixel(13, 13)[:3] == tuple(int(UI["card"].lstrip("#")[i:i + 2], 16)
+                                      for i in (0, 2, 4)), pix.pixel(13, 13))
+    grad = pymupdf.Pixmap(round_png(40, 9, None, None, 0, grad=("#3b74f0", "#2563eb")))
+    ck("az elsődleges gomb színátmenetes (fent világosabb)",
+       grad.pixel(20, 4)[0] > grad.pixel(20, 35)[0] + 8,
+       (grad.pixel(20, 4), grad.pixel(20, 35)))
+    ic = pymupdf.Pixmap(icon_png("folder", 17))
+    ink = sum(1 for i in range(ic.width * ic.height)
+              if ic.samples[i * ic.n + ic.n - 1] > 60)
+    ck("az ikon tényleg rajzol valamit, és a kért méretű",
+       (ic.width, ic.height) == (17, 17) and 15 < ink < 17 * 17, (ic.width, ink))
+    ck("minden gombfelirathoz LÉTEZŐ ikon tartozik",
+       all(name in ICON_PATHS for name, _p in BTN_LOOK.values()),
+       [v for v in BTN_LOOK.values() if v[0] not in ICON_PATHS])
+    pts = round_pts(0, 0, 100, 40, 8)
+    ck("vászon-kártya pontsora: 16 pont, a dobozon belül",
+       len(pts) == 32 and max(pts[0::2]) <= 100 and max(pts[1::2]) <= 40, len(pts))
+    ck("a rádió- és jelölőnégyzet-kép jobbra tart térközt (ne tapadjon a felirat)",
+       pymupdf.Pixmap(_box_png(17)).width == 24 and
+       pymupdf.Pixmap(_radio_png(16)).width == 23)
+    ck("a paletta minden színe sötét (fehér szöveg olvasható marad rajta)",
+       all(sum(int(c.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) < 560
+           for c in LABEL_COLORS),
+       [c for c in LABEL_COLORS
+        if sum(int(c.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) >= 560])
 
     print("FÉNYERŐ ÉS KONTRASZT")
     ck("fényerő +40: a középszürke világosodik", level_lut(40, 0)[128] == 179,

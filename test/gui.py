@@ -730,6 +730,38 @@ try:
        "lépcső:" in log and os.path.exists(out2) and os.path.getsize(out2) <= pm.UPLOAD_LIMIT,
        log[-300:])
 
+    print("FELÜLET")
+    stl = pm.ttk.Style(app)
+    ck("a kódból rajzolt elemek a témában vannak",
+       {"Modern.button", "Accent.button", "Modern.tab", "Modern.check"} <=
+       set(stl.element_names()),
+       [e for e in ("Modern.button", "Accent.button", "Modern.tab", "Modern.check")
+        if e not in stl.element_names()])
+    gombok = []
+    def gyujt(w):
+        for c in w.winfo_children():
+            if c.winfo_class() == "TButton":
+                gombok.append(c)
+            gyujt(c)
+    gyujt(app)
+    ikonos = [b for b in gombok if b.cget("image")]
+    ck("a gombok többsége ikont kapott a feliratából",
+       len(ikonos) >= 20 and len(gombok) >= 40, (len(ikonos), len(gombok)))
+    iktat = next(b for b in gombok if str(b.cget("text")).startswith("Iktatás"))
+    ck("az elsődleges műveletek kiemelt stílust kapnak",
+       str(iktat.cget("style")) == "Accent.TButton", iktat.cget("style"))
+    ck("a gombok továbbra is igazi ttk.Button-ök (állapot, invoke működik)",
+       iktat.winfo_class() == "TButton" and iktat.instate(["!disabled"]))
+    ck("az ablak befér a képernyőbe (a tálca alá se lóg)",
+       app.winfo_reqheight() <= app.winfo_screenheight() and
+       app.winfo_width() <= app.winfo_screenwidth(),
+       (app.winfo_width(), app.winfo_height(), app.winfo_screenheight()))
+    allapot = [w for w in app.winfo_children()
+               if str(w.cget("style")) == "Foot.TFrame"]
+    ck("az állapotsor a helyén van és látszik",
+       bool(allapot) and allapot[0].winfo_ismapped() and
+       allapot[0].winfo_y() > app.nb.winfo_y(), allapot)
+
     print("CÍMKE A SZÖVEGRÉTEGBŐL")
     szoveges = os.path.join(TMP, "generalt.pdf")
     d = P.open()
@@ -769,6 +801,10 @@ try:
     ck("az ellenőrzés felsorolja a bélyegezhetőt és a kézit",
        "Végzettséget igazoló okirat.pdf" in report and "scan0001.pdf" in report,
        report[:160])
+    ck("a dialógus gombjai is megkapják a témát (ikon, kiemelés)",
+       bool(find_btn(aw, "Bélyegzés").cget("image")) and
+       str(find_btn(aw, "Bélyegzés").cget("style")) == "Accent.TButton",
+       find_btn(aw, "Bélyegzés").cget("style"))
     b = find_btn(aw, "Bélyegzés")
     ck("van bélyegzés-gomb a találatok számával", b is not None and "(" in b.cget("text"),
        b.cget("text") if b else "nincs")
