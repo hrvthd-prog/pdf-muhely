@@ -190,7 +190,14 @@ try:
     ck("→ billentyű: a kurzor oszlopa látszik",
        cd.canvasx(0) - 1 <= cx and cx + cw <= cd.canvasx(0) + cd.winfo_width() + 1)
 
+    # A mátrix csak a LÁTHATÓ sorokat rajzolja (13.10), ezért előbb odagörgetünk;
+    # ez egyben azt is méri, hogy görgetés után a frissen látható sor kirajzolódik.
+    cd.yview_moveto(1.0)
+    att._after_scroll()
+    pump(0.2)
     texts = {cd.itemcget(i, "text") for i in cd.find_all() if cd.type(i) == "text"}
+    ck("görgetés után a frissen látható sorok is ki vannak rajzolva", len(texts) > 10,
+       len(texts))
     ck("két útlevél-PDF a feltölthetőben: „F×2”, 5 MB fölött: „F!”",
        "F×2" in texts and "F!" in texts,
        sorted(t for t in texts if t.startswith(("F", "E", "~"))))
@@ -729,6 +736,47 @@ try:
     ck("képekből: 5 MB fölött lépcsőzetes tömörítés, a kész PDF alatta",
        "lépcső:" in log and os.path.exists(out2) and os.path.getsize(out2) <= pm.UPLOAD_LIMIT,
        log[-300:])
+
+    print("TELJESÍTMÉNY")
+    # A mátrix csak a látható sávot rajzolja; a fixture-ben 40+ dolgozó van.
+    app.show(att)
+    att.refresh()
+    pump(0.4)
+    sorok = len(att.view_rows)
+    kezd, veg = att._rows_view(att.c_data)
+    ck("a látható sortartomány a sorokon belül van",
+       0 <= kezd <= veg <= sorok, (kezd, veg, sorok))
+    eredeti_sorok = att.view_rows
+    att.view_rows = eredeti_sorok * 12                 # ~500 dolgozó szimulálva
+    k2, v2 = att._rows_view(att.c_data, pm.ROW_BUFFER)
+    ck("sok dolgozónál a kirajzolandó sáv KORLÁTOS (virtualizálás)",
+       (v2 - k2) < 90 and len(att.view_rows) > 400,
+       f"{len(att.view_rows)} sorból {v2 - k2} rajzolódna")
+    att.view_rows = eredeti_sorok
+    att._redraw()
+    pump(0.2)
+    elemek = len(att.c_data.find_all()) + len(att.c_name.find_all())
+    ck("a kirajzolt elemek száma a sávhoz igazodik",
+       elemek < (veg - kezd + 2 * pm.ROW_BUFFER + 4) * 25,
+       f"{sorok} sor, {elemek} vászonelem")
+    # A tömörítés külön folyamatban fut: a felület közben válaszol.
+    nagy_adat = open(big_pdf, "rb").read() if os.path.getsize(big_pdf) > pm.UPLOAD_LIMIT else None
+    if nagy_adat:
+        kesz = {}
+        t0 = time.time()
+        pm.shrink_process(app, nagy_adat,
+                          on_done=lambda out, step, err: kesz.update(
+                              ok=True, n=len(out or b""), err=err))
+        lassu = 0
+        while "ok" not in kesz and time.time() - t0 < 90:
+            t1 = time.time()
+            app.update()
+            if time.time() - t1 > 0.25:
+                lassu += 1
+            time.sleep(0.01)
+        ck("a felület él a külön folyamatos tömörítés alatt",
+           kesz.get("ok") and not kesz.get("err") and lassu == 0,
+           (kesz.get("n"), kesz.get("err"), f"{lassu} akadás"))
 
     print("FELÜLET")
     stl = pm.ttk.Style(app)

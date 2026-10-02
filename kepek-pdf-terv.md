@@ -984,3 +984,71 @@ polygon lett (13.7), a kiemelés viszont `canvas.type(i) == "rectangle"`-t
 keresett. Ejteni lehetett, de nem látszott, hova. Javítva, és a GUI-teszt
 mostantól **valódi vonszolással** méri (press → motion → release), nem a
 `_do_copy` közvetlen hívásával — így ez a hibaosztály nem jöhet vissza.
+
+### 13.10 Szálak? Nem. Folyamat és virtualizálás (2026-10-02)
+
+**A kérdés:** van-e értelme több szálra emelni az appot, mert „laggol a
+műveleteknél”. **Mérés nélkül nem lehet eldönteni, ezért mértem.**
+
+#### A szál itt rosszabb, mint a semmi
+
+| mérés (27 MB-os szkennelt PDF, 16 magos gép) | eredmény |
+|---|---|
+| 4 tömörítés sorosan | 11 594 ms |
+| ugyanaz **4 szálon** | 11 655 ms (**0,99×** — semmi gyorsulás) |
+| a főszál ütemezése, miközben egy szál tömörít | **4,5 %** |
+
+A PyMuPDF a tömörítés alatt **végig fogja a GIL-t**. Tehát a szál nemhogy nem
+gyorsít, hanem a felületet *jobban* befagyasztja, mint a mai `after()`-lánc.
+Ugyanez áll a bélyegképekre és az oldalrenderelésre is: mind PyMuPDF.
+
+**Amire a szál jó:** a lemezműveletre. A `scan()` (150 dolgozó, 750 fájl, 64 ms)
+alatt a főszál **98,8 %**-ot kap — a rendszerhívások elengedik a GIL-t. Ez a
+jövőben hasznos lehet lassú hálózati meghajtón; most nem ez a szűk keresztmetszet.
+
+#### Ami viszont működik: külön FOLYAMAT
+
+| mérés | eredmény |
+|---|---|
+| 27 MB tömörítése a fő folyamatban | 9 778 ms, **a felület végig fagy** |
+| ugyanaz külön folyamatban | 10 082 ms (+3 % indulás és adatmozgatás) |
+| a fő folyamat ütemezése közben | **92,4 %** |
+| a felület válaszideje közben (mérve) | átlag **0,1 ms**, max 25 ms |
+
+Ezért a tömörítés mostantól külön folyamatban fut: `shrink_process()` elindítja
+ugyanezt a szkriptet `--tomorit be.pdf ki.pdf` kapcsolóval, a lépcsőket a
+gyermek a kimenetére írja, egy **olvasószál** (ez I/O, ott a GIL szabad) adja
+tovább a felületnek. Ha a folyamat nem indítható, visszaesünk a régi
+`after()`-láncra — a funkció nem veszhet el.
+
+Miért nem `multiprocessing`: a Windows `spawn` a szülő `__main__` modulját
+importálja újra a gyermekben. Az app `importlib`-bel is betölthető (GUI-teszt),
+ott a gyermek a *tesztet* futtatná újra. A saját CLI-kapcsoló kiszámítható, és
+az önteszt közvetlenül méri (`shrink_cli`).
+
+#### A mátrix: csak a látható sávot rajzoljuk
+
+A másik nagy tétel nem PDF-munka volt, hanem a Tk. 150 dolgozónál az Áttekintő
+**4714 vászonelemet** tartott, pedig egyszerre ~25 sor látszik; minden
+újrafestés (fülváltás, átméretezés, teljes képernyő) mindet átrajzolta.
+
+- `_rows_view()` megadja a látható sortartományt, a rajzolás csak azon megy
+  végig. A **puffer** (±14 sor) azért kell, hogy görgetéskor ne kelljen minden
+  lépésnél újrarajzolni — csak akkor, ha a látható sáv kicsúszott a kirajzoltból.
+- Az **üres cella** (`·`) háttértéglalapja elmaradt: a sor hátterével azonos
+  színű, tehát láthatatlan volt, de a Tk minden festéskor átrajzolta. 150
+  dolgozónál ez a cellák harmada.
+- A találatvizsgálat koordináta-alapú (`int((y - hdr) // rh)`), ezért a
+  virtualizálás a kattintást, a kurzort és a görgetést nem érinti.
+
+| mérés, 150 dolgozó | előtte | utána |
+|---|---|---|
+| vászonelemek | 4714 | ~900 |
+| mátrix újrarajzolás | 183 ms | 79 ms |
+| teljes képernyő ↔ vissza | 203 ms | 155 ms |
+
+#### Ami szándékosan maradt
+
+A folyamatos ablak-átméretezés (az egérrel húzva) továbbra is ~90–150 ms/lépés:
+ez a Tk teljes ablak-újrafestése, nem a mi kódunk. A fülváltás, a görgetés, a
+szűrés és az iktatás viszont mind 10–90 ms, a tömörítés pedig már nem fagyaszt.
