@@ -57,6 +57,8 @@ if tab_i == 1:                                  # Iktató: tegyünk a sorba egy 
     d.save(sp)
     d.close()
     ikt._enqueue([sp])
+    ikt.page_mode.set(True)                     # oldalankénti szétosztás látszódjon
+    ikt._page_mode_changed()
 if tab_i == 0:                                  # Összeállító: pár oldal a rácsba
     kt = app.tabs["Összeállító"]
     kt.who_text.set("Kiss Anna")

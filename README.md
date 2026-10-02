@@ -13,7 +13,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | Fül | Mire való |
 |---|---|
 | **1 · Összeállító** | szkennelt kötegből és képekből iratok: az oldalak számbillentyűvel doktípust kapnak, egyetlen Iktatással mind a dolgozó mappájába kerül |
-| **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva |
+| **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva. **Oldalanként** módban egy többoldalas köteget oldalanként osztasz szét több dolgozó között |
 | **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
@@ -156,6 +156,24 @@ fájl fölötte van; az **Iktató** iktatáskor felajánlja a tömörítést (a 
 jellel mutatja, és a csak túlméretes PDF-fel rendelkező iratot nem számítja
 beadhatónak. A tömörítés csak a beágyazott képeket kódolja újra, lépcsőnként
 (200 → 150 → 120 → 100 DPI), és megáll, amint befért.
+
+## Egy köteg, több dolgozó — oldalankénti szétosztás (Iktató)
+
+Ha egy PDF-ben **több dolgozó ugyanolyan típusú irata** van (például 18 oldal =
+18 útlevélmásolat), kapcsold be az Iktató felső sávjában az **Oldalanként
+(szétosztás)** jelölőt:
+
+1. a várólistába tedd be a köteget (**Tallózás…** vagy ráejtés),
+2. válaszd ki a doktípust (mindenkinél ugyanaz),
+3. az oldalt ráejted a dolgozó nevére — **csak az az egy oldal** kerül át,
+   önálló egyoldalas PDF-ként, a szokásos névvel és naplóval,
+4. a program magától a következő oldalra lép; az utolsó után a köteg kikerül a
+   sorból.
+
+A kihagyott oldalhoz az **Oldal ◀ ▶** gombokkal visszaléphetsz, a
+**Visszavonás** pedig az oldalt is visszaadja a készletbe. Az oldal tartalma
+bitre változatlan (nincs újrarajzolás). Vegyes kötegnél (egy dolgozó több
+iratával) továbbra is az **Összeállító** a jó eszköz.
 
 ## Az Összeállító röviden
 

@@ -1463,6 +1463,11 @@ def _probe_collation():
 _sort_key, COLLATION = _probe_collation()
 
 
+def hu_az(n: int) -> str:
+    """Névelő a sorszám elé: „az 1. oldal", de „a 2. oldal” (a kiejtés dönt)."""
+    return "az" if n == 1 or n == 5 or 50 <= n <= 59 or 500 <= n <= 599 else "a"
+
+
 def hu_sorted(names) -> list:
     """Magyar ábécé szerinti rendezés (Zsuk < Áron NEM fordulhat elő)."""
     return sorted(names, key=_sort_key)
@@ -1537,6 +1542,25 @@ def log_row(parent: str, src: str, folder: str, name: str, doc_type: str, result
                         src, folder, name, doc_type, result])
     except OSError:
         pass                        # a napló sosem állítja meg a munkát
+
+
+def extract_page(path: str, pageno: int) -> bytes:
+    """Egy oldal önálló, egyoldalas PDF-ként. Az oldal tartalma változatlanul
+    kerül át (insert_pdf: nincs újrarajzolás), tehát a szkennelt kép sem romlik."""
+    src = open_checked(path)
+    try:
+        if not 0 <= pageno < src.page_count:
+            # Az insert_pdf tartományon kívül nem hibázik, csak üres iratot adna.
+            raise IndexError(f"Nincs {pageno + 1}. oldal ({src.page_count} oldalas).")
+        out = pymupdf.open()
+        try:
+            out.insert_pdf(src, from_page=pageno, to_page=pageno)
+            out.set_metadata(dict(CLEAN_META))
+            return out.tobytes(garbage=4, deflate=True)
+        finally:
+            out.close()
+    finally:
+        src.close()
 
 
 def worker_dirs(parent: str) -> list:
@@ -1780,6 +1804,11 @@ class IktatoTab(ttk.Frame):
         self._busy = False               # tömörítés fut: új iktatás és visszavonás vár
         self.stamped = False             # sikerült-e a bélyeg az utolsó iktatásnál
 
+        # Oldalankénti szétosztás: egy köteg = TÖBB dolgozó, azonos típus
+        # (kepek-pdf-terv.md 13.9). Fájlonként tartjuk, mely oldalak mentek el.
+        self.page_mode = tk.BooleanVar(value=False)
+        self.done_pages = {}
+        self.last_page = None            # (forrás, oldal) a visszavonáshoz
         last = recall("doktipus")
         self.doc_type = tk.StringVar(value=last if last in self.types else "")
         self.suffix = tk.StringVar(value=SUFFIX)
@@ -1822,6 +1851,10 @@ class IktatoTab(ttk.Frame):
                                          command=self._update_name)
         self.arckep_cb.pack(side="left", padx=(12, 0))
         self._sync_arckep()
+        self.page_cb = ttk.Checkbutton(bar, text="Oldalanként (szétosztás)",
+                                       variable=self.page_mode,
+                                       command=self._page_mode_changed)
+        self.page_cb.pack(side="left", padx=(14, 0))
 
         ttk.Label(bar, text="Szűrő:").pack(side="left", padx=(18, 4))
         ent = ttk.Entry(bar, textvariable=self.filter_text, width=16)
@@ -1846,7 +1879,7 @@ class IktatoTab(ttk.Frame):
         ttk.Button(nav, text="Sorból kivesz",
                    command=self._drop_current).pack(side="left", padx=(10, 0))
 
-        ttk.Label(nav, text="Oldal:").pack(side="left", padx=(18, 4))
+        ttk.Label(nav, text="Oldal:").pack(side="left", padx=(14, 4))
         ttk.Button(nav, text="◀", width=3,
                    command=lambda: self._step_page(-1)).pack(side="left")
         ttk.Label(nav, textvariable=self.pagenav_lbl, width=7,
@@ -2186,6 +2219,7 @@ class IktatoTab(ttk.Frame):
                 continue
             if p not in self.queue:
                 self.queue.append(p)
+                self.done_pages.pop(p, None)   # újra betöltve: tiszta lappal indul
                 added += 1
         if added:
             self.idx = len(self.queue) - added
@@ -2195,6 +2229,40 @@ class IktatoTab(ttk.Frame):
         if skipped:
             note += f" {skipped} kihagyva (csak .pdf)."
         self._info(note, warn=bool(skipped))
+
+    def _page_mode_changed(self):
+        """Be: a vonszolás a LÁTOTT oldalt viszi, nem az egész fájlt."""
+        if self.page_mode.get() and self.page_count < 2:
+            self._info("Ennek a fájlnak egy oldala van — a mód a többoldalas "
+                       "kötegnél hasznos (egy oldal = egy dolgozó).")
+        else:
+            self._info(self._page_status() if self.page_mode.get()
+                       else "Oldalanként mód ki — a teljes fájl megy egy dolgozóhoz.")
+        self._update_name()
+        self._render_preview()
+
+    def _page_status(self) -> str:
+        if not self.queue:
+            return ""
+        kesz = len(self.done_pages.get(self.queue[self.idx], ()))
+        return (f"Oldalanként: ejtsd {hu_az(self.page_no + 1)} {self.page_no + 1}. "
+                f"oldalt a dolgozó nevére · {kesz}/{self.page_count} oldal elosztva")
+
+    def _by_page(self) -> bool:
+        """Oldalanként iktatunk-e most (egyoldalas fájlnál sosem)."""
+        return bool(self.page_mode.get() and self.page_count > 1)
+
+    def _next_page(self) -> bool:
+        """A következő, még el nem osztott oldalra lép. -> maradt-e oldal."""
+        if not self.queue:
+            return False
+        done = self.done_pages.get(self.queue[self.idx], set())
+        hatra = [i for i in range(self.page_count) if i not in done]
+        if not hatra:
+            return False
+        kov = [i for i in hatra if i > self.page_no]
+        self.page_no = kov[0] if kov else hatra[0]
+        return True
 
     def _step_file(self, d):
         if not self.queue:
@@ -2247,8 +2315,9 @@ class IktatoTab(ttk.Frame):
         self.canvas.create_rectangle(e.x - 90, e.y - 14, e.x + 90, e.y + 14,
                                      fill="#ffffcc", outline=COL_TILE_LINE_HOT,
                                      dash=(3, 2), tags=("ghost",))
-        self.canvas.create_text(e.x, e.y, text="⇢ ejtsd a névre",
-                                font=("Segoe UI", 8), tags=("ghost",))
+        self.canvas.create_text(e.x, e.y, font=("Segoe UI", 8), tags=("ghost",),
+                                text=(f"⇢ {self.page_no + 1}. oldal a névre"
+                                      if self._by_page() else "⇢ ejtsd a névre"))
         self._drag = (e.x, e.y)
 
     def _motion(self, e):
@@ -2279,16 +2348,15 @@ class IktatoTab(ttk.Frame):
         # (a csempe polygon, nem rectangle — az itemconfig fill/outline ugyanaz)
         if name == self._hot:
             return
-        if self._hot:
-            for i in self.canvas.find_withtag(f"tile::{self._hot}"):
-                if self.canvas.type(i) == "rectangle":
-                    self.canvas.itemconfig(i, fill=COL_TILE_BG,
-                                           outline=COL_TILE_LINE, width=1)
-        if name:
-            for i in self.canvas.find_withtag(f"tile::{name}"):
-                if self.canvas.type(i) == "rectangle":
-                    self.canvas.itemconfig(i, fill=COL_TILE_BG_HOT,
-                                           outline=COL_TILE_LINE_HOT, width=2)
+        # A csempe lekerekített POLYGON (13.7) — a típusszűrés ezt is engedje,
+        # különben a vonszoláskor nem jelez vissza, hova ejtesz.
+        for hot, (fill, line, wd) in ((self._hot, (COL_TILE_BG, COL_TILE_LINE, 1)),
+                                      (name, (COL_TILE_BG_HOT, COL_TILE_LINE_HOT, 2))):
+            if not hot:
+                continue
+            for i in self.canvas.find_withtag(f"tile::{hot}"):
+                if self.canvas.type(i) in ("rectangle", "polygon"):
+                    self.canvas.itemconfig(i, fill=fill, outline=line, width=wd)
         self._hot = name
         self._update_name(name)
 
@@ -2329,7 +2397,9 @@ class IktatoTab(ttk.Frame):
             return
         who = hover or "<mappanév>"
         sub = target_subdir(dt, self._rules(), self.arckep_kesz.get())
-        self.name_preview.set(sub + "\\" + target_name(who, dt, self.suffix.get()))
+        self.name_preview.set(sub + "\\" + target_name(who, dt, self.suffix.get()) +
+                              (f"   ⇠ {self.page_no + 1}. oldal"
+                               if self._by_page() else ""))
 
     # ---------------- másolás ----------------
     def _do_copy(self, dir_name):
@@ -2365,7 +2435,17 @@ class IktatoTab(ttk.Frame):
                    doc_type=self.doc_type.get(),
                    name=target_name(dir_name, self.doc_type.get(), self.suffix.get()),
                    size=os.path.getsize(src), collision=False, overwritten=False,
-                   backup=None, shrunk=None, stamp=stamp)
+                   backup=None, shrunk=None, stamp=stamp, data=None, page=None,
+                   pages=None)
+        if self._by_page():                    # csak a LÁTOTT oldal megy
+            try:
+                job["data"] = extract_page(src, self.page_no)
+            except Exception as e:
+                self._info(f"Az oldal nem emelhető ki: {e}", warn=True)
+                return
+            job["page"] = self.page_no
+            job["pages"] = 1
+            job["size"] = len(job["data"])
         shrink = False
         if job["size"] > UPLOAD_LIMIT:
             shrink = messagebox.askyesnocancel(
@@ -2392,15 +2472,21 @@ class IktatoTab(ttk.Frame):
             if job["overwritten"]:
                 job["backup"] = backup_existing(job["dst"])
             if shrink:
-                with open(src, "rb") as f:
-                    data = f.read()
+                data = job["data"]
+                if data is None:
+                    with open(src, "rb") as f:
+                        data = f.read()
                 self._busy = True
                 shrink_later(self, data,
                              on_step=lambda dpi, q: self._info(
                                  f"Tömörítés… {dpi} DPI, Q{q} (a lépcsők között a felület él)"),
                              on_done=lambda out, step, err: self._shrink_done(job, out, step, err))
                 return
-            self._copy_verified(src, job["dst"], stamp)
+            if job["data"] is not None:        # kiemelt oldal: bájtok a memóriából
+                write_pdf_verified(job["data"], job["dst"], 1, stamp)
+                self.stamped = True
+            else:
+                self._copy_verified(src, job["dst"], stamp)
         except Exception as e:
             self._copy_failed(job, e)
             return
@@ -2412,9 +2498,11 @@ class IktatoTab(ttk.Frame):
         try:
             if err:
                 raise err
-            d = pymupdf.open(job["src"])
-            pages = d.page_count
-            d.close()
+            pages = job.get("pages")
+            if pages is None:
+                d = pymupdf.open(job["src"])
+                pages = d.page_count
+                d.close()
             write_pdf_verified(data, job["dst"], pages, job["stamp"])
         except Exception as e:
             self._copy_failed(job, e)
@@ -2450,15 +2538,31 @@ class IktatoTab(ttk.Frame):
                     f"A legerősebb tömörítés után is {mb(new_size)} maradt — "
                     f"a feltöltési korlát ({mb(UPLOAD_LIMIT)}) fölött.\n\n"
                     "Érdemes kevesebb oldalra bontani (Összeállító fül).")
-        self._log(src, os.path.join(job["dir_name"], job["sub"]), name,
+        forras = src if job["page"] is None else src + f" [{job['page'] + 1}]"
+        self._log(forras, os.path.join(job["dir_name"], job["sub"]), name,
                   result, job["doc_type"])
-        if src in self.queue:                # tömörítés közben a sor mozoghatott
+        kesz_uzenet = ""
+        if job["page"] is not None:
+            # Oldalmód: a fájl a sorban MARAD, amíg van el nem osztott oldala.
+            done = self.done_pages.setdefault(src, set())
+            done.add(job["page"])
+            self.last_page = (src, job["page"])
+            if self._next_page():
+                kesz_uzenet = (f" · {len(done)}/{self.page_count} oldal kész, "
+                               f"következő: {self.page_no + 1}.")
+            else:
+                kesz_uzenet = f" · mind a {self.page_count} oldal elosztva"
+                if src in self.queue:
+                    self.queue.pop(self.queue.index(src))
+                    self.idx = min(self.idx, max(0, len(self.queue) - 1))
+                    self.page_no = 0
+        elif src in self.queue:              # tömörítés közben a sor mozoghatott
             i = self.queue.index(src)
             self.queue.pop(i)
             if i < self.idx:
                 self.idx -= 1
-        self.idx = min(self.idx, max(0, len(self.queue) - 1))
-        self.page_no = 0
+            self.idx = min(self.idx, max(0, len(self.queue) - 1))
+            self.page_no = 0
         self._render_preview()           # a nézet marad, ahol volt
         if job["collision"]:
             self._info("⚠ ÜTKÖZÉS: a mappában már volt ilyen nevű fájl — "
@@ -2472,7 +2576,8 @@ class IktatoTab(ttk.Frame):
                        (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
                        (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
                         if job["shrunk"] else "") +
-                       ("" if self.stamped else " · bélyeg nélkül"), ok=True)
+                       ("" if self.stamped else " · bélyeg nélkül") +
+                       kesz_uzenet, ok=True)
 
     def _ask_collision(self, name):
         """new | overwrite | cancel — alapértelmezés az új név."""
@@ -2574,7 +2679,17 @@ class IktatoTab(ttk.Frame):
             self._info(f"A visszavonás nem sikerült: {e}", warn=True)
             return
         self.last_copy = None
-        if os.path.isfile(src) and src not in self.queue:
+        if self.last_page:                         # oldalmód: az oldal újra osztható
+            psrc, page = self.last_page
+            self.done_pages.get(psrc, set()).discard(page)
+            self.last_page = None
+            if psrc in self.queue:
+                self.idx = self.queue.index(psrc)
+            elif os.path.isfile(psrc):             # az utolsó oldal után kikerült
+                self.queue.insert(self.idx, psrc)
+            self.page_no = page
+            self._render_preview()
+        elif os.path.isfile(src) and src not in self.queue:
             self.queue.insert(self.idx, src)       # vissza a sorba
             self._render_preview()
         self._log(src, os.path.basename(os.path.dirname(dst)),
@@ -6870,6 +6985,15 @@ class App(tk.Tk):
 
 
 # ── önteszt ─────────────────────────────────────────────────────────────────
+def _tolerant(fn) -> bool:
+    """Lefutott-e kivétel nélkül (öntesztekhez)."""
+    try:
+        fn()
+        return True
+    except Exception:
+        return False
+
+
 def _selftest() -> int:
     res = []
     RULES = rules_from(default_settings())
@@ -7179,6 +7303,35 @@ def _selftest() -> int:
            t[os.path.basename(stamped)])
         ck("bélyeg nélkül + utótaggal -> 02",
            t[os.path.basename(plain)][1] == DIR_UP, t[os.path.basename(plain)])
+
+    print("OLDAL KIEMELÉSE (ISKTATÓ: OLDALANKÉNTI SZÉTOSZTÁS)")
+    ck("magyar névelő a sorszám előtt (az 1., a 2., az 5., a 12.)",
+       [hu_az(i) for i in (1, 2, 5, 12, 50, 100)] ==
+       ["az", "a", "az", "a", "az", "a"], [hu_az(i) for i in (1, 2, 5, 12, 50, 100)])
+    with tempfile.TemporaryDirectory() as td:
+        koteg = os.path.join(td, "koteg.pdf")
+        d = pymupdf.open()
+        for i in range(4):
+            d.new_page(width=595, height=842).insert_text((72, 100), f"oldal {i + 1}",
+                                                          fontsize=20)
+        d.save(koteg)
+        d.close()
+        one = extract_page(koteg, 2)
+        chk = pymupdf.open("pdf", one)
+        try:
+            ck("a kiemelt oldal egyoldalas PDF, a KÉRT oldallal",
+               chk.page_count == 1 and chk[0].get_text().strip() == "oldal 3",
+               (chk.page_count, chk[0].get_text().strip()))
+            ck("a lapméret megmarad", abs(chk[0].rect.width - 595) < 1, chk[0].rect)
+        finally:
+            chk.close()
+        src = pymupdf.open(koteg)
+        try:
+            ck("a forrás érintetlen marad", src.page_count == 4, src.page_count)
+        finally:
+            src.close()
+        ck("rossz oldalszám -> hiba, nem csendes üres fájl",
+           not _tolerant(lambda: extract_page(koteg, 9)))
 
     print("BÉLYEG: DOLGOZÓ ÉS DOKTÍPUS A METAADATBAN")
     kw = stamp_keywords("Kiss Anna", "Útlevél", "utlevel", DIR_UP)

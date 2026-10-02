@@ -793,6 +793,84 @@ try:
        bool(allapot) and allapot[0].winfo_ismapped() and
        allapot[0].winfo_y() > app.nb.winfo_y(), allapot)
 
+    print("IKTATÓ: OLDALANKÉNTI SZÉTOSZTÁS")
+    app.show(ikt)
+    pump(0.3)
+    sokoldalas = os.path.join(TMP, "harom_dolgozo.pdf")
+    d = P.open()
+    for who in ("Kiss Anna", "Nagy Béla", "Dolgozó 00"):
+        d.new_page(width=595, height=842).insert_text((72, 100), f"{who} utlevele",
+                                                      fontsize=20)
+    d.save(sokoldalas)
+    d.close()
+    ikt.queue.clear()
+    ikt.doc_type.set("Útlevél")
+    ikt._type_chosen()
+    ikt._enqueue([sokoldalas])
+    ikt.page_mode.set(True)
+    ikt._page_mode_changed()
+    pump(0.4)
+    ck("oldalanként mód: a köteg 3 oldala látszik",
+       ikt._by_page() and ikt.page_count == 3, (ikt._by_page(), ikt.page_count))
+
+    def ejt(nev):
+        """Valódi vonszolás: az előnézetről a dolgozó csempéjére."""
+        ikt.filter_text.set(nev)                 # egy csempe maradjon
+        pump(0.3)
+        cv = ikt.canvas
+        l, t, r, b = ikt.prev_box
+        px, py = int((l + r) / 2), int((t + b) / 2)
+        tx1, ty1, tx2, ty2 = ikt.tile_rects[nev]
+        tx, ty = int((tx1 + tx2) / 2), int((ty1 + ty2) / 2)
+        cv.event_generate("<ButtonPress-1>", x=px, y=py)
+        cv.event_generate("<B1-Motion>", x=tx, y=ty)
+        pump(0.15)
+        kiemelt = any(cv.itemcget(i, "fill") == pm.COL_TILE_BG_HOT
+                      for i in cv.find_withtag(f"tile::{nev}")
+                      if cv.type(i) in ("rectangle", "polygon"))
+        cv.event_generate("<ButtonRelease-1>", x=tx, y=ty)
+        pump(0.4)
+        return kiemelt
+
+    kiemelt1 = ejt("Kiss Anna")
+    ck("vonszolás közben a célcsempe kiemelődik", kiemelt1)
+    ck("az 1. oldal Kiss Annához került, és a nézet a 2.-ra lépett",
+       ikt.page_no == 1 and len(ikt.queue) == 1 and
+       "1/3 oldal kész" in ikt.msg.get(), (ikt.page_no, ikt.msg.get()[:90]))
+    ejt("Nagy Béla")
+    ejt("Dolgozó 00")
+    ck("a harmadik oldal után a köteg kikerült a sorból",
+       not ikt.queue and "mind a 3 oldal elosztva" in ikt.msg.get(),
+       (len(ikt.queue), ikt.msg.get()[:90]))
+    jo = []
+    for who in ("Kiss Anna", "Nagy Béla", "Dolgozó 00"):
+        f = os.path.join(root, who, pm.DIR_UP, f"{who} Útlevél.pdf")
+        if os.path.isfile(f):
+            dd = P.open(f)
+            jo.append(dd.page_count == 1 and dd[0].get_text().strip().startswith(who))
+            dd.close()
+        else:
+            jo.append(False)
+    ck("mindhárom dolgozónál a SAJÁT oldala, egyoldalas PDF-ben", all(jo), jo)
+    with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
+        utolso = list(csv.reader(f, delimiter=";"))[-1]
+    ck("a napló az oldalszámot is rögzíti",
+       utolso[1].endswith("[3]") and utolso[3] == "Dolgozó 00 Útlevél.pdf", utolso[1][-30:])
+    ikt._undo()
+    pump(0.3)
+    ck("visszavonás: az oldal újra elosztható, a köteg visszakerült",
+       len(ikt.queue) == 1 and ikt.page_no == 2 and
+       not os.path.isfile(os.path.join(root, "Dolgozó 00", pm.DIR_UP,
+                                       "Dolgozó 00 Útlevél.pdf")),
+       (len(ikt.queue), ikt.page_no))
+    for who in ("Kiss Anna", "Nagy Béla"):
+        os.remove(os.path.join(root, who, pm.DIR_UP, f"{who} Útlevél.pdf"))
+    ikt.page_mode.set(False)
+    ikt._page_mode_changed()
+    ikt.queue.clear()
+    ikt.filter_text.set("")
+    pump(0.2)
+
     print("CÍMKE A SZÖVEGRÉTEGBŐL")
     szoveges = os.path.join(TMP, "generalt.pdf")
     d = P.open()

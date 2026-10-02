@@ -934,3 +934,53 @@ mentés (lemez — eddig ugyanaz volt, mint az „archiválás"). A módszer: az
 készletet egy lapra rajzolva, nagyítva **megnézni** — így derült ki, hogy a
 `doc` törött, a `split` és a `close` ugyanaz, az `archive` és a `save` pedig
 megkülönböztethetetlen.
+
+### 13.9 Oldalankénti szétosztás az Iktatóban (2026-10-02)
+
+**A helyzet:** egy 18 oldalas PDF érkezik, benne **18 dolgozó** ugyanolyan típusú
+irata. Szét kell szedni dolgozónként — és erre a vonszolás a legjobb.
+
+Eddig egyik fül sem tudta ezt:
+
+- az **Iktató** a *teljes fájlt* viszi egy dolgozóhoz;
+- az **Összeállító** több iratot tud, de **egy köteg = egy dolgozó** (14.1), itt
+  viszont egy köteg = 18 dolgozó. A típus ellenben mindenkinél ugyanaz, tehát a
+  címkézés sem kellene.
+
+#### A megoldás: az Iktató „Oldalanként" módja
+
+Bekapcsolva a vonszolás a **látott oldalt** viszi, nem a fájlt:
+
+1. a felső sávban be az **Oldalanként (szétosztás)** jelölő,
+2. az oldalt ráejted a dolgozó csempéjére,
+3. a program **azonnal a következő, még el nem osztott oldalra lép**,
+4. az utolsó oldal után a köteg kikerül a sorból („mind a 18 oldal elosztva").
+
+Az oldal `extract_page`-dzsel kerül önálló, egyoldalas PDF-be: `insert_pdf`,
+tehát **nincs újrarajzolás** — a szkennelt kép bitre ugyanaz marad. Innentől a
+meglévő iktatómag fut: szabványos név, ütközéskezelés, `.eredeti\` mentés,
+bélyeg (13.5), 5 MB fölött tömörítés, napló, visszavonás.
+
+#### Döntések
+
+- **Nem a fájl mellé, hanem a sorba:** oldalmódban a köteg a várólistában
+  marad, amíg van el nem osztott oldala. Így látszik, mi van hátra, és a
+  `↔ Oldal` lapozóval vissza lehet ugrani egy kihagyotthoz.
+- **Fájlonként tartjuk, mely oldal ment el** (`done_pages`), nem egy számlálót:
+  a sorrend nem kötelező, és a **Visszavonás** az oldalt vissza is adja a
+  készletbe (a nézet is visszaugrik rá).
+- **A napló az oldalszámot is rögzíti** (`…\koteg.pdf [3]`), különben a sorból
+  nem derülne ki, melyik oldal hova került.
+- **Egyoldalas fájlnál a mód nem él**: ott a bájtazonos másolás a jobb (13.5),
+  nincs értelme újraírni a PDF-et.
+- **Nem automatikus:** a mód kézi kapcsoló. Egy vegyes köteg (egy dolgozó több
+  irata) továbbra is az Összeállítóba való; ha magától kapcsolna be, a gyakori
+  eset romlana el a ritka kedvéért.
+
+#### Egy hiba, amit ez a munka hozott felszínre
+
+A vonszolás **célkiemelése** néma volt v1.17 óta: a csempe lekerekített
+polygon lett (13.7), a kiemelés viszont `canvas.type(i) == "rectangle"`-t
+keresett. Ejteni lehetett, de nem látszott, hova. Javítva, és a GUI-teszt
+mostantól **valódi vonszolással** méri (press → motion → release), nem a
+`_do_copy` közvetlen hívásával — így ez a hibaosztály nem jöhet vissza.
