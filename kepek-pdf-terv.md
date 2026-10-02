@@ -794,6 +794,34 @@ ponytail: felirat szerinti társítás — új gomb ikon nélkül is rendben van
 - Az ablak mérete a **képernyőhöz** igazodik: a fix 1200×840 egy 864 képpont
   magas munkaállomáson a tálca alá lógott.
 
+#### Világos felület — az első kör visszajelzése után
+
+Az első változat sötét parancsfejlécet és sötét („fotós") munkavásznat kapott.
+A használó visszajelzése: **túl sötét és kevésbé átlátható**. Egy egész napos
+irodai munkához igaza van: a sötét nagy felületek fárasztanak, és a fehér
+iratbélyegképek mellett a kontraszt is ugrál. A javítás:
+
+- a fejléc **világos**, vékony színátmenetes akcentuscsík zárja;
+- a fülsáv a lapon ül, a kiválasztott fül fehér lap akcentus-aláhúzással;
+- az előnézeti és bélyegkép-vászon **világos „világítóasztal"** (`#e9edf5`) —
+  a rajta lévő feliratok sötétre fordultak, az árnyékok világos szürkére;
+- a doktípus-lista **halvány árnyalatokat** kap sötét szöveggel (`tint()`), a
+  telített szín csak a bélyegkép címkesávján marad, ahol egy-egy folt van;
+- **egy felület**: a panelek (LabelFrame) is a lap színén ülnek, csak kerettel.
+  Így a jelölők és feliratok mögött nincs eltérő színű folt — a korábbi
+  fehér-kártya/szürke-lap keverék pont ezt okozta.
+
+#### A lekerekített él levágódása
+
+Nagyításban több gomb jobb oldala **szögletesre vágódott**: a kódból rajzolt
+grafika rendben volt, de a gomb nem fért el. A fix szélességű jobb panelen
+(`PANEL_W`) az ikon és a nagyobb belső margó miatt a gombsor túlnyúlt, és a
+szülő levágta a kerekítést. Három helyen javítva: kisebb gombmargó (10 px),
+kisebb ikon (15 px), szélesebb panel (318 px) — és ahol két vezérlő egy sorban
+már nem fért el (Utótag + jelölő), ott **két sor** lett belőle. Tanulság: a
+grafika és az elrendezés együtt jár; a szép él nem ér semmit, ha a widget
+kisebb, mint a kép.
+
 #### Hogyan látja a következő fejlesztő, mit változtatott
 
 `python tools/ui-kep.py <fül> <kimenet.png>` — demóadattal elindítja az appot és

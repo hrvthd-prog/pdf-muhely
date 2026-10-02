@@ -84,25 +84,29 @@ def open_checked(path: str):
 # Egy helyen minden szín: a ttk-téma, a vásznak és a mátrix is ebből él, így nem
 # csúszhat szét a kétféle rajzolás (widget vs. canvas).
 UI = {
-    "bg":        "#f4f6fa",   # oldal háttér
+    "bg":        "#f5f7fb",   # oldal háttér
     "card":      "#ffffff",   # panel, csempe, mátrix
-    "line":      "#dfe4ec",   # vonalak, keretek
-    "line_soft": "#eaeef5",
-    "ink":       "#121820",   # szöveg
-    "ink_soft":  "#5c6676",   # másodlagos szöveg
+    "line":      "#e0e6f0",   # vonalak, keretek
+    "line_soft": "#eef2f8",
+    "ink":       "#1b2430",   # szöveg
+    "ink_soft":  "#616d80",   # másodlagos szöveg
     "accent":    "#2563eb",   # elsődleges művelet
     "accent_hi": "#1d4ed8",
     "accent_lo": "#1e40af",
     "accent_bg": "#e8efff",   # akcentus halvány háttér (kijelölés)
-    "hover":     "#eef2f9",
+    "hover":     "#f1f5fd",
     "ok":        "#157347",
     "warn":      "#c62828",
-    "dark":      "#2c3650",   # előnézeti vászon (a fejléc családjából)
-    "head":      "#131c33",   # fejlécsáv és a fülek háttere
-    "head_hi":   "#223156",   # fejléc: kiemelt felület (mező, ghost gomb)
-    "head_ink":  "#eef3ff",
-    "head_mute": "#9eb0d8",
-    "shadow":    "#0b1a3a",   # a lágy árnyék alapszíne (kis átlátszósággal)
+    # A munkaterület (bélyegképek, előnézet) VILÁGOS: a sötét „fotós” háttér
+    # szép, de egy egész napos irodai munkához fárasztó és kevésbé átlátható.
+    "dark":      "#e9edf5",   # az előnézeti vászon („világítóasztal”)
+    "head":      "#ffffff",   # fejlécsáv
+    "head_hi":   "#f2f5fb",   # fejléc: kiemelt felület (mező)
+    "head_ink":  "#1b2430",
+    "head_mute": "#67748a",
+    "shadow":    "#2a3b63",   # a lágy árnyék alapszíne (kis átlátszósággal)
+    "shade1":    "#dde3ef",   # vászon-árnyék, világos háttéren
+    "shade2":    "#e7ecf5",
 }
 FONT_UI = ("Segoe UI", 10)
 FONT_SB = ("Segoe UI Semibold", 10)
@@ -423,7 +427,7 @@ class CropDialog(tk.Toplevel):
         ttk.Label(self, text="Húzz téglalapot a megtartandó rész köré. "
                              "A kép fájlja nem változik.").pack(anchor="w", padx=10,
                                                                 pady=(10, 4))
-        self.canvas = tk.Canvas(self, width=self.w, height=self.h, bg="#666",
+        self.canvas = tk.Canvas(self, width=self.w, height=self.h, bg=UI["dark"],
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack(padx=10)
         self.canvas.create_image(0, 0, anchor="nw", image=self.img, tags="img")
@@ -1335,7 +1339,7 @@ ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.25, 6.0, 1.15
 
 COL_TILE_BG = UI["card"]
 COL_TILE_BG_HOT = UI["accent_bg"]
-COL_TILE_LINE = UI["line"]
+COL_TILE_LINE = "#cbd5e8"
 COL_TILE_LINE_HOT = UI["accent"]
 COL_CANVAS = UI["dark"]
 COL_WARN = UI["warn"]
@@ -1956,8 +1960,8 @@ class IktatoTab(ttk.Frame):
         c = self.canvas
         tags = ("tile", f"tile::{name}")
         r = canvas_card(c, x, y, x + TILE_W, y + TILE_H, 9, fill=COL_TILE_BG,
-                        outline=COL_TILE_LINE, shadow=("#222b42", "#2a3450"),
-                        tags=tags)
+                        outline=COL_TILE_LINE,
+                        shadow=(UI["shade1"], UI["shade2"]), tags=tags)
         label = name if len(name) <= 20 else name[:19] + "…"
         c.create_text(x + TILE_W / 2, y + TILE_H / 2, text=label,
                       font=FONT_SB, fill=UI["ink"], tags=tags)
@@ -1974,7 +1978,7 @@ class IktatoTab(ttk.Frame):
         if not self.queue:
             c.create_rectangle(x1, y1, x2, y2, outline="#8d949e", dash=(4, 3),
                                tags=("preview",))
-            c.create_text(cx, cy - 26, fill="#e8e8e8", justify="center",
+            c.create_text(cx, cy - 26, fill=UI["ink_soft"], justify="center",
                           font=("Segoe UI", 11), text="Nincs betöltött PDF")
             self._btn(cx, cy + 16, "📂  PDF-ek tallózása…", self._browse_files)
             self.queue_lbl.set("nincs betöltött fájl")
@@ -2000,7 +2004,7 @@ class IktatoTab(ttk.Frame):
                                                tags=("preview",))
             bb = c.bbox(self.preview_item)
             if bb:
-                c.create_rectangle(bb, outline=COL_CROP if cropped else "#3a3f47",
+                c.create_rectangle(bb, outline=COL_CROP if cropped else UI["line"],
                                    width=2 if cropped else 1, tags=("preview",))
             if cropped:
                 pos = ""
@@ -2012,23 +2016,33 @@ class IktatoTab(ttk.Frame):
                                    + pos)
         else:
             c.create_rectangle(cx - 120, cy - 80, cx + 120, cy + 40,
-                               fill="#ffffff", outline="#cccccc",
+                               fill="#ffffff", outline=UI["line"],
                                tags=("preview",))
             c.create_text(cx, cy - 20, text=note, width=220, justify="center",
                           font=("Segoe UI", 10), tags=("preview",))
 
         size = os.path.getsize(path) if os.path.isfile(path) else 0
         big = size > UPLOAD_LIMIT
-        c.create_text(cx, y2 - 30, fill=COL_CROP if big else "#e8e8e8",
-                      text=f"{os.path.basename(path)} · {mb(size)}" +
-                           ("  ⚠ korlát fölött — iktatáskor tömöríthető" if big else ""),
-                      font=("Segoe UI", 8), tags=("preview",))
+        self._chip(cx, y2 - 30,
+                   f"{os.path.basename(path)} · {mb(size)}" +
+                   ("  ⚠ korlát fölött — iktatáskor tömöríthető" if big else ""),
+                   COL_CROP if big else UI["ink_soft"])
         if self.page_count > 1:      # kötegből több irat: az Összeállítóban
             self._btn(cx - 75, y2 - 12, "📂  Tallózás…", self._browse_files)
             self._btn(cx + 85, y2 - 12, "✂  Szétosztás…", self._to_composer)
         else:
             self._btn(cx, y2 - 12, "📂  Tallózás…", self._browse_files)
         self._update_name()
+
+    def _chip(self, cx, cy, text, color):
+        """Felirat halvány lapon: az előnézeti oldal fölé csúszva is olvasható."""
+        c = self.canvas
+        t = c.create_text(cx, cy, text=text, fill=color, font=FONT_SM,
+                          tags=("preview",))
+        x1, y1, x2, y2 = c.bbox(t)
+        r = canvas_card(c, x1 - 8, y1 - 3, x2 + 8, y2 + 3, 7, fill=UI["card"],
+                        outline=UI["line_soft"], tags=("preview",))
+        c.tag_raise(t, r)
 
     def _btn(self, cx, cy, text, cmd):
         """Vászonra rajzolt gomb — ugyanaz a nyelv, mint a ttk-gomboké:
@@ -2038,7 +2052,7 @@ class IktatoTab(ttk.Frame):
                           font=FONT_UI, tags=("preview", "cbtn"))
         x1, y1, x2, y2 = c.bbox(t)
         r = canvas_card(c, x1 - 14, y1 - 7, x2 + 14, y2 + 7, 9, fill=UI["card"],
-                        outline=UI["line"], shadow=("#1d2639", "#243050"),
+                        outline=UI["line"], shadow=(UI["shade1"], UI["shade2"]),
                         tags=("preview", "cbtn"))
         c.tag_raise(t, r)
         for i in (r, t):
@@ -3692,6 +3706,8 @@ class AttekintoTab(ttk.Frame):
                             variable=self.mode).pack(side="left", padx=2)
         ttk.Checkbutton(bar, text="Ajánlott oszlopok",
                         variable=self.show_opt).pack(side="left", padx=(16, 0))
+        ttk.Label(bar, textvariable=self.summary, style="Dim.TLabel").pack(
+            side="left", padx=20)
         ttk.Button(bar, text="Frissítés", command=self.refresh).pack(side="right")
         ttk.Button(bar, text="Beállítások…",
                    command=self._open_settings).pack(side="right", padx=6)
@@ -3761,7 +3777,6 @@ class AttekintoTab(ttk.Frame):
                    command=self._open_audit).pack(side="left")
         ttk.Button(foot, text="Tömörítés…",
                    command=self._open_shrink).pack(side="left", padx=6)
-        ttk.Label(foot, textvariable=self.summary).pack(side="left", padx=16)
         self.msg_lbl = ttk.Label(foot, textvariable=self.msg)
         self.msg_lbl.pack(side="right")
 
@@ -4862,7 +4877,7 @@ PRESETS = (("Irodai · 200 DPI", 200, 75),     # (felirat, DPI, JPEG-minőség)
            ("E-mail · 150 DPI", 150, 65))
 A4_LONG_IN = 842 / 72                         # az A4 hosszabb oldala hüvelykben
 SRC_EXT = IMG_EXT + (".pdf",)
-PANEL_W = 300                                 # a jobb oldali panel szélessége
+PANEL_W = 318                                 # a jobb oldali panel szélessége
 # Azonos tónusú, egymástól jól megkülönböztethető készlet — fehér szöveggel
 # mindegyik olvasható marad (a régi, teljesen telített színek harsányak voltak).
 LABEL_COLORS = ("#2f6fe4", "#0f8f8f", "#7c4dd6", "#c07c0a", "#d6456b",
@@ -4935,6 +4950,14 @@ def source_desc(items) -> str:
         by.setdefault(it.path, []).append(it.page)
     return "; ".join(p + (f" [{page_ranges(n)}]" if p.lower().endswith(".pdf") else "")
                      for p, n in by.items())
+
+
+def tint(color: str, k: float = 0.86) -> str:
+    """A szín világos árnyalata (fehérrel keverve) — listához, ahol sok sor van
+    egymás alatt: a telített szín ott harsány, a csempe sávján viszont marad."""
+    c = color.lstrip("#")
+    r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    return "#%02x%02x%02x" % tuple(int(v + (255 - v) * k) for v in (r, g, b))
 
 
 def palette_types(ikt_types, rules) -> list:
@@ -5062,7 +5085,7 @@ class PageViewer(tk.Toplevel):
         if not self.doc:
             self.W, self.H = cw, ch
             c.configure(scrollregion=(0, 0, cw, ch))
-            c.create_text(cw / 2, ch / 2, text="⚠ nem olvasható", fill="#e8e8e8",
+            c.create_text(cw / 2, ch / 2, text="⚠ nem olvasható", fill=UI["warn"],
                           font=("Segoe UI", 12))
             self.title(f"{pos} · {name}")
             return
@@ -5246,16 +5269,19 @@ class ComposerTab(ttk.Frame):
         ttk.Label(o, textvariable=self.out_info, foreground=COL_WARN,
                   wraplength=PANEL_W - 24).pack(side="bottom", anchor="w", padx=6)
         sf = ttk.Frame(o)
-        sf.pack(side="bottom", fill="x", padx=6, pady=2)
-        ttk.Label(sf, text="Utótag:").pack(side="left")
-        self.suffix_ent = ttk.Entry(sf, textvariable=self.suffix, width=14, state="disabled")
-        self.suffix_ent.pack(side="left", padx=4)
-        ttk.Label(sf, text="(a kijelölt iraté)", foreground="#555").pack(side="left")
-        self.suffix.trace_add("write", lambda *a: self._suffix_changed())
+        sf.pack(side="bottom", fill="x", padx=6, pady=(0, 2))
         self.arckep_cb = ttk.Checkbutton(sf, text="arckép rajta", state="disabled",
                                          variable=self.arckep_kesz,
                                          command=self._arckep_changed)
-        self.arckep_cb.pack(side="left", padx=(8, 0))
+        self.arckep_cb.pack(side="left")
+        ttk.Label(sf, text="(a kijelölt iraté)",
+                  foreground=UI["ink_soft"]).pack(side="left", padx=6)
+        sf2 = ttk.Frame(o)                      # két sor: a panel fix szélességű
+        sf2.pack(side="bottom", fill="x", padx=6, pady=(2, 0))
+        ttk.Label(sf2, text="Utótag:").pack(side="left")
+        self.suffix_ent = ttk.Entry(sf2, textvariable=self.suffix, state="disabled")
+        self.suffix_ent.pack(side="left", fill="x", expand=True, padx=4)
+        self.suffix.trace_add("write", lambda *a: self._suffix_changed())
         self.tree = ttk.Treeview(o, columns=("name", "n", "note"), show="", height=4,
                                  selectmode="browse")
         self.tree.column("name", width=170, stretch=True)
@@ -5288,8 +5314,9 @@ class ComposerTab(ttk.Frame):
         for i, (t, _r) in enumerate(self.palette):
             self.pal.insert(tk.END, f" {i + 1 if i < 9 else ' '}   {t}")
             c = LABEL_COLORS[i % len(LABEL_COLORS)]
-            self.pal.itemconfig(i, background=c, foreground="white",
-                                selectbackground=c, selectforeground="white")
+            self.pal.itemconfig(i, background=tint(c), foreground=UI["ink"],
+                                selectbackground=tint(c, 0.72),
+                                selectforeground=UI["ink"])
         self.pal.configure(height=max(1, len(self.palette)))
         self._who_changed()
         self._redraw()
@@ -5613,7 +5640,7 @@ class ComposerTab(ttk.Frame):
                         fill=COL_TILE_BG_HOT if hot else COL_TILE_BG,
                         outline=color or (COL_TILE_LINE_HOT if hot else COL_TILE_LINE),
                         width=3 if color else (2 if hot else 1),
-                        shadow=("#222b42", "#2a3450"))
+                        shadow=(UI["shade1"], UI["shade2"]))
             cx, cy = x + CELL_W / 2, y + 8 + THUMB / 2
             if it.thumb:
                 c.create_image(cx, cy, image=it.thumb)
@@ -5634,7 +5661,7 @@ class ComposerTab(ttk.Frame):
         rows = (n + self._cols() - 1) // self._cols()
         c.configure(scrollregion=(0, 0, c.winfo_width(), GAP + rows * (CELL_H + GAP)))
         if not n:
-            c.create_text(max(200, c.winfo_width()) / 2, 90, fill="#c7d0e6",
+            c.create_text(max(200, c.winfo_width()) / 2, 90, fill=UI["ink_soft"],
                           justify="center", font=("Segoe UI", 11),
                           text="Nincs oldal.\nAdj hozzá PDF-et vagy képeket — a sorrend "
                                "vonszolással állítható.\nJelöld ki az oldalakat, és nyomj "
@@ -6168,7 +6195,7 @@ ICON_PATHS = {
 }
 
 
-def icon_png(name: str, px: int = 17, color=None, width=1.7) -> bytes:
+def icon_png(name: str, px: int = 15, color=None, width=1.8) -> bytes:
     """Ikon kódból: vonalrajz a 24-es rácson, a kért képpontméretre rajzolva."""
     paths, closed = ICON_PATHS[name]
     k = px / 24.0
@@ -6186,7 +6213,7 @@ def icon_png(name: str, px: int = 17, color=None, width=1.7) -> bytes:
     return _png(doc, page)
 
 
-def ui_icon(name: str, color=None, px: int = 17):
+def ui_icon(name: str, color=None, px: int = 15):
     """PhotoImage-gyorsítótár az ikonokhoz (kulcs: név + szín + méret)."""
     key = (name, color, px)
     for k, img in _UI_KEEP:
@@ -6233,6 +6260,18 @@ def decorate(widget):
                             compound="left", style="Accent.TButton" if primary
                             else "TButton")
         decorate(w)
+
+
+def paint_accent_line(c):
+    """Vízszintes színátmenetes csík a vásznon (a fejléc zárása)."""
+    c.delete("all")
+    w = max(1, c.winfo_width())
+    a, b = _rgb(UI["accent"]), _rgb("#53c0f0")
+    for i in range(0, w, 4):
+        t = i / w
+        col = "#%02x%02x%02x" % tuple(
+            int(255 * (a[k] + (b[k] - a[k]) * t)) for k in range(3))
+        c.create_rectangle(i, 0, i + 5, 4, fill=col, outline=col)
 
 
 def build_theme(root):
@@ -6290,24 +6329,24 @@ def build_theme(root):
                                     pad=P)),
             (("focus",), round_png(S, R, UI["card"], UI["accent"], 1.6, shadow=1.0,
                                    pad=P)),
-        ], R + P, (13, 5))
+        ], R + P, (10, 5))
         nine("Accent.button", [
-            round_png(S, R, None, None, 0, shadow=1.6, pad=P,
+            round_png(S, R, None, None, 0, shadow=0.9, pad=P,
                       grad=("#3b74f0", UI["accent"])),
             (("disabled",), round_png(S, R, "#c2cfea", None, 0, pad=P)),
             (("pressed",), round_png(S, R, UI["accent_lo"], None, 0, pad=P)),
-            (("active",), round_png(S, R, None, None, 0, shadow=2.4, pad=P,
+            (("active",), round_png(S, R, None, None, 0, shadow=1.5, pad=P,
                                     grad=("#4a80f5", UI["accent_hi"]))),
-        ], R + P, (14, 5))
+        ], R + P, (11, 5))
         nine("Ghost.button", [
             round_png(S, R, UI["head_hi"], None, 0, pad=P),
             (("pressed",), round_png(S, R, "#1a2746", None, 0, pad=P)),
             (("active",), round_png(S, R, "#2c3e68", None, 0,
                                     pad=P)),
-        ], R + P, (13, 5))
+        ], R + P, (10, 5))
         nine("Modern.field", [
             round_png(S, 8, UI["card"], UI["line"], 1.2, pad=P),
-            (("disabled",), round_png(S, 8, "#f2f4f8", UI["line_soft"], 1.0, pad=P)),
+            (("disabled",), round_png(S, 8, "#f4f6fb", UI["line"], 1.0, pad=P)),
             (("focus",), round_png(S, 8, UI["card"], UI["accent"], 1.6, pad=P)),
         ], 8 + P, (9, 6))
         nine("Dark.field", [
@@ -6316,8 +6355,10 @@ def build_theme(root):
         ], 8 + P, (9, 6))
         nine("Modern.tab", [
             round_png(S, R, None, None, 0, pad=P),
-            (("selected",), round_png(S, R, UI["card"], None, 0, shadow=2.2, pad=P)),
-            (("active",), round_png(S, R, UI["head_hi"], None, 0, pad=P)),
+            (("selected",), round_png(S, R, UI["card"], UI["line"], 1.1,
+                                      shadow=1.6, pad=P,
+                                      accent_bar=(UI["accent"], 3))),
+            (("active",), round_png(S, R, UI["hover"], None, 0, pad=P)),
         ], R + P, (17, 7))
         nine("Light.tab", [
             round_png(S, R, None, None, 0, pad=P),
@@ -6325,8 +6366,8 @@ def build_theme(root):
                                       pad=P)),
             (("active",), round_png(S, R, UI["hover"], None, 0, pad=P)),
         ], R + P, (16, 8))
-        nine("Modern.card", [round_png(S, R, UI["card"], UI["line"], 1.1,
-                                       shadow=1.2, pad=P)], R + P, (3, 3))
+        nine("Modern.card", [round_png(S, R, UI["bg"], UI["line"], 1.1,
+                                       pad=P)], R + P, (3, 3))
         for o in ("Horizontal", "Vertical"):
             vert = o == "Vertical"
             nine(f"{o}.Scale.trough",
@@ -6396,19 +6437,21 @@ def build_theme(root):
                  font=FONT_SB)
     st.configure("Muted.TLabel", background=UI["card"], foreground=UI["ink_soft"],
                  font=FONT_SM)
+    st.configure("Dim.TLabel", background=UI["bg"], foreground=UI["ink_soft"],
+                 font=FONT_SM)
     st.configure("Status.TLabel", background=UI["card"], foreground=UI["ink_soft"],
                  font=FONT_SM, padding=(4, 6))
     st.configure("Foot.TFrame", background=UI["card"])
-    st.configure("TLabelframe", background=UI["card"])
-    st.configure("TLabelframe.Label", background=UI["card"], foreground=UI["ink_soft"],
+    st.configure("TLabelframe", background=UI["bg"])
+    st.configure("TLabelframe.Label", background=UI["bg"], foreground=UI["ink_soft"],
                  font=FONT_SB)
-    st.configure("TNotebook", background=UI["head"], borderwidth=0,
+    st.configure("TNotebook", background=UI["bg"], borderwidth=0,
                  bordercolor=UI["bg"], lightcolor=UI["bg"], darkcolor=UI["bg"],
-                 tabmargins=(14, 5, 14, 0))
-    st.configure("TNotebook.Tab", font=FONT_SB, foreground=UI["head_mute"],
+                 tabmargins=(12, 8, 12, 2))
+    st.configure("TNotebook.Tab", font=FONT_SB, foreground=UI["ink_soft"],
                  padding=0)
     st.map("TNotebook.Tab", foreground=[("selected", UI["accent"]),
-                                        ("active", UI["head_ink"])])
+                                        ("active", UI["ink"])])
     st.configure("Light.TNotebook", background=UI["bg"], borderwidth=0,
                  tabmargins=(2, 6, 2, 0))
     st.configure("Light.TNotebook.Tab", font=FONT_SB, foreground=UI["ink_soft"],
@@ -6416,7 +6459,7 @@ def build_theme(root):
     st.map("Light.TNotebook.Tab", foreground=[("selected", UI["accent"])])
     st.configure("Head.TFrame", background=UI["head"])
     st.configure("Head.TLabel", background=UI["head"], foreground=UI["head_ink"])
-    st.configure("HeadTitle.TLabel", background=UI["head"], foreground="#ffffff",
+    st.configure("HeadTitle.TLabel", background=UI["head"], foreground=UI["ink"],
                  font=("Segoe UI Semibold", 12))
     st.configure("HeadMuted.TLabel", background=UI["head"],
                  foreground=UI["head_mute"], font=FONT_SM)
@@ -6439,13 +6482,16 @@ def build_theme(root):
             ("Checkbutton.label", {"sticky": "nsew"})]})]})])
     st.configure("TCheckbutton", background=UI["bg"], foreground=UI["ink"],
                  padding=(2, 3), focusthickness=0)
-    st.map("TCheckbutton", foreground=[("disabled", "#a7b0bf")])
+    st.map("TCheckbutton", foreground=[("disabled", "#a7b0bf")],
+           background=[("disabled", UI["bg"]), ("active", UI["bg"])])
     st.layout("TRadiobutton", [("Radiobutton.padding", {"sticky": "nsew", "children": [
         ("Modern.radio", {"side": "left", "sticky": ""}),
         ("Radiobutton.focus", {"side": "left", "sticky": "w", "children": [
             ("Radiobutton.label", {"sticky": "nsew"})]})]})])
     st.configure("TRadiobutton", background=UI["bg"], foreground=UI["ink"],
                  padding=(2, 3), focusthickness=0)
+    st.map("TRadiobutton", foreground=[("disabled", "#a7b0bf")],
+           background=[("disabled", UI["bg"]), ("active", UI["bg"])])
     for o in ("Horizontal", "Vertical"):      # nyilak nélküli, karcsú gördítősáv
         st.layout(f"{o}.TScrollbar", [(f"{o}.Scrollbar.trough", {
             "sticky": "nswe", "children": [
@@ -6589,7 +6635,7 @@ class App(tk.Tk):
                          bg=UI["head"])
         mark.pack(side="left")
         canvas_card(mark, 1, 1, 31, 31, 9, fill=UI["accent"])
-        canvas_card(mark, 1, 1, 31, 16, 9, fill="#3b74f0")
+        canvas_card(mark, 1, 1, 31, 17, 9, fill="#3b74f0")
         mark.create_text(16, 17, text="PM", fill="#ffffff",
                          font=("Segoe UI Semibold", 11))
         tit = ttk.Frame(inner, style="Head.TFrame")
@@ -6597,15 +6643,17 @@ class App(tk.Tk):
         ttk.Label(tit, text="PDF Műhely", style="HeadTitle.TLabel").pack(anchor="w")
         ttk.Label(tit, text=f"offline eszköztár · {app_version()}",
                   style="HeadMuted.TLabel").pack(anchor="w")
-        ttk.Button(inner, text="Frissítés", style="Ghost.TButton",
+        ttk.Button(inner, text="Frissítés",
                    command=self.refresh_all).pack(side="right")
-        ttk.Button(inner, text="Módosítás…", style="Ghost.TButton",
+        ttk.Button(inner, text="Módosítás…",
                    command=self._pick_folder).pack(side="right", padx=8)
-        ttk.Entry(inner, textvariable=self.folder, style="Dark.TEntry",
-                  font=FONT_SM).pack(side="right", fill="x", expand=True,
-                                     padx=(0, 6))
+        ttk.Entry(inner, textvariable=self.folder, font=FONT_SM).pack(
+            side="right", fill="x", expand=True, padx=(0, 6))
         ttk.Label(inner, text="MUNKAMAPPA", style="HeadMuted.TLabel").pack(
             side="right", padx=(0, 10))
+        line = tk.Canvas(head, height=3, highlightthickness=0, bg=UI["card"])
+        line.pack(fill="x")                 # vékony akcentuscsík zárja a fejlécet
+        line.bind("<Configure>", lambda e, c=line: paint_accent_line(c))
 
         # A felső sáv a munka sorrendje (ezért a sorszám), az eseti PDF-műveletek
         # és az arcképre helyezés egy „Eszközök” alfülcsoportba kerültek: a napi
@@ -7222,6 +7270,10 @@ def _selftest() -> int:
     ck("a rádió- és jelölőnégyzet-kép jobbra tart térközt (ne tapadjon a felirat)",
        pymupdf.Pixmap(_box_png(17)).width == 24 and
        pymupdf.Pixmap(_radio_png(16)).width == 23)
+    ck("a lista halvány árnyalata világos (sötét szöveg olvasható rajta)",
+       all(sum(int(tint(c).lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) > 650
+           for c in LABEL_COLORS),
+       [tint(c) for c in LABEL_COLORS[:3]])
     ck("a paletta minden színe sötét (fehér szöveg olvasható marad rajta)",
        all(sum(int(c.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) < 560
            for c in LABEL_COLORS),
