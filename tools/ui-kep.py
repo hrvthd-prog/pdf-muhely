@@ -75,8 +75,11 @@ if tab_i == 4:                                  # dialógus: Ellenőrzés
     app.update()
     app.tabs["Áttekintő"]._open_audit()
 app.update()
-for _ in range(60):
+import time as _t                                 # a késleltetett újrarajzolások
+_end = _t.time() + 0.8                            # (debounce) is fussanak le
+while _t.time() < _end:
     app.update()
+    _t.sleep(0.01)
 
 
 def shot(path, win=None):

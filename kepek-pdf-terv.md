@@ -843,3 +843,94 @@ listájának színeit nézi.
 `python tools/ui-kep.py <fül> <kimenet.png>` — demóadattal elindítja az appot és
 lefotózza az ablakot (a dialógust is). A GUI-teszt a **működést** méri, a
 megjelenést nem: ez a fotó az egyetlen visszacsatolás a látványra.
+
+### 13.8 A felület sebessége — mérés és három ok (2026-10-02)
+
+**A bejelentés:** „a GUI rettentő lassan reagál, a fülváltás és az átméretezés
+laggol, az alkalmazás használhatatlan". Jogos volt; a mérés három különböző okot
+talált, és egyik sem a saját rajzolókód futásideje volt.
+
+#### Mérés először, javítás utána
+
+Izolált próba (64 gomb, ablak-átméretezés 20 lépésben):
+
+| változat | idő / átméretezés |
+|---|---|
+| alap clam téma (kép nélkül) | 46 ms |
+| saját téma, **alfás** PNG-kkel | **888 ms** |
+| saját téma, átlátszatlan PNG-kkel | 360 ms |
+| saját téma, **széles** átlátszatlan PNG-kkel | **38 ms** |
+
+A `cProfile` nem mutatta meg, mert minden idő a `tk.call`-on belül telt: a Tk-t
+nem lehet Pythonból profilozni. A választ az összehasonlító mérés adta.
+
+#### 1. ok: az alfacsatorna szoftveres kompozitálása
+
+A Tk **minden egyes újrarajzolásnál** összemossa az alfás képet a háttérrel.
+A lekerekített sarkokhoz átlátszó PNG-t használtam, tehát ez minden gombon,
+mezőn és fülön lefutott, folyamatosan. A javítás: a kép a saját felületére
+**előre ráégetve** készül (`round_png(..., bg=…)`), így átlátszatlan. Mivel a
+panelek és a lap színe immár egységes (13.7), két változat elég: lapra és fehér
+kártyára (fejléc). Alfa csak a kis ikonokon maradt.
+
+#### 2. ok: a Tk CSEMPÉZI a 9-slice nyújtható sávját
+
+Nem skálázza. Egy 30×30-as képből egy 100 képpontos gombhoz tucatnyi csempe
+lesz; **minél kisebb a kép, annál lassabb** (12×12: 1596 ms, 30×30: 321 ms,
+240×40: 50 ms, 420×48: 37 ms). A felületi képek ezért **420×48**-asak.
+
+Ennek ára volt: a képelem alapértelmezésben a kép méretét kéri minimumként, így
+minden gomb 420×48-ra hízott. A `width=1, height=1` elemopció oldja meg — a kép
+marad széles, a widget a tartalmához igazodik.
+
+#### 3. ok: minden `<Configure>` eseményre azonnali újrarajzolás
+
+Átméretezés közben ez másodpercenként tucatszor jön. A fejléc akcentuscsíkja,
+az Összeállító rácsa és a mátrix mostantól **késleltetve** rajzol újra
+(`debounce`, 60 ms), és a csík fix 28 sávból áll, nem képpontonkéntiből.
+A vásznon a kártyák sarka 5 helyett 3 pontból áll soronként, és elmaradt a
+vászon-árnyék: a mélységet a widgetek adják.
+
+#### Eredmény és ami marad
+
+| művelet (40 dolgozó, 1200×760) | előtte | utána |
+|---|---|---|
+| fülváltás → Összeállító | 372 ms | **16 ms** |
+| fülváltás → Áttekintő | 199 ms | **30 ms** |
+| fülváltás → Iktató | 76 ms | **8 ms** |
+| átméretezés (Iktató) | ~90 ms | ~80 ms |
+| átméretezés (Áttekintő mátrix) | ~135 ms | ~135 ms |
+
+**Amit nem javítottam, és miért:** a mátrix átméretezése a felület-átalakítás
+ELŐTT (v1.16) is 108 ms volt — a vászon ~1500 elemét a Tk minden expose-ra
+újrafesti. Ez nem a téma költsége, hanem a mátrixé; a megoldás a láthatatlan
+sorok kihagyása (virtualizálás) lenne, ami a találati/görgetési logikát is
+érinti. Külön feladat, mérés után.
+
+#### Két apró, de makacs hiba ugyanebből a körből
+
+- **A hover „éles sarka":** az árnyék kilógott a kép szélén, és a 9-slice a
+  levágott szélt csempézte végig. A `pad` megnövelése (4 képpont) megoldotta.
+- **A fejléc gombjainak sarka:** a `decorate()` felülírta a kézzel megadott
+  `Head.TButton` stílust, így a gombok a lap (szürkés) hátterét kapták a fehér
+  fejlécen. A `decorate()` mostantól nem nyúl a kézzel beállított stílushoz.
+
+#### A nyitott legördülő éles sarka
+
+A lista **külön ablak** (`ComboboxPopdown`), a sarkát CSS-szerűen nem lehet
+lekerekíteni: a Windows **ablakrégióját** vágjuk körbe
+(`CreateRoundRectRgn` + `SetWindowRgn`). Buktató: a Tkinter ennél az ablaknál az
+eseményben csak egy **útvonal-sztringet** ad, nem widgetet — ezért kell az
+értelmezőt külön átadni. A GUI-teszt a `GetWindowRgn`-nel ellenőrzi, hogy a
+régió tényleg fent van.
+
+#### Ikonok
+
+A „Visszavonás" és a „Frissítés" jele értelmezhetetlen volt. Az ikonok mostantól
+körívet is tudnak (`_arc`), és hét jel újrarajzolva: visszavonás (balra forduló
+nyíl), frissítés (körbe futó nyíl nyílheggyel), nagyító (valódi kör), tömörítés
+(két nyíl egy vonal felé), irat (behajtott sarkú lap), szétosztás (olló),
+mentés (lemez — eddig ugyanaz volt, mint az „archiválás"). A módszer: az egész
+készletet egy lapra rajzolva, nagyítva **megnézni** — így derült ki, hogy a
+`doc` törött, a `split` és a `close` ugyanaz, az `archive` és a `save` pedig
+megkülönböztethetetlen.

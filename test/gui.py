@@ -762,6 +762,21 @@ try:
     ck("a legördülő mező háttere a környezeté (nem vágódik le a sarka)",
        stl.lookup("TCombobox", "background") == pm.UI["bg"],
        stl.lookup("TCombobox", "background"))
+    # A felugró ablak sarka: Windows-ablakrégióval vágjuk kerekre (13.8).
+    app.tk.call("ttk::combobox::Post", ikt.cbo)
+    pump(0.4)
+    _pd = app.tk.call("ttk::combobox::PopdownWindow", ikt.cbo)
+    try:
+        import ctypes
+        _h = int(app.tk.call("winfo", "id", _pd), 0)
+        _rgn = ctypes.windll.gdi32.CreateRectRgn(0, 0, 1, 1)
+        _van = ctypes.windll.user32.GetWindowRgn(_h, _rgn)
+    except Exception as _e:
+        _van = f"nem mérhető: {_e}"
+    ck("a nyitott lista sarka le van kerekítve (ablakrégió)", _van in (2, 3), _van)
+    app.tk.call("ttk::combobox::Unpost", ikt.cbo)
+    pump(0.2)
+
     pdw = app.tk.call("ttk::combobox::PopdownWindow", ikt.cbo)
     lb = pdw + ".f.l"
     ck("a nyitott lista: fehér lap, akcentus kijelölés, világos keret",
