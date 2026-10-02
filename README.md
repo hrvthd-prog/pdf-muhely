@@ -32,6 +32,20 @@ A kép fájlja soha nem változik. A vágás veszteségmentes (a lap cropboxa);
 a fényerő/kontraszt viszont újrakódolja a képet (JPEG Q92, a beágyazott kép
 valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajta.
 
+## A felület
+
+Sötét parancsfejléc (név, verzió, munkamappa) a benne folytatódó fülsávval,
+világos munkaterület, alul állapotsor. A gombok, mezők, fülek, jelölők és
+csúszkák grafikája **kódból készül** futásidőben (élsimított, lekerekített,
+lágy árnyékkal), az ikonokkal együtt — nincs hozzá képfájl és nincs új
+függőség. Részletek és indoklás: `kepek-pdf-terv.md` 13.7.
+
+Az ablak mérete a képernyőhöz igazodik. A megjelenés ellenőrzése fejlesztéskor:
+
+```bash
+python tools/ui-kep.py 0 kep.png      # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
+```
+
 ## A dolgozói mappa szerkezete
 
 Minden dolgozónak **két alkönyvtára** van — így ránézésre látszik, mi van kész:
@@ -242,6 +256,9 @@ python test/run-all.py
 | verzió | `python test/verzio.py` | hookok és tagek egy ideiglenes repóban, valódi commitokkal |
 | frissítő | `python test/frissit.py` | ZIP-ből frissítés egy hamis „céges gépen”: mi marad meg |
 | GUI | `python test/gui.py` | valódi ablak és események — pár másodpercre ablakok nyílnak |
+
+A **megjelenést** a tesztek nem mérik (csak azt, hogy a téma elemei és az ikonok
+felkerültek): ahhoz a `tools/ui-kep.py` felületfotó való.
 
 A GUI-teszt a valódi beállításfájlokhoz nem nyúl (ideiglenes mappában dolgozik).
 

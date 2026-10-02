@@ -23,6 +23,15 @@ Kódváltozás után mindig futtasd; GUI-t érintő változásnál a `test/gui.p
 bővítsd. A GUI-teszt a `script_dir`-t ideiglenes mappára irányítja — a valódi
 beállításfájlokhoz tesztből ne nyúlj.
 
+**A megjelenést egyik teszt sem méri.** Ha a felülethez nyúlsz, nézd meg:
+
+```bash
+python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
+```
+
+A téma (gombok, mezők, fülek, ikonok) kódból rajzolt grafika — a döntés és a
+buktatók: `kepek-pdf-terv.md` 13.7.
+
 ## Kötelező tudnivalók
 
 - **5 MB-os feltöltési korlát** (`UPLOAD_LIMIT = 5_000_000`, szándékosan tizedes).
