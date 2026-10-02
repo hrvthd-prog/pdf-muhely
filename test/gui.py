@@ -756,6 +756,22 @@ try:
        app.winfo_reqheight() <= app.winfo_screenheight() and
        app.winfo_width() <= app.winfo_screenwidth(),
        (app.winfo_width(), app.winfo_height(), app.winfo_screenheight()))
+    # A legördülő: a widget ABLAKÁT a ttk a stílus background-jával tölti ki.
+    # Ha az nem a környezet színe, a lekerekített sarkon kívüli rész kiszínesedik,
+    # és a mező sarka levágottnak látszik.
+    ck("a legördülő mező háttere a környezeté (nem vágódik le a sarka)",
+       stl.lookup("TCombobox", "background") == pm.UI["bg"],
+       stl.lookup("TCombobox", "background"))
+    pdw = app.tk.call("ttk::combobox::PopdownWindow", ikt.cbo)
+    lb = pdw + ".f.l"
+    ck("a nyitott lista: fehér lap, akcentus kijelölés, világos keret",
+       (app.tk.call(lb, "cget", "-background"), app.tk.call(lb, "cget", "-selectbackground"),
+        stl.lookup("ComboboxPopdownFrame", "bordercolor")) ==
+       (pm.UI["card"], pm.UI["accent_bg"], pm.UI["line"]),
+       (app.tk.call(lb, "cget", "-background"),
+        app.tk.call(lb, "cget", "-selectbackground"),
+        stl.lookup("ComboboxPopdownFrame", "bordercolor")))
+
     allapot = [w for w in app.winfo_children()
                if str(w.cget("style")) == "Foot.TFrame"]
     ck("az állapotsor a helyén van és látszik",
