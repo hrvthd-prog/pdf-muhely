@@ -822,6 +822,22 @@ már nem fért el (Utótag + jelölő), ott **két sor** lett belőle. Tanulság
 grafika és az elrendezés együtt jár; a szép él nem ér semmit, ha a widget
 kisebb, mint a kép.
 
+#### A legördülő levágott sarka — a ttk ablakháttere
+
+A gombok után a **legördülő mezők** sarka látszott levágottnak. Az ok más volt,
+mint a gomboknál: a ttk a widget **ablakát** a stílus `background` színével
+tölti ki, MIELŐTT az elemek rajzolnának. A `TCombobox`-ra fehér (`card`) háttér
+volt beállítva, így a lekerekített sarkon kívüli — szándékosan átlátszó —
+képpontok is fehérek lettek, és a sarok szögletesnek látszott a világosszürke
+lapon. A háttér tehát a **környezet** színe kell legyen (`bg`), a mező fehérjét
+a rajzolt kép adja. Ahol a mező fehér lapon ül (fejléc), ott külön stílus
+(`Head.TEntry`) viszi a fehér hátteret.
+
+A **nyitott** lista külön ablak (`ComboboxPopdown`): kerete a clam sötét,
+szögletes `ComboboxPopdownFrame` stílusa volt, háttere rendszerszürke. Mindkettő
+a palettából jön. Mérés: a GUI-teszt a stílus háttérszínét és a valódi popup
+listájának színeit nézi.
+
 #### Hogyan látja a következő fejlesztő, mit változtatott
 
 `python tools/ui-kep.py <fül> <kimenet.png>` — demóadattal elindítja az appot és

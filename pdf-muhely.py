@@ -6288,6 +6288,9 @@ def build_theme(root):
     root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
     root.option_add("*Text.font", FONT_SM)
     root.option_add("*Toplevel.background", UI["bg"])
+    # A legördülő lista külön ablak (ComboboxPopdown): a kerete a clam sötét,
+    # szögletes stílusa, a háttere rendszerszürke — mindkettő kilóg a felületből.
+    root.option_add("*ComboboxPopdown.background", UI["card"])
     root.option_add("*Canvas.highlightThickness", 0)
     root.option_add("*Text.relief", "flat")
     root.option_add("*Text.borderWidth", 0)
@@ -6469,13 +6472,18 @@ def build_theme(root):
     st.configure("TEntry", foreground=UI["ink"], fieldbackground=UI["card"],
                  insertcolor=UI["accent"], padding=(2, 3))
     st.configure("TCombobox", foreground=UI["ink"], fieldbackground=UI["card"],
-                 background=UI["card"], bordercolor=UI["line"],
-                 arrowcolor=UI["ink_soft"], arrowsize=14, padding=(6, 4))
+                 background=UI["bg"], bordercolor=UI["line"],
+                 arrowcolor=UI["ink_soft"], arrowsize=14, padding=(4, 2))
     st.map("TCombobox", fieldbackground=[("readonly", UI["card"])],
            bordercolor=[("focus", UI["accent"])],
            arrowcolor=[("disabled", "#c3cad6")])
-    st.configure("TSpinbox", fieldbackground=UI["card"], bordercolor=UI["line"],
-                 arrowcolor=UI["ink_soft"], padding=(4, 3))
+    st.configure("TSpinbox", fieldbackground=UI["card"], background=UI["bg"],
+                 bordercolor=UI["line"], arrowcolor=UI["ink_soft"], padding=(4, 3))
+    st.configure("TEntry", background=UI["bg"])
+    # A fejléc fehér lapon ül: ott a mező körüli szín is fehér legyen.
+    st.configure("Head.TEntry", background=UI["card"], foreground=UI["ink"],
+                 fieldbackground=UI["card"], insertcolor=UI["accent"])
+    st.layout("Head.TEntry", st.layout("TEntry"))
     st.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nsew", "children": [
         ("Modern.check", {"side": "left", "sticky": ""}),
         ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
@@ -6508,6 +6516,8 @@ def build_theme(root):
     st.map("Treeview", background=[("selected", UI["accent_bg"])],
            foreground=[("selected", UI["ink"])])
     st.configure("TSeparator", background=UI["line"])
+    st.configure("ComboboxPopdownFrame", relief="solid", borderwidth=1,
+                 bordercolor=UI["line"], background=UI["card"], padding=2)
     # Minden később nyíló ablak (dialógus) ugyanazt a kezelést kapja: a gombok
     # ikont és elsődleges stílust a feliratukból — egy kötés, nincs hívási hely.
     root.bind_class("Toplevel", "<Map>", lambda e: decorate(e.widget), add="+")
@@ -6647,8 +6657,9 @@ class App(tk.Tk):
                    command=self.refresh_all).pack(side="right")
         ttk.Button(inner, text="Módosítás…",
                    command=self._pick_folder).pack(side="right", padx=8)
-        ttk.Entry(inner, textvariable=self.folder, font=FONT_SM).pack(
-            side="right", fill="x", expand=True, padx=(0, 6))
+        ttk.Entry(inner, textvariable=self.folder, style="Head.TEntry",
+                  font=FONT_SM).pack(side="right", fill="x", expand=True,
+                                     padx=(0, 6))
         ttk.Label(inner, text="MUNKAMAPPA", style="HeadMuted.TLabel").pack(
             side="right", padx=(0, 10))
         line = tk.Canvas(head, height=3, highlightthickness=0, bg=UI["card"])
