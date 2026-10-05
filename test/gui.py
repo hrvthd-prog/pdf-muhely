@@ -1150,12 +1150,16 @@ try:
     pump(0.2)
     ck("Ctrl+Z: a kitakarás előtti állapot", "Kitakarandó" in ed.doc[0].get_text())
 
+    ed.upper.set(True)
+    ed._upper_changed()
+    pump(0.2)
+    ck("nagybetűs jelölő a dokumentumon", pm.get_upper(ed.doc))
     ed._save()
     pump(0.3)
     d = P.open(szp)
     ok = ("Kőműves Győző" in d[0].get_text() and
           sum(1 for _ in d[0].widgets()) == 4 and
-          "dolgozo=Kiss Anna" in (d.metadata.get("keywords") or ""))
+          "dolgozo=Kiss Anna" in (d.metadata.get("keywords") or "") and pm.get_upper(d))
     d.close()
     ck("mentés helyben: a szöveg, a mezők és a bélyeg is megvan", ok)
     ck("az előző példány a dolgozó .eredeti\\ mappájában",

@@ -45,6 +45,8 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
   meg a mező nevét, ami a DocGen-jelölő (pl. `surname`, `Neme=male`,
   `{postal_code} {locality}`). Több kis cellán át húzva betűnkénti mezők lesznek
   (`date_of_birth_year#1…#4`). Mezőre kattintva átnevezhető, Delete-tel törölhető.
+  Ha a nyomtatvány nagybetűs kitöltést kér, kapcsold be „A DocGen nagybetűvel töltse
+  ki” jelölőt (az egész sablonra szól).
   A jelölők leírása: a DocGen README „Kitölthető PDF-sablon” szakasza.
 - **Kitakarás** — húzd körbe a területet: a tartalma végleg törlődik, a helye fehér.
 

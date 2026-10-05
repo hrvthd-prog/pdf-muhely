@@ -9,7 +9,7 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
-és a `taj` szabályé `szerkeszto-terv.md`, 14–16. — **új döntést a
+és a TAJ-szabályoké `szerkeszto-terv.md`, 14–18. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
 

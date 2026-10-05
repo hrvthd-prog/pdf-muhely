@@ -502,3 +502,27 @@ teljes magasságban.
 Regressziós teszt: `test/gui.py` „ÖSSZEÁLLÍTÓ: SOK TÍPUS, ALACSONY ABLAK” —
 1280×650, 16+ típus: az Iktatás gomb a fülön belül, a görgetősáv látszik; kevés
 típusnál nincs görgetősáv. Önteszt 202/202, GUI 138/138.
+
+---
+
+## 18. A TAJ-igénylés másik két irata (2026-10-05)
+
+A DocGen két új sablont kapott a TAJ-igényléshez (`DocGen/TERV-pdf-nyomtatvany.md`
+12.): a NEAK **NYT.53** igénylőlapot és egy saját, kétnyelvű **TAJ-meghatalmazást**.
+Mindkettő a Szerkesztés fül függvényeivel készült, kattintási pontokból; a
+cellaillesztés a NYT.53 egyenetlen cellasorait is pontosan adta.
+
+A Műhely-oldal változásai:
+- **Nagybetűs sablon:** a NYT.53 „nyomtatott nagybetűkkel” kéri a kitöltést. A
+  Szerkesztés fülön új jelölő: „A DocGen nagybetűvel töltse ki” — a sablon
+  `/Keywords`-jébe a `docgen-nagybetu` kerül (`get_upper` / `set_upper`), a többi
+  kulcsszó (bélyeg) megmarad; visszavonható, mint minden lépés.
+- **Áttekintő:** két új alapszabály, `tajigeny` (`nyt 53`, `taj igenylolap`) és
+  `tajmeghat` (`taj meghatalmazas`). A „taj meghatalmazas” hosszabb kulcsszó, ezért
+  nyer a „meghat” szabály „meghatalmazas”-a ellen — a sima meghatalmazás marad
+  „meghat”. A régi szabályfájlokhoz az `ismert_alapok` összefésülés adja hozzá őket.
+- **Az állapotsor** (fájlnév, üzenetek) a bal panel aljáról az eszköztárba került:
+  740 px-es ablakban az új jelölő alatt levágódott (`ui-kep.py 5`).
+
+Tesztek: önteszt (szabályillesztés, nagybetű-jelölő), GUI (a jelölő a mentett
+fájlon), `python test/run-all.py` zöld.

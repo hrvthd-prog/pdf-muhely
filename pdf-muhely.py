@@ -1625,6 +1625,27 @@ def rename_field(doc, widget, name: str):
     doc.xref_set_key(widget.xref, "T", pymupdf.get_pdf_str(name))
 
 
+UPPER_KW = "docgen-nagybetu"     # a DocGen-sablon kulcsszava: nagybetűvel kitöltendő
+
+
+def _kw_tokens(doc) -> list:
+    return [t.strip() for t in ((doc.metadata or {}).get("keywords") or "").split(";") if t.strip()]
+
+
+def get_upper(doc) -> bool:
+    """Nagybetűs kitöltést kér-e a sablon (pl. „nyomtatott nagybetűkkel kell kitölteni”)."""
+    return UPPER_KW in _kw_tokens(doc)
+
+
+def set_upper(doc, on: bool):
+    """A jelölő a /Keywords-ben, a többi kulcsszó (bélyeg, DocGen-jel) megmarad. A DocGen
+    ennek láttán minden értéket nagybetűvel ír (DocGen/TERV-pdf-nyomtatvany.md 12.)."""
+    t = [x for x in _kw_tokens(doc) if x != UPPER_KW] + ([UPPER_KW] if on else [])
+    m = dict(doc.metadata or {})
+    m["keywords"] = ";".join(t)
+    doc.set_metadata(m)
+
+
 def field_at(page, x: float, y: float):
     for w in page.widgets():
         if w.rect.contains(pymupdf.Point(x, y)):
@@ -1676,6 +1697,7 @@ class EditorTab(ttk.Frame):
         self.font_name = tk.StringVar(value="Calibri" if "Calibri" in fonts else fonts[0])
         self.font_size = tk.DoubleVar(value=10.5)
         self.field_name = tk.StringVar(value="")
+        self.upper = tk.BooleanVar(value=False)
         self.info = tk.StringVar(value="Válassz egy PDF-et.")
         self._build(fonts)
 
@@ -1710,7 +1732,8 @@ class EditorTab(ttk.Frame):
         fr.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Button(fr, text="Átnevezés", command=self._rename).pack(side="left")
         ttk.Button(fr, text="Mező törlése", command=self._delete_field).pack(side="left", padx=6)
-        ttk.Label(left, textvariable=self.info, wraplength=320, foreground="#333").pack(anchor="w", pady=6)
+        ttk.Checkbutton(f, text="A DocGen nagybetűvel töltse ki (az egész sablont)",
+                        variable=self.upper, command=self._upper_changed).pack(anchor="w", padx=6, pady=(0, 6))
 
         # A dokumentum műveletei a vászon fölött: a bal panel így alacsony
         # képernyőn is elfér.
@@ -1729,6 +1752,10 @@ class EditorTab(ttk.Frame):
                                      command=self._change_page)
         self.page_spin.pack(side="right")
         ttk.Label(bar, text="Oldal:").pack(side="right", padx=4)
+        # Az állapot az eszköztárban, egy sorban: a bal panel alján alacsony ablakban
+        # levágódott (ui-kep.py 5).
+        ttk.Label(bar, textvariable=self.info, foreground="#333").pack(
+            side="left", padx=12, fill="x", expand=True)
         self.canvas = tk.Canvas(right, bg=COL_CANVAS, highlightthickness=0, takefocus=1,
                                 cursor="crosshair", height=180)
         hb = ttk.Scrollbar(right, orient="horizontal", command=self.canvas.xview)
@@ -1788,7 +1815,7 @@ class EditorTab(ttk.Frame):
 
     def _say(self, txt=""):
         name = os.path.basename(self.path) if self.path else ""
-        self.info.set(f"{name}{' — módosítva' if self.dirty else ''}" + (f"\n{txt}" if txt else ""))
+        self.info.set(f"{name}{' — módosítva' if self.dirty else ''}" + (f" · {txt}" if txt else ""))
 
     # -- rajzolás --
     def _page(self):
@@ -1827,6 +1854,7 @@ class EditorTab(ttk.Frame):
         self._lines = page_lines(self._dr)
         self._draw_fields()
         n = sum(1 for _ in page.widgets())
+        self.upper.set(get_upper(self.doc))          # visszavonás után is a dokumentumé
         self._say(f"{self.page_no + 1}/{self.doc.page_count}. oldal · {n} űrlapmező")
 
     def _draw_fields(self):
@@ -1947,6 +1975,14 @@ class EditorTab(ttk.Frame):
             for i, r in enumerate(rects, 1):
                 add_field(page, r, f"{name}#{i}" if many else name, check=check)
         self._change(go, f"{len(rects)} mező: {name}{'#1…#%d' % len(rects) if many else ''}")
+
+    def _upper_changed(self):
+        on = self.upper.get()
+        if not self.doc:
+            self.upper.set(False)
+            return
+        self._change(lambda: set_upper(self.doc, on),
+                     "A DocGen nagybetűvel tölti ki." if on else "Nagybetűs kitöltés kikapcsolva.")
 
     def _sel_widget(self, page):
         """A kijelölt mező — ugyanazon a lapobjektumon, amelyiken dolgozunk: másik
@@ -2078,8 +2114,8 @@ class EditorTab(ttk.Frame):
         note = size_note(dst)
         self.app.status(f"Mentve: {os.path.basename(dst)} {note}")
         self.app.refresh_all()
-        self._say("Mentve." + (f" Az előző példány: {backup}" if backup else "") +
-                  (f"\n{note}" if note else ""))
+        self._say("Mentve" + (f", az előző példány a {BACKUP_DIR} mappában" if backup else "") +
+                  (f" · {note}" if note else ""))
 
 
 # ───────────────────────────── 5. fül: iktató ─────────────────────────────
@@ -3546,6 +3582,12 @@ DEFAULT_RULES = [
     # számítana, és ezt az iratot senki nem iktatja kézzel.
     Rule("taj", "TAJ-megrendelő (NEAK NYT.52)", "TAJ",
          [], ["nyt 52", "taj megrendelo"], False, True),
+    # A TAJ-igénylés másik két irata (a DocGen pdf-sablonjai): a „taj meghatalmazas”
+    # hosszabb kulcsszóként nyer a „meghat” szabály „meghatalmazas”-a ellen.
+    Rule("tajigeny", "TAJ-igénylőlap (NEAK NYT.53)", "TAJ-Ig",
+         [], ["nyt 53", "taj igenylolap"], False, True),
+    Rule("tajmeghat", "TAJ-meghatalmazás", "TAJ-Mh",
+         [], ["taj meghatalmazas"], False, True),
 ]
 
 # A mentett szabályfájl az alapszabályokat EGÉSZBEN felülírja, a frissítő pedig
@@ -7910,7 +7952,7 @@ def _selftest() -> int:
 
     print("BEÁLLÍTÁSOK")
     s = default_settings()
-    ck("alapból 12 szabály", len(s["rules"]) == 12, len(s["rules"]))
+    ck("alapból 14 szabály", len(s["rules"]) == 14, len(s["rules"]))
     ck("6 kötelező", sum(1 for d in s["rules"] if d["required"]) == 6)
     ck("azonosítók egyediek",
        len({d["id"] for d in s["rules"]}) == len(s["rules"]))
@@ -7946,6 +7988,13 @@ def _selftest() -> int:
                [r.id for r in R].count("taj") == 1, [r.id for r in R])
             ck("…és felismeri a DocGen kimenetét",
                match_rule("Kovacevic Milan NYT.52.K.pdf", R)[0].id == "taj")
+            ck("a TAJ-igénylés másik két irata is, egyértelműen",
+               match_rule("Kovacevic Milan TAJ-igénylőlap (NYT.53).pdf", R) == (
+                   next(r for r in R if r.id == "tajigeny"), False) and
+               match_rule("Kovacevic Milan TAJ-meghatalmazás.pdf", R) == (
+                   next(r for r in R if r.id == "tajmeghat"), False))
+            ck("a sima meghatalmazás marad „meghat”",
+               match_rule("Kiss Anna Belföldi meghatalmazás aláírt.pdf", R)[0].id == "meghat")
             # …de amit a felhasználó kézzel törölt (és mentett), az nem jön vissza.
             s2 = load_settings()
             s2["rules"] = [d for d in s2["rules"] if d["id"] != "taj"]
@@ -8688,6 +8737,12 @@ def _selftest() -> int:
     ck("a szövegrétegben rendes szóköz (nem U+00A0), Calibrivel is",
        "Új sor itt" in pg.get_text(), repr(pg.get_text()[-20:]))
     ck("mezőnév: pont nem lehet benne", field_name_error("a.b") and not field_name_error("{a}, {b}#2"))
+    d.set_metadata({"keywords": "pdf-muhely=1;dolgozo=Kiss Anna"})
+    set_upper(d, True)
+    ck("nagybetűs jelölő be, a bélyeg megmarad",
+       get_upper(d) and "dolgozo=Kiss Anna" in d.metadata["keywords"], d.metadata["keywords"])
+    set_upper(d, False)
+    ck("nagybetűs jelölő ki", not get_upper(d) and d.metadata["keywords"] == "pdf-muhely=1;dolgozo=Kiss Anna")
     erase_area(pg, pymupdf.Rect(52, 102, 148, 118))
     ck("kitakarás: a terület szövege eltűnt", "Árvíztűrő" not in pg.get_text())
     d2 = pymupdf.open("pdf", d.tobytes())
