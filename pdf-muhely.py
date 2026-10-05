@@ -1411,6 +1411,677 @@ class RasterTab(ttk.Frame):
         self.app.refresh_all()
 
 
+# ─────────────────────── Eszközök: szerkesztés (PDF-szerkesztő) ───────────────────────
+# Általános szerkesztő kész PDF-ekhez (szerkeszto-terv.md 16.): szöveg átírása, új
+# szöveg és X, űrlapmezők (a DocGen PDF-sablonjához), kitakarás. Szöveg mindig
+# TextWriterrel kerül a lapra: az insert_text(fontname="helv") elrontja az ő/ű-t (0.2).
+# ponytail: forgatott lapot (/Rotate) nem szerkesztünk — a fül szól; ha kell, a
+# koordinátákat a page.derotation_matrix-szal kell átváltani, mint a PlacerTab-ban.
+
+EDIT_FONTS = {"Helvetica": None, "Calibri": "calibri.ttf", "Arial": "arial.ttf",
+              "Times New Roman": "times.ttf"}
+LINE_MAX = 1.6            # ennél vékonyabb kitöltött téglalap vonalnak számít (pt)
+SNAP_MAX = 60             # a kattintástól legfeljebb ennyire keresünk vonalat (pt)
+BOX_MIN, BOX_MAX = 6, 16  # a jelölőnégyzet oldala (pt)
+UNDERLINE_H = 14          # aláhúzásos rovat: ilyen magas sáv a vonal fölött
+
+
+def _font_path(name: str) -> str:
+    f = EDIT_FONTS.get(name)
+    return os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", f) if f else ""
+
+
+def edit_fonts() -> list:
+    """A választható betűk: a beépített Helvetica és a gépen meglévő rendszerbetűk."""
+    return [n for n in EDIT_FONTS if not EDIT_FONTS[n] or os.path.exists(_font_path(n))]
+
+
+def edit_font(name: str) -> "pymupdf.Font":
+    p = _font_path(name)
+    return pymupdf.Font(fontfile=p) if p and os.path.exists(p) else pymupdf.Font("helv")
+
+
+def page_lines(drawings) -> tuple:
+    """A lap vonalai: vízszintes [(y, x0, x1)] és függőleges [(x, y0, y1)]. Vonal a
+    vékony kitöltött téglalap (a Word így rajzolja a táblázatot), a szakasz és a
+    keretes téglalap négy oldala."""
+    H, V = [], []
+    for g in drawings:
+        for it in g["items"]:
+            if it[0] == "l":
+                a, b = it[1], it[2]
+                if abs(a.y - b.y) < 0.5:
+                    H.append((a.y, min(a.x, b.x), max(a.x, b.x)))
+                elif abs(a.x - b.x) < 0.5:
+                    V.append((a.x, min(a.y, b.y), max(a.y, b.y)))
+            elif it[0] in ("re", "qu"):
+                r = it[1] if it[0] == "re" else it[1].rect
+                if "f" in g["type"] and min(r.width, r.height) < LINE_MAX:
+                    if r.height < LINE_MAX:
+                        H.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
+                    else:
+                        V.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
+                elif "s" in g["type"]:
+                    H += [(r.y0, r.x0, r.x1), (r.y1, r.x0, r.x1)]
+                    V += [(r.x0, r.y0, r.y1), (r.x1, r.y0, r.y1)]
+    return H, V
+
+
+def snap_cell(lines, x: float, y: float):
+    """A pontot közrefogó cella a vonalakból; aláhúzásos rovatnál (alatta vonal,
+    fölötte nincs közel) a vonal fölötti sáv. None, ha nincs a közelben vonal."""
+    H, V = lines
+    over = [h for h in H if h[1] - 1 <= x <= h[2] + 1]
+    below = [h for h in over if 0 < h[0] - y <= SNAP_MAX]
+    if not below:
+        return None
+    y1 = min(h[0] for h in below)
+    above = [h[0] for h in over if 0 < y - h[0] <= SNAP_MAX]
+    if not above:
+        h = min((h for h in below if h[0] == y1), key=lambda h: h[2] - h[1])
+        return pymupdf.Rect(h[1], y1 - UNDERLINE_H, h[2], y1)
+    y0 = max(above)
+    mid = (y0 + y1) / 2
+    cross = [v[0] for v in V if v[1] - 1 <= mid <= v[2] + 1]
+    left = [vx for vx in cross if vx < x - 0.5]
+    right = [vx for vx in cross if vx > x + 0.5]
+    edge = [h for h in over if abs(h[0] - y1) < 0.5]
+    x0 = max(left) if left else min(h[1] for h in edge)
+    x1 = min(right) if right else max(h[2] for h in edge)
+    return pymupdf.Rect(x0, y0, x1, y1)
+
+
+def snap_cells(lines, rect) -> list:
+    """Egy kijelölt sáv betűnkénti cellái balról jobbra: a sáv közepén átérő
+    függőleges vonalak határolják őket. Üres lista, ha nincs legalább két cella."""
+    mid = snap_cell(lines, (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+    if mid is None:
+        return []
+    ym = (mid.y0 + mid.y1) / 2
+    cross = sorted({round(v[0], 2) for v in lines[1] if v[1] - 1 <= ym <= v[2] + 1})
+    # A sáv két végén lévő cella is teljes: a bal határ a kezdőpont előtti vonal.
+    lo = max([x for x in cross if x <= rect.x0 + 0.5], default=rect.x0)
+    hi = min([x for x in cross if x >= rect.x1 - 0.5], default=rect.x1)
+    xs = [x for x in cross if lo <= x <= hi]
+    cells = [pymupdf.Rect(a, mid.y0, b, mid.y1) for a, b in zip(xs, xs[1:]) if b - a > 2]
+    return cells if len(cells) >= 2 else []
+
+
+def snap_box(drawings, x: float, y: float):
+    """A pontot tartalmazó kis keretes négyzet (jelölőnégyzet), vagy None. A rajz-
+    csoporton belül téglalaponként nézzük: egy csoportban több alakzat is lehet."""
+    for g in drawings:
+        if "s" not in g["type"]:
+            continue
+        for it in g["items"]:
+            if it[0] not in ("re", "qu"):
+                continue
+            r = it[1] if it[0] == "re" else it[1].rect
+            if (BOX_MIN <= r.width <= BOX_MAX and BOX_MIN <= r.height <= BOX_MAX
+                    and abs(r.width - r.height) < 2 and r.contains(pymupdf.Point(x, y))):
+                return r
+    return None
+
+
+def span_at(page, x: float, y: float):
+    """A pont alatti szövegdarab (span: szöveg, betű, méret, alapvonal), vagy None."""
+    for b in page.get_text("dict")["blocks"]:
+        for ln in b.get("lines", []):
+            for s in ln["spans"]:
+                if s["text"].strip() and pymupdf.Rect(s["bbox"]).contains(pymupdf.Point(x, y)):
+                    return s
+    return None
+
+
+def span_font(doc, page, span, text: str, fallback):
+    """A span saját beágyazott betűje, ha az új szöveg minden betűje megvan benne.
+    -> (betű, saját-e). A részhalmazos betűből a hiányzó betű nem rajzolható."""
+    want = span["font"].split("+")[-1]
+    for f in page.get_fonts():
+        if f[3].split("+")[-1] != want:
+            continue
+        try:
+            _n, ext, _t, buf = doc.extract_font(f[0])
+            if ext == "n/a" or not buf:
+                break
+            font = pymupdf.Font(fontbuffer=buf)
+            if all(font.has_glyph(ord(c)) for c in text if not c.isspace()):
+                return font, True
+        except Exception:
+            pass
+        break
+    return fallback, False
+
+
+def add_text(page, origin, text: str, font, size: float, color=(0, 0, 0)):
+    """Szöveg a lapra. A szóközt nem írjuk ki: egyes TrueType betűknél (Calibri,
+    Arial) a szövegréteg nem-törő szóközt (U+00A0) adna vissza, ami keresésnél,
+    másolásnál és a szövegrétegből címkézésnél zavar. Szavanként írunk, a szóköz
+    szélességével léptetve — a kinyerés a hézagból rendes szóközt tesz."""
+    tw = pymupdf.TextWriter(page.rect, color=color)
+    x, y = origin
+    sp = font.text_length(" ", size)
+    for w in text.split(" "):
+        if w:
+            tw.append((x, y), w, font=font, fontsize=size)
+        x += font.text_length(w, size) + sp
+    tw.write_text(page)
+
+
+def _redact(page, rect, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE):
+    page.add_redact_annot(rect, fill=fill)
+    page.apply_redactions(images=images, graphics=graphics)
+
+
+def rewrite_span(doc, page, span, text: str, fallback) -> bool:
+    """A span szövegének cseréje: a régi TÉNYLEGESEN törlődik (redakció — a vonalak
+    és a képek maradnak), az új ugyanarra az alapvonalra, ugyanakkora betűvel és
+    színnel. Üres szöveg = törlés. -> a saját betűjével írtuk-e (False: fallback)."""
+    font, own = span_font(doc, page, span, text, fallback)
+    r = pymupdf.Rect(span["bbox"])
+    d = r.height * 0.15                  # a szomszéd sor betűi ne essenek bele
+    _redact(page, pymupdf.Rect(r.x0, r.y0 + d, r.x1, r.y1 - d))
+    if text.strip():
+        add_text(page, span["origin"], text, font, span["size"],
+                 color=pymupdf.sRGB_to_pdf(span["color"]))
+    return own
+
+
+def toggle_x(page, box, font) -> bool:
+    """Jelölőnégyzet: ha van benne X, törli; ha nincs, ráírja. -> bejelölt-e most."""
+    inner = pymupdf.Rect(box.x0 + 1, box.y0 + 1, box.x1 - 1, box.y1 - 1)
+    if any(pymupdf.Rect(w[:4]).intersects(inner) and w[4].strip().lower() in ("x", "✓", "✔")
+           for w in page.get_text("words")):
+        _redact(page, inner)
+        return False
+    s = box.height * 0.9
+    add_text(page, (box.x0 + (box.width - font.text_length("X", s)) / 2,
+                    box.y0 + box.height / 2 + s * 0.35), "X", font, s)
+    return True
+
+
+def erase_area(page, rect):
+    """Kitakarás: a terület szövege, képpontjai és teljesen benne lévő vonalai
+    végleg törlődnek, a helye fehér."""
+    _redact(page, rect, fill=(1, 1, 1), images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED)
+
+
+def add_field(page, rect, name: str, check: bool = False):
+    """Űrlapmező a DocGen PDF-sablonjához: a név a DocGen-jelölő (DocGen/TERV-pdf-
+    nyomtatvany.md 11.). Keret és háttér nélkül, automatikus betűmérettel."""
+    w = pymupdf.Widget()
+    w.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX if check else pymupdf.PDF_WIDGET_TYPE_TEXT
+    w.field_name = name
+    w.rect = pymupdf.Rect(rect)
+    w.border_width = 0
+    w.text_fontsize = 0
+    return page.add_widget(w)
+
+
+def rename_field(doc, widget, name: str):
+    """A mező átnevezése: a /T kulcs közvetlenül — a Widget.update() a nevet nem írja."""
+    doc.xref_set_key(widget.xref, "T", pymupdf.get_pdf_str(name))
+
+
+def field_at(page, x: float, y: float):
+    for w in page.widgets():
+        if w.rect.contains(pymupdf.Point(x, y)):
+            return w
+    return None
+
+
+def field_name_error(name: str) -> str:
+    """Üres szöveg, ha a mezőnév jó; különben a hiba oka."""
+    if not name.strip():
+        return "A mezőnév nem lehet üres."
+    if "." in name:
+        return "A mezőnévben nem lehet pont (a PDF a pontot szintjelnek olvassa)."
+    return ""
+
+
+class EditorTab(ttk.Frame):
+    """Eszközök → Szerkesztés: kész PDF általános szerkesztése. Három eszköz:
+    szöveg (átírás, új szöveg, X), űrlapmező (DocGen-sablon), kitakarás. Minden
+    lépés visszavonható a mentésig; a mentés helyben megy, az előző példány a
+    dolgozó .eredeti\\ mappájába kerül (szerkeszto-terv.md 16.)."""
+
+    HINTS = {
+        "text":  "Kattints egy szövegre: átírod. Üres helyre: új szöveg (cellába "
+                 "illesztve). Jelölőnégyzetbe: X be / ki.",
+        "field": "Kattintás: mező a cellába (a négyzetbe jelölőnégyzet). Húzás több "
+                 "kis cellán át: betűnkénti mezők (név#1, #2 …). Mezőre kattintás: "
+                 "kijelölés — átnevezés, törlés (Delete).",
+        "erase": "Húzd körbe a területet: a tartalma végleg törlődik (szöveg, kép, "
+                 "vonal), a helye fehér lesz.",
+    }
+    UNDO_MAX = 30
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.path = self.doc = None
+        self.log_parent = None           # az Áttekintőből nyitva: ide naplózunk
+        self.page_no = 0
+        self.view_zoom, self.zoom = 1.0, 1.0
+        self.undo = []
+        self.dirty = False
+        self.page_tk = None
+        self._dr, self._lines = [], ([], [])
+        self._press = self._entry = None
+        self.sel_xref = None              # a kijelölt mező
+        self.mode = tk.StringVar(value="text")
+        fonts = edit_fonts()
+        self.font_name = tk.StringVar(value="Calibri" if "Calibri" in fonts else fonts[0])
+        self.font_size = tk.DoubleVar(value=10.5)
+        self.field_name = tk.StringVar(value="")
+        self.info = tk.StringVar(value="Válassz egy PDF-et.")
+        self._build(fonts)
+
+    def _build(self, fonts):
+        left = ttk.Frame(self, width=340)
+        left.pack(side="left", fill="y", padx=8, pady=8)
+        left.pack_propagate(False)
+        self.files = FileList(left, "PDF-ek", (".pdf",), self._pick, height=4,
+                              memory_key="szerkesztes")
+        self.files.pack(fill="both", expand=True)
+
+        m = ttk.LabelFrame(left, text="Eszköz")
+        m.pack(fill="x", pady=8)
+        for txt, val in (("Szöveg és X", "text"), ("Űrlapmező (DocGen-sablon)", "field"),
+                         ("Kitakarás", "erase")):
+            ttk.Radiobutton(m, text=txt, value=val, variable=self.mode,
+                            command=self._mode_changed).pack(anchor="w", padx=6, pady=1)
+        self.hint = ttk.Label(m, text=self.HINTS["text"], wraplength=310, foreground="#555")
+        self.hint.pack(anchor="w", padx=6, pady=(2, 4))
+        t = ttk.Frame(m)
+        t.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(t, text="Új szöveg:").pack(side="left")
+        ttk.Combobox(t, textvariable=self.font_name, values=fonts, state="readonly",
+                     width=14).pack(side="left", padx=4)
+        ttk.Spinbox(t, from_=5, to=40, increment=0.5, textvariable=self.font_size,
+                    width=5).pack(side="left")
+
+        f = ttk.LabelFrame(left, text="Kijelölt mező — a neve a DocGen-jelölő")
+        f.pack(fill="x")
+        ttk.Entry(f, textvariable=self.field_name).pack(fill="x", padx=6, pady=(6, 2))
+        fr = ttk.Frame(f)
+        fr.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(fr, text="Átnevezés", command=self._rename).pack(side="left")
+        ttk.Button(fr, text="Mező törlése", command=self._delete_field).pack(side="left", padx=6)
+        ttk.Label(left, textvariable=self.info, wraplength=320, foreground="#333").pack(anchor="w", pady=6)
+
+        # A dokumentum műveletei a vászon fölött: a bal panel így alacsony
+        # képernyőn is elfér.
+        right = ttk.Frame(self)
+        right.pack(side="right", fill="both", expand=True, padx=(0, 8), pady=8)
+        bar = ttk.Frame(right)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Button(bar, text="Visszavonás", command=self._undo).pack(side="left")
+        ttk.Button(bar, text="Mentés", command=self._save).pack(side="left", padx=6)
+        ttk.Button(bar, text="Mentés másként…", command=self._save_as).pack(side="left")
+        self.page_var = tk.StringVar(value="1")
+        ttk.Button(bar, text="Illeszt", command=lambda: self._view_zoom(0)).pack(side="right")
+        ttk.Button(bar, text="+", width=3, command=lambda: self._view_zoom(1.25)).pack(side="right", padx=2)
+        ttk.Button(bar, text="−", width=3, command=lambda: self._view_zoom(1 / 1.25)).pack(side="right", padx=(12, 2))
+        self.page_spin = ttk.Spinbox(bar, from_=1, to=1, textvariable=self.page_var, width=5,
+                                     command=self._change_page)
+        self.page_spin.pack(side="right")
+        ttk.Label(bar, text="Oldal:").pack(side="right", padx=4)
+        self.canvas = tk.Canvas(right, bg=COL_CANVAS, highlightthickness=0, takefocus=1,
+                                cursor="crosshair", height=180)
+        hb = ttk.Scrollbar(right, orient="horizontal", command=self.canvas.xview)
+        vb = ttk.Scrollbar(right, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=hb.set, yscrollcommand=vb.set)
+        self.canvas.grid(row=1, column=0, sticky="nsew")
+        vb.grid(row=1, column=1, sticky="ns")
+        hb.grid(row=2, column=0, sticky="ew")
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+        c = self.canvas
+        c.bind("<ButtonPress-1>", self._down)
+        c.bind("<B1-Motion>", self._drag)
+        c.bind("<ButtonRelease-1>", self._up)
+        c.bind("<Configure>", lambda e: debounce(self, "_cfg_job", self._render, 60))
+        c.bind("<Control-MouseWheel>", lambda e: self._view_zoom(1.25 if e.delta > 0 else 1 / 1.25))
+        c.bind("<MouseWheel>", lambda e: c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        c.bind("<Delete>", lambda e: self._delete_field())
+        # A vásznon, nem bind_all-lal: a globális Ctrl+Z kötés a nagyító (PageViewer)
+        # billentyűit is elrontotta (a GUI-teszt mérte). A vászon kattintásra
+        # amúgy is megkapja a fókuszt.
+        c.bind("<Control-z>", lambda e: (self._undo(), "break")[1])
+
+    # -- fájl --
+    def set_folder(self, folder):
+        self.files.set_folder(folder)
+
+    def _pick(self, path):
+        self.open_file(path)
+
+    def _discard_ok(self) -> bool:
+        return not self.dirty or messagebox.askyesno(
+            "Nincs mentve", "A módosítások nincsenek mentve. Elveted őket?")
+
+    def open_file(self, path, log_parent=None) -> bool:
+        if not self._discard_ok():
+            return False
+        try:
+            src = open_checked(path)
+            # Memóriában szerkesztünk: a fájlon nem marad zár, így helyben menthető
+            # (Windowson a nyitott fájl nem cserélhető le).
+            doc = pymupdf.open("pdf", src.tobytes())
+            src.close()
+        except Exception as e:
+            messagebox.showerror("Hiba", f"A PDF nem nyitható meg:\n{e}")
+            return False
+        if self.doc:
+            self.doc.close()
+        self.doc, self.path, self.log_parent = doc, path, log_parent
+        self.page_no, self.view_zoom, self.undo, self.dirty = 0, 1.0, [], False
+        self.sel_xref = None
+        self.field_name.set("")
+        self.page_spin.configure(to=doc.page_count)
+        self.page_var.set("1")
+        self._render()
+        return True
+
+    def _say(self, txt=""):
+        name = os.path.basename(self.path) if self.path else ""
+        self.info.set(f"{name}{' — módosítva' if self.dirty else ''}" + (f"\n{txt}" if txt else ""))
+
+    # -- rajzolás --
+    def _page(self):
+        return self.doc[self.page_no] if self.doc else None
+
+    def _change_page(self):
+        if not self.doc:
+            return
+        try:
+            self.page_no = max(1, min(self.doc.page_count, int(self.page_var.get()))) - 1
+        except ValueError:
+            return
+        self.sel_xref = None
+        self._render()
+
+    def _view_zoom(self, k):
+        self.view_zoom = 1.0 if not k else max(0.3, min(6.0, self.view_zoom * k))
+        self._render()
+
+    def _render(self):
+        self._cancel_entry()
+        page = self._page()
+        if not page:
+            return
+        # Szélességre illesztünk: egy űrlapon a betű mérete számít, nem az, hogy
+        # az egész lap látsszon (függőlegesen görgethető).
+        cw = max(50, self.canvas.winfo_width())
+        self.zoom = cw / page.rect.width * self.view_zoom
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(self.zoom, self.zoom), annots=True)
+        self.page_tk = tkimg(pix, "ppm")
+        c = self.canvas
+        c.delete("all")
+        c.create_image(0, 0, anchor="nw", image=self.page_tk, tags="page")
+        c.configure(scrollregion=(0, 0, pix.width, pix.height))
+        self._dr = page.get_drawings()
+        self._lines = page_lines(self._dr)
+        self._draw_fields()
+        n = sum(1 for _ in page.widgets())
+        self._say(f"{self.page_no + 1}/{self.doc.page_count}. oldal · {n} űrlapmező")
+
+    def _draw_fields(self):
+        """Mező módban a mezők kerete és neve — a PDF-ben láthatatlanok."""
+        c, z = self.canvas, self.zoom
+        c.delete("fld")
+        if self.mode.get() != "field":
+            return
+        for w in self._page().widgets():
+            r = w.rect
+            sel = w.xref == self.sel_xref
+            c.create_rectangle(r.x0 * z, r.y0 * z, r.x1 * z, r.y1 * z, tags="fld",
+                               outline=UI["warn"] if sel else UI["accent"],
+                               width=2 if sel else 1, dash=() if sel else (3, 2))
+            c.create_text(r.x0 * z + 2, r.y0 * z + 1, anchor="nw", text=w.field_name,
+                          font=("Segoe UI", 7), fill=UI["accent"], tags="fld")
+
+    def _mode_changed(self):
+        self.hint.configure(text=self.HINTS[self.mode.get()])
+        self._cancel_entry()
+        self._draw_fields()
+
+    # -- egér --
+    def _pt(self, e):
+        return (self.canvas.canvasx(e.x) / self.zoom, self.canvas.canvasy(e.y) / self.zoom)
+
+    def _down(self, e):
+        self.canvas.focus_set()
+        self._press = self._pt(e) if self.doc else None
+        self.canvas.delete("band")
+
+    def _drag(self, e):
+        if not self._press or self.mode.get() == "text":
+            return
+        (x0, y0), (x1, y1), z = self._press, self._pt(e), self.zoom
+        self.canvas.delete("band")
+        self.canvas.create_rectangle(x0 * z, y0 * z, x1 * z, y1 * z, tags="band",
+                                     outline=UI["warn"], dash=(4, 2))
+
+    def _up(self, e):
+        if not self._press:
+            return
+        (x0, y0), (x1, y1) = self._press, self._pt(e)
+        self._press = None
+        self.canvas.delete("band")
+        page = self._page()
+        if page.rotation:
+            messagebox.showwarning("Forgatott lap", "Forgatott lapot a szerkesztő nem kezel.")
+            return
+        rect = pymupdf.Rect(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        drag = rect.width * self.zoom > 5 or rect.height * self.zoom > 5
+        mode = self.mode.get()
+        if mode == "erase":
+            if drag:
+                self._change(lambda: erase_area(page, rect), "Kitakarva.")
+        elif mode == "field":
+            self._field_drag(page, rect) if drag else self._field_click(page, x1, y1)
+        else:
+            self._text_click(page, x1, y1)
+
+    # -- szöveg --
+    def _text_click(self, page, x, y):
+        box = snap_box(self._dr, x, y)
+        if box is not None:
+            font = edit_font(self.font_name.get())
+            self._change(lambda: toggle_x(page, box, font), "Jelölőnégyzet átállítva.")
+            return
+        span = span_at(page, x, y)
+        if span is not None:
+            b = pymupdf.Rect(span["bbox"])
+            self._ask(b.x0, b.y1, span["text"], max(b.width, 80),
+                      lambda t: self._rewrite(page, span, t))
+            return
+        size = float(self.font_size.get())
+        cell = snap_cell(self._lines, x, y)
+        origin = ((cell.x0 + 3, (cell.y0 + cell.y1) / 2 + size * 0.35) if cell else (x, y))
+        width = cell.width if cell else 160
+        self._ask(origin[0], origin[1] + 3, "", width,
+                  lambda t: t.strip() and self._change(
+                      lambda: add_text(page, origin, t, edit_font(self.font_name.get()), size),
+                      "Szöveg hozzáadva."))
+
+    def _rewrite(self, page, span, text):
+        if text == span["text"]:
+            return
+        fb = edit_font(self.font_name.get())
+        own = []
+        self._change(lambda: own.append(rewrite_span(self.doc, page, span, text, fb)), "Átírva.")
+        if own and not own[0] and text.strip():
+            self._say(f"Az eredeti betűben nincs meg minden betű — {self.font_name.get()} betűvel írtam.")
+
+    # -- mező --
+    def _field_click(self, page, x, y):
+        w = field_at(page, x, y)
+        if w is not None:
+            self.sel_xref = w.xref
+            self.field_name.set(w.field_name)
+            self._draw_fields()
+            return
+        self.sel_xref = None
+        box = snap_box(self._dr, x, y)
+        rect = box or snap_cell(self._lines, x, y) or pymupdf.Rect(x, y - 12, x + 140, y + 3)
+        self._ask(rect.x0, rect.y1, "", max(rect.width, 140),
+                  lambda n: self._new_fields(page, [rect], n, check=box is not None))
+
+    def _field_drag(self, page, rect):
+        cells = snap_cells(self._lines, rect)
+        self._ask(rect.x0, rect.y1, "", max(rect.width, 140),
+                  lambda n: self._new_fields(page, cells or [rect], n, many=bool(cells)))
+
+    def _new_fields(self, page, rects, name, check=False, many=False):
+        name = name.strip()
+        err = field_name_error(name)
+        if err:
+            messagebox.showwarning("Mezőnév", err)
+            return
+        def go():
+            for i, r in enumerate(rects, 1):
+                add_field(page, r, f"{name}#{i}" if many else name, check=check)
+        self._change(go, f"{len(rects)} mező: {name}{'#1…#%d' % len(rects) if many else ''}")
+
+    def _sel_widget(self, page):
+        """A kijelölt mező — ugyanazon a lapobjektumon, amelyiken dolgozunk: másik
+        Page-példány mezőjét a PyMuPDF „laphoz nem kötött”-nek látja."""
+        return next((w for w in page.widgets() if w.xref == self.sel_xref), None) if page else None
+
+    def _rename(self):
+        w = self._sel_widget(self._page())
+        name = self.field_name.get().strip()
+        err = field_name_error(name)
+        if w is None or err:
+            messagebox.showwarning("Mező", err or "Előbb jelölj ki egy mezőt (Űrlapmező eszköz).")
+            return
+        self._change(lambda: rename_field(self.doc, w, name), f"Átnevezve: {name}")
+
+    def _delete_field(self):
+        page = self._page()
+        w = self._sel_widget(page)
+        if w is None:
+            return
+        self._change(lambda: page.delete_widget(w), "Mező törölve.")
+        self.sel_xref = None
+        self.field_name.set("")
+        self._render()
+
+    # -- beírómező a vásznon --
+    def _ask(self, x, y, text, width_pt, on_ok):
+        self._cancel_entry()
+        e = ttk.Entry(self.canvas, width=max(8, int(width_pt * self.zoom / 7)))
+        e.insert(0, text)
+        self.canvas.create_window(x * self.zoom, y * self.zoom, anchor="nw", window=e, tags="entry")
+        self._entry = e
+        e.focus_set()
+        e.select_range(0, tk.END)
+
+        def ok(_e=None):
+            t = e.get()
+            self._cancel_entry()
+            on_ok(t)
+            return "break"
+        e.bind("<Return>", ok)
+        e.bind("<Escape>", lambda _e: (self._cancel_entry(), "break")[1])
+
+    def _cancel_entry(self):
+        if self._entry is not None:
+            self.canvas.delete("entry")
+            self._entry.destroy()
+            self._entry = None
+
+    # -- módosítás, visszavonás, mentés --
+    def _change(self, fn, msg=""):
+        """Egy lépés: előtte a dokumentum bájtjai a visszavonási verembe."""
+        if not self.doc:
+            return None
+        self.undo.append(self.doc.tobytes())
+        del self.undo[:-self.UNDO_MAX]
+        try:
+            out = fn()
+        except Exception as e:
+            traceback.print_exc()
+            self._restore(self.undo.pop())
+            messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
+            return None
+        self.dirty = True
+        self._render()
+        self._say(msg)
+        return out
+
+    def _restore(self, data):
+        self.doc.close()
+        self.doc = pymupdf.open("pdf", data)
+
+    def _undo(self):
+        if not self.undo:
+            self._say("Nincs mit visszavonni.")
+            return
+        self._restore(self.undo.pop())
+        self.dirty = bool(self.undo)
+        self.sel_xref = None
+        self._render()
+
+    def _bytes(self) -> bytes:
+        """Mentendő bájtok: a használt betűk részhalmaza, tömörítve."""
+        d = pymupdf.open("pdf", self.doc.tobytes())
+        try:
+            try:
+                d.subset_fonts()
+            except Exception:
+                pass                      # a részhalmazolás kényelem, nem feltétel
+            return d.tobytes(garbage=3, deflate=True)
+        finally:
+            d.close()
+
+    def _write(self, dst) -> str:
+        data, pages = self._bytes(), self.doc.page_count
+        backup = backup_existing(dst) if os.path.exists(dst) else ""
+        write_pdf_verified(data, dst, pages)
+        return backup
+
+    def _save(self):
+        if self.doc:
+            self._save_to(self.path)
+
+    def _save_as(self):
+        if not self.doc:
+            return
+        stem = os.path.splitext(os.path.basename(self.path))[0]
+        dst = filedialog.asksaveasfilename(title="Mentés másként",
+                                           initialdir=os.path.dirname(self.path),
+                                           initialfile=f"{stem}_szerkesztett.pdf",
+                                           defaultextension=".pdf",
+                                           filetypes=[("PDF fájlok", "*.pdf")])
+        if dst:
+            self._save_to(dst)
+
+    def _save_to(self, dst):
+        try:
+            backup = self._write(dst)
+        except Exception as e:
+            traceback.print_exc()
+            messagebox.showerror("A mentés nem sikerült", f"{type(e).__name__}: {e}")
+            return
+        if self.log_parent:
+            log_row(self.log_parent, self.path,
+                    os.path.relpath(os.path.dirname(dst), self.log_parent),
+                    os.path.basename(dst), "",
+                    "SZERKESZTVE" + (f" (elozo: {BACKUP_DIR})" if backup else ""))
+        self.path, self.dirty = dst, False
+        note = size_note(dst)
+        self.app.status(f"Mentve: {os.path.basename(dst)} {note}")
+        self.app.refresh_all()
+        self._say("Mentve." + (f" Az előző példány: {backup}" if backup else "") +
+                  (f"\n{note}" if note else ""))
+
+
 # ───────────────────────────── 5. fül: iktató ─────────────────────────────
 # ── konfiguráció ────────────────────────────────────────────────────────────
 DOC_TYPES_DEFAULT = [
@@ -2868,7 +3539,23 @@ DEFAULT_RULES = [
          [], ["re:\\bnav\\b", "jovedelemigazolas nav"], False, False),
     Rule("munkalt", "Hat havi munkáltatói jövedelemigazolás", "Munk",
          [], ["munkaltatoi"], False, False),
+    # A DocGen tölti ki (NEAK NYT.52), aláírás nélkül kész, egyenesen a 02-be megy
+    # (DocGen/TERV-pdf-nyomtatvany.md). .docx-e nincs, mégis „generated”: a jelző
+    # itt azt dönti el, hogy szkennelt irat-e (akkor kerül az Összeállító
+    # palettájára) — ez soha nem az. Az „aláírt” utótag csak kézi iktatásnál
+    # számítana, és ezt az iratot senki nem iktatja kézzel.
+    Rule("taj", "TAJ-megrendelő (NEAK NYT.52)", "TAJ",
+         [], ["nyt 52", "taj megrendelo"], False, True),
 ]
+
+# A mentett szabályfájl az alapszabályokat EGÉSZBEN felülírja, a frissítő pedig
+# soha nem írja felül — így egy később született alapszabály az éles gépen nem
+# jelenne meg. Ezért: amit a fájl még nem ismert, az hozzáadódik; amit ismert, de
+# a felhasználó törölt, az nem jön vissza. Az „ismert” a fájl `ismert_alapok`
+# kulcsa (mentéskor a mostani alapszabályok); régi fájlban ez a lista hiányzik,
+# ott a „taj” előtti állapot számít ismertnek.
+RULES_BEFORE_TAJ = ("forma", "elozetes", "elismer", "hozzaj", "meghat", "utlevel",
+                    "szallv", "szalli", "vegzett", "nav", "munkalt")
 
 # Az arckép-jelölő később született, mint az első szabályfájlok: ha a mentett
 # fájlban nincs ez a kulcs, innen jön az alapértelmezés (load_settings).
@@ -2917,6 +3604,7 @@ def settings_path() -> str:
 def default_settings() -> dict:
     return {
         "rules": [asdict(r) for r in DEFAULT_RULES],
+        "ismert_alapok": [r.id for r in DEFAULT_RULES],
         "name_width": 200,
         "scan_depth": 1,          # 0 = csak a dolgozó mappája; 1..3 = almappák
         "row_height": ROW_H,
@@ -2950,6 +3638,9 @@ def load_settings() -> dict:
             except Exception:
                 continue
         if out:
+            ismert = set(data.get("ismert_alapok", RULES_BEFORE_TAJ))
+            van = {r.id for r in out}
+            out += [r for r in DEFAULT_RULES if r.id not in van and r.id not in ismert]
             s["rules"] = [asdict(r) for r in out]
     for k, lo, hi in (("name_width", 80, 500), ("scan_depth", 0, 3),
                       ("row_height", 16, 48), ("header_lines", 1, 4)):
@@ -4632,6 +5323,11 @@ class AttekintoTab(ttk.Frame):
                 m.add_command(label="   " + fn[:60],
                               command=lambda f=fn: open_path(
                                   os.path.join(row.folder, f)))
+        if st and st.pdf and hasattr(self.app, "goto_szerkeszto"):
+            for fn in st.pdf[:6]:
+                m.add_command(label="✎ Szerkesztés: " + fn[:50],
+                              command=lambda f=fn: self.app.goto_szerkeszto(
+                                  os.path.join(row.folder, f), self.parent_dir))
         if row.extra_pdfs:
             m.add_separator()
             for fn in row.extra_pdfs[:6]:
@@ -7034,13 +7730,14 @@ class App(tk.Tk):
             "Iktató": IktatoTab(self.nb, self),
             "Áttekintő": AttekintoTab(self.nb, self),
             "Arckép elhelyezés": PlacerTab(self.tools, self),
+            "Szerkesztés": EditorTab(self.tools, self),
             "Összefűzés": MergeTab(self.tools, self),
             "Raszterizálás": RasterTab(self.tools, self),
         }
         for i, name in enumerate(("Összeállító", "Iktató", "Áttekintő"), 1):
             self.nb.add(self.tabs[name], text=f"{i} · {name}")
         self.nb.add(self.tools, text="Eszközök")
-        for name in ("Arckép elhelyezés", "Összefűzés", "Raszterizálás"):
+        for name in ("Arckép elhelyezés", "Szerkesztés", "Összefűzés", "Raszterizálás"):
             self.tools.add(self.tabs[name], text=name)
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
@@ -7125,6 +7822,14 @@ class App(tk.Tk):
         self.tabs["Arckép elhelyezés"].set_folder(folder)
         self.show(self.tabs["Arckép elhelyezés"])
 
+    def goto_szerkeszto(self, path, parent=None):
+        """Az Áttekintő jobb klikkes menüjéből: a fájl a Szerkesztés fülön; a
+        mentés a munkamappa naplójába kerül."""
+        tab = self.tabs["Szerkesztés"]
+        self.show(tab)
+        self.update_idletasks()          # a vászon mérete kell az illesztéshez
+        tab.open_file(path, parent)
+
 
 # ── önteszt ─────────────────────────────────────────────────────────────────
 def _tolerant(fn) -> bool:
@@ -7192,7 +7897,7 @@ def _selftest() -> int:
 
     print("BEÁLLÍTÁSOK")
     s = default_settings()
-    ck("alapból 11 szabály", len(s["rules"]) == 11, len(s["rules"]))
+    ck("alapból 12 szabály", len(s["rules"]) == 12, len(s["rules"]))
     ck("6 kötelező", sum(1 for d in s["rules"] if d["required"]) == 6)
     ck("azonosítók egyediek",
        len({d["id"] for d in s["rules"]}) == len(s["rules"]))
@@ -7219,6 +7924,26 @@ def _selftest() -> int:
                next(r for r in R if r.id == "forma").arckep)
             ck("célmappa régi szabályfájllal is 01, amíg nincs fotó",
                target_subdir("Tart_eng_formanyomtatvány", R, False) == DIR_PREP)
+            # A „taj” később született: a régi fájlhoz hozzáadódik…
+            regi = [asdict(r) for r in DEFAULT_RULES if r.id != "taj"]
+            with open(settings_path(), "w", encoding="utf-8") as f:
+                json.dump({"rules": regi}, f)
+            R = rules_from(load_settings())
+            ck("régi szabályfájl: az új alapszabály (taj) hozzáadódik",
+               [r.id for r in R].count("taj") == 1, [r.id for r in R])
+            ck("…és felismeri a DocGen kimenetét",
+               match_rule("Kovacevic Milan NYT.52.K.pdf", R)[0].id == "taj")
+            # …de amit a felhasználó kézzel törölt (és mentett), az nem jön vissza.
+            s2 = load_settings()
+            s2["rules"] = [d for d in s2["rules"] if d["id"] != "taj"]
+            save_settings(s2)
+            ck("kézzel törölt alapszabály nem tér vissza",
+               all(r.id != "taj" for r in rules_from(load_settings())))
+            # A felhasználó saját szabálya nem tűnik el az összefésüléstől.
+            with open(settings_path(), "w", encoding="utf-8") as f:
+                json.dump({"rules": regi + [asdict(Rule("sajat", "Saját", "S", [], ["sajat"]))]}, f)
+            ids = [r.id for r in rules_from(load_settings())]
+            ck("saját szabály megmarad, az új alapszabály mellé", "sajat" in ids and "taj" in ids, ids)
             remember("mellekletek", td)
             ck("emlékezet: útvonal visszaolvasható", recall("mellekletek") == td)
             remember("doktipus", "Útlevél")
@@ -7895,6 +8620,67 @@ def _selftest() -> int:
            [r[5] for r in rows[1:]] == ["OK", "VISSZAVONVA"], rows)
         log_row(os.path.join(td, "nincs"), "x", "y", "z", "t", "OK")
         ck("hibás naplóhely nem dob kivételt", True)
+
+    print("SZERKESZTŐ")
+    # Word-szerű lap: táblázat vékony kitöltött téglalapokból, egy sorban négy
+    # egyenetlen betűnkénti cella, egy keretes jelölőnégyzet, egy aláhúzás, szöveg.
+    d = pymupdf.open()
+    pg = d.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    for y in (100, 120, 140):
+        sh.draw_rect(pymupdf.Rect(50, y - 0.25, 400, y + 0.25))
+    for x in (50, 150, 400):
+        sh.draw_rect(pymupdf.Rect(x - 0.25, 100, x + 0.25, 120))
+    for x in (50, 150, 175, 190, 215, 400):
+        sh.draw_rect(pymupdf.Rect(x - 0.25, 120, x + 0.25, 140))
+    sh.draw_rect(pymupdf.Rect(300, 103, 400, 120.5))      # (nem vonal: 17 pt magas)
+    sh.finish(color=None, fill=(0, 0, 0))
+    sh.draw_rect(pymupdf.Rect(60, 200, 71, 211))
+    sh.draw_line((60, 260), (260, 260))
+    sh.finish(color=(0, 0, 0), fill=None, width=0.6)
+    sh.commit()
+    add_text(pg, (55, 114), "Régi szöveg", pymupdf.Font("helv"), 10)
+    dr = pg.get_drawings()
+    L = page_lines(dr)
+    rr = lambda r: r and [round(v) for v in r]
+    ck("cella a vonalakból", rr(snap_cell(L, 100, 110)) == [50, 100, 150, 120], rr(snap_cell(L, 100, 110)))
+    ck("aláhúzásos rovat: a vonal fölötti sáv", rr(snap_cell(L, 150, 255)) == [60, 246, 260, 260],
+       rr(snap_cell(L, 150, 255)))
+    ck("vonal nélkül nincs illesztés", snap_cell(L, 500, 500) is None)
+    cells = snap_cells(L, pymupdf.Rect(160, 125, 200, 135))
+    ck("húzás a cellákon: a két szélső cella is teljes",
+       [rr(c)[0] for c in cells] == [150, 175, 190], [rr(c) for c in cells])
+    ck("jelölőnégyzet a keretes négyzetből", rr(snap_box(dr, 65, 205)) == [60, 200, 71, 211])
+    ck("a nagy téglalap nem jelölőnégyzet", snap_box(dr, 350, 110) is None)
+    n0 = len(dr)
+    sp = span_at(pg, 70, 110)
+    ck("a kattintott szöveg", sp is not None and sp["text"] == "Régi szöveg")
+    rewrite_span(d, pg, sp, "Árvíztűrő Őrs", pymupdf.Font("helv"))
+    t = pg.get_text()
+    ck("átírás: a régi szöveg TÉNYLEGESEN eltűnt, az új (ő/ű) bent van",
+       "Régi" not in t and "Árvíztűrő Őrs" in t, t)
+    ck("átírás: a vonalak megmaradtak", len(pg.get_drawings()) == n0)
+    box = snap_box(dr, 65, 205)
+    ck("X be", toggle_x(pg, box, pymupdf.Font("helv")) and "X" in pg.get_text("text", clip=box))
+    ck("X ki", not toggle_x(pg, box, pymupdf.Font("helv")) and
+       "X" not in pg.get_text("text", clip=box) and len(pg.get_drawings()) == n0)
+    add_field(pg, snap_cell(L, 100, 130), "date_of_birth_year#1")
+    add_field(pg, box, "Neme=male", check=True)
+    names = sorted(w.field_name for w in pg.widgets())
+    ck("mezők a DocGen-jelölő nevével", names == ["Neme=male", "date_of_birth_year#1"], names)
+    ck("mező a pontnál", field_at(pg, 100, 130).field_name == "date_of_birth_year#1")
+    rename_field(d, field_at(pg, 100, 130), "employment_start_year#1")
+    ck("átnevezés", field_at(pg, 100, 130).field_name == "employment_start_year#1")
+    add_text(pg, (60, 400), "Új sor itt", edit_font("Calibri"), 10.5)
+    ck("a szövegrétegben rendes szóköz (nem U+00A0), Calibrivel is",
+       "Új sor itt" in pg.get_text(), repr(pg.get_text()[-20:]))
+    ck("mezőnév: pont nem lehet benne", field_name_error("a.b") and not field_name_error("{a}, {b}#2"))
+    erase_area(pg, pymupdf.Rect(52, 102, 148, 118))
+    ck("kitakarás: a terület szövege eltűnt", "Árvíztűrő" not in pg.get_text())
+    d2 = pymupdf.open("pdf", d.tobytes())
+    ck("mentés után is olvasható mezők", sum(1 for _ in d2[0].widgets()) == 2)
+    d2.close()
+    d.close()
 
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")

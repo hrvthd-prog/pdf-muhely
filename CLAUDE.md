@@ -8,7 +8,8 @@ Egyfájlos, offline tkinter + pymupdf eszköztár (`pdf-muhely.py`), a DocGen
 testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeállító, Iktató,
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
-Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet — **új döntést a
+Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
+és a `taj` szabályé `szerkeszto-terv.md`, 14–16. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
 
@@ -26,7 +27,7 @@ beállításfájlokhoz tesztből ne nyúlj.
 **A megjelenést egyik teszt sem méri.** Ha a felülethez nyúlsz, nézd meg:
 
 ```bash
-python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
+python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés · 5: Szerkesztés
 ```
 
 A téma (gombok, mezők, fülek, ikonok) kódból rajzolt grafika — a döntés és a

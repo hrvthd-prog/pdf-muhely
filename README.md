@@ -16,6 +16,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva. **Oldalanként** módban egy többoldalas köteget oldalanként osztasz szét több dolgozó között |
 | **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
+| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, új szöveg és X, **űrlapmezők** (DocGen-sablon), kitakarás |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
 
 A program **megjegyzi** az utoljára használt munkamappát, a mellékletek
@@ -31,6 +32,26 @@ alkalmazható). A **Teljes kép, alaphelyzet** mindkettőt visszavonja.
 A kép fájlja soha nem változik. A vágás veszteségmentes (a lap cropboxa);
 a fényerő/kontraszt viszont újrakódolja a képet (JPEG Q92, a beágyazott kép
 valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajta.
+
+## Szerkesztés: kész PDF javítása, DocGen-sablon készítése
+
+*Eszközök → Szerkesztés*, vagy az Áttekintőben jobb klikk egy cellán →
+**✎ Szerkesztés: <fájl>**. Három eszköz:
+
+- **Szöveg és X** — kattints egy szövegre: a beírómezőben átírhatod, a régi szöveg
+  *ténylegesen* törlődik (nem csak letakarva), az új ugyanoda, ugyanakkora betűvel
+  kerül. Üres helyre kattintva új szöveg (a cellához igazítva); jelölőnégyzetbe: X be/ki.
+- **Űrlapmező** — ezzel készül a **DocGen PDF-sablonja**: kattints a cellába, és add
+  meg a mező nevét, ami a DocGen-jelölő (pl. `surname`, `Neme=male`,
+  `{postal_code} {locality}`). Több kis cellán át húzva betűnkénti mezők lesznek
+  (`date_of_birth_year#1…#4`). Mezőre kattintva átnevezhető, Delete-tel törölhető.
+  A jelölők leírása: a DocGen README „Kitölthető PDF-sablon” szakasza.
+- **Kitakarás** — húzd körbe a területet: a tartalma végleg törlődik, a helye fehér.
+
+Minden lépés visszavonható (Ctrl+Z) a mentésig. A **Mentés** helyben ír; az előző
+példány a dolgozó `.eredeti\` mappájába kerül, a bélyeg megmarad, és az Áttekintőből
+nyitott fájlnál naplósor is készül. Forgatott lapot a szerkesztő nem kezel.
+Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet.
 
 ## A felület
 

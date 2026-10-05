@@ -6,6 +6,7 @@ működést méri, a megjelenést nem.
     python tools/ui-kep.py 0 osszeallito.png     # 0–2: a három fő fül
     python tools/ui-kep.py 3 eszkozok.png        # 3: Eszközök (Arckép elhelyezés)
     python tools/ui-kep.py 4 ellenorzes.png      # 4: az Ellenőrzés dialógus
+    python tools/ui-kep.py 5 szerkesztes.png     # 5: Eszközök → Szerkesztés (mező mód)
 
 A valódi beállításfájlokhoz nem nyúl: a script_dir-t ideiglenes mappára irányítja.
 """
@@ -72,6 +73,30 @@ if tab_i == 0:                                  # Összeállító: pár oldal a 
     kt._add([sp])
 if tab_i == 3:                                  # Eszközök: Arckép elhelyezés
     app.show(app.tabs["Arckép elhelyezés"])
+if tab_i == 5:                                  # Eszközök: Szerkesztés, mező módban
+    d = P.open()
+    pg = d.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    for y in (100, 120, 140, 160):
+        sh.draw_rect(P.Rect(50, y - 0.25, 450, y + 0.25))
+    for x in (50, 200, 450):
+        sh.draw_rect(P.Rect(x - 0.25, 100, x + 0.25, 160))
+    sh.finish(color=None, fill=(0, 0, 0))
+    sh.commit()
+    for i, t in enumerate(("Vezetéknév", "Utónév", "Születési hely")):
+        pm.add_text(pg, (55, 114 + 20 * i), t, P.Font("helv"), 10)
+    for i, n in enumerate(("surname", "forename",
+                           "{place_of_birth_locality}, {place_of_birth_country}")):
+        pm.add_field(pg, P.Rect(200, 100 + 20 * i, 450, 120 + 20 * i), n)
+    sp = os.path.join(TMP, "sablon.pdf")
+    d.save(sp)
+    d.close()
+    ed = app.tabs["Szerkesztés"]
+    app.show(ed)
+    app.update()
+    ed.open_file(sp)
+    ed.mode.set("field")
+    ed._mode_changed()
 if tab_i == 4:                                  # dialógus: Ellenőrzés
     app.show(app.tabs["Áttekintő"])
     app.update()

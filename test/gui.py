@@ -1021,6 +1021,118 @@ try:
        app.active_tab() is kt and len(kt.items) == 6 and kt.who == "Nagy Béla" and
        os.path.abspath(koteg) not in ikt.queue, (len(kt.items), kt.who))
     ikt.filter_text.set("")
+
+    print("SZERKESZTÉS")
+    # Word-szerű lap: táblázat vékony téglalapokból, betűnkénti cellák, jelölőnégyzet.
+    szp = os.path.join(anna_up, "Kiss Anna TAJ-megrendelő.pdf")
+    d = P.open()
+    pg = d.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    for y in (100, 120, 140):
+        sh.draw_rect(P.Rect(50, y - 0.25, 400, y + 0.25))
+    for x in (50, 150, 400):
+        sh.draw_rect(P.Rect(x - 0.25, 100, x + 0.25, 120))
+    for x in (50, 150, 175, 190, 215, 400):
+        sh.draw_rect(P.Rect(x - 0.25, 120, x + 0.25, 140))
+    sh.finish(color=None, fill=(0, 0, 0))
+    sh.draw_rect(P.Rect(60, 200, 71, 211))
+    sh.finish(color=(0, 0, 0), fill=None, width=0.6)
+    sh.commit()
+    pm.add_text(pg, (55, 114), "Régi szöveg", P.Font("helv"), 10)
+    pm.add_text(pg, (60, 300), "Kitakarandó", P.Font("helv"), 10)
+    d.set_metadata({"keywords": "pdf-muhely=1;dolgozo=Kiss Anna;hely=02_Feltoltheto"})
+    d.save(szp)
+    d.close()
+
+    ed = app.tabs["Szerkesztés"]
+    app.goto_szerkeszto(szp, root)
+    pump(0.4)
+    ck("Áttekintőből: a Szerkesztés fülön, a fájllal", app.active_tab() is ed and ed.path == szp)
+    c = ed.canvas
+
+    def katt(x, y, x2=None, y2=None):
+        """Kattintás (vagy húzás x2,y2-ig) lapkoordinátában."""
+        z = ed.zoom
+        c.event_generate("<ButtonPress-1>", x=int(x * z), y=int(y * z))
+        if x2 is not None:
+            c.event_generate("<B1-Motion>", x=int(x2 * z), y=int(y2 * z))
+        c.event_generate("<ButtonRelease-1>", x=int((x2 or x) * z), y=int((y2 or y) * z))
+        pump(0.2)
+
+    def beir(t):
+        e = ed._entry
+        if e is None:
+            return False
+        e.delete(0, "end")
+        e.insert(0, t)
+        e.focus_force()
+        pump(0.1)
+        e.event_generate("<Return>")
+        pump(0.3)
+        return True
+
+    katt(70, 110)
+    ck("szövegre kattintva a régi szöveg a beírómezőben",
+       ed._entry is not None and ed._entry.get() == "Régi szöveg")
+    beir("Kőműves Győző")
+    t = ed.doc[0].get_text()
+    ck("átírás: a régi eltűnt, az új (ő/ű) a lapon", "Régi" not in t and "Kőműves Győző" in t, t)
+    katt(65, 205)
+    ck("jelölőnégyzetbe kattintva X", "X" in ed.doc[0].get_text("text", clip=P.Rect(60, 200, 71, 211)))
+    katt(300, 130)
+    beir("Új sor")
+    ck("üres cellába új szöveg", "Új sor" in ed.doc[0].get_text())
+
+    ed.mode.set("field")
+    ed._mode_changed()
+    katt(100, 110)
+    beir("surname")
+    katt(160, 130, 200, 135)
+    beir("date_of_birth_year")
+    katt(65, 205)
+    beir("Neme=male")
+    names = sorted(w.field_name for w in ed.doc[0].widgets())
+    ck("mezők: kattintás, húzás (betűnként), jelölőnégyzet",
+       names == ["Neme=male", "date_of_birth_year#1", "date_of_birth_year#2",
+                 "date_of_birth_year#3", "surname"], names)
+    katt(100, 110)
+    ck("mezőre kattintva kijelölés, a név a panelen", ed.field_name.get() == "surname")
+    ed.field_name.set("forename")
+    ed._rename()
+    pump(0.2)
+    ck("átnevezés", "forename" in [w.field_name for w in ed.doc[0].widgets()])
+    katt(100, 110)
+    c.focus_force()
+    pump(0.1)
+    c.event_generate("<Delete>")
+    pump(0.2)
+    ck("Delete: a kijelölt mező törlődik", "forename" not in [w.field_name for w in ed.doc[0].widgets()])
+
+    ed.mode.set("erase")
+    ed._mode_changed()
+    katt(55, 290, 140, 305)
+    ck("kitakarás: a terület szövege eltűnt", "Kitakarandó" not in ed.doc[0].get_text())
+    c.focus_force()
+    pump(0.1)
+    c.event_generate("<Control-z>")
+    pump(0.2)
+    ck("Ctrl+Z: a kitakarás előtti állapot", "Kitakarandó" in ed.doc[0].get_text())
+
+    ed._save()
+    pump(0.3)
+    d = P.open(szp)
+    ok = ("Kőműves Győző" in d[0].get_text() and
+          sum(1 for _ in d[0].widgets()) == 4 and
+          "dolgozo=Kiss Anna" in (d.metadata.get("keywords") or ""))
+    d.close()
+    ck("mentés helyben: a szöveg, a mezők és a bélyeg is megvan", ok)
+    ck("az előző példány a dolgozó .eredeti\\ mappájában",
+       os.path.exists(os.path.join(anna, pm.BACKUP_DIR, "Kiss Anna TAJ-megrendelő.pdf")))
+    with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
+        last = list(csv.reader(f, delimiter=";"))[-1]
+    ck("naplósor a szerkesztésről", last[5].startswith("SZERKESZTVE") and
+       last[3] == "Kiss Anna TAJ-megrendelő.pdf", last)
+    ck("mentés után nincs „nincs mentve”", not ed.dirty)
 finally:
     app.destroy()
     shutil.rmtree(TMP, ignore_errors=True)
