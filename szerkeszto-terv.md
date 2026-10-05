@@ -472,3 +472,33 @@ SZERKESZTÉS, 15 ellenőrzés valódi egér- és billentyűeseményekkel, menté
 - A jelölőnégyzetet keretes négyzetből ismeri fel; négy külön vonalból rajzoltat nem.
 - A pontsoros rovat („Kelt, ………”) betű, nem vonal: oda szabad elhelyezés jut.
 - Új szöveg egy sor; a szín fekete; a kitakarás fehér (nem fekete sáv).
+
+---
+
+## 17. Javítás (2026-10-05): a paletta valódi hibája — és a téves diagnózis
+
+### 17.1 Ami a 15.2, 15.6 és 16.4 pontban téves
+
+Ott azt írtam, hogy a 12–13 soros típuspaletta (illetve a globális Ctrl+Z kötés)
+**fókuszhibát** okoz, és a nagyító billentyűi ettől nem működnek. Újramérve
+**egyik sem reprodukálható**: a pontos akkori helyzet (TAJ `generated=False`, 12
+soros paletta) és a visszatett `bind_all("<Control-z>")` mellett is 135/135. A
+négy nagyító-bukás **környezetfüggő** volt: a billentyűesemény a Tk szerinti
+fókuszhoz megy, és ha a teszt ablaka épp nincs előtérben, a Windows megtagadja az
+új nagyító-ablak aktiválását — a fókusz nem kerül át, az esemény máshova megy.
+Ez a GUI-teszt gyengesége volt, nem a programé. Javítás: a teszt a billentyű-
+események előtt maga adja át a fókuszt (`focus_force`). A Ctrl+Z a szerkesztő
+vásznán marad: szűkebb hatókörű, és így is helyes.
+
+### 17.2 A valódi hiba
+
+A palettalista a típusok számával együtt nőtt. Mérve 650 px magas ablakban
+(ennyit nyit az app legalább): 11 és 13 típusnál az Iktatás gomb látszik, **15
+típustól kicsúszik a látható részből** — nem lehet iktatni. Javítás: a lista
+legfeljebb `PAL_ROWS = 11` sort mutat, a többi görgetősávval érhető el; az
+1–9 billentyűk változatlanok. Utána 11, 13, 15 és 19 típusnál is látszik a gomb,
+teljes magasságban.
+
+Regressziós teszt: `test/gui.py` „ÖSSZEÁLLÍTÓ: SOK TÍPUS, ALACSONY ABLAK” —
+1280×650, 16+ típus: az Iktatás gomb a fülön belül, a görgetősáv látszik; kevés
+típusnál nincs görgetősáv. Önteszt 202/202, GUI 138/138.

@@ -5828,6 +5828,10 @@ PRESETS = (("Irodai · 200 DPI", 200, 75),     # (felirat, DPI, JPEG-minőség)
 A4_LONG_IN = 842 / 72                         # az A4 hosszabb oldala hüvelykben
 SRC_EXT = IMG_EXT + (".pdf",)
 PANEL_W = 318                                 # a jobb oldali panel szélessége
+# A típuspaletta legfeljebb ennyi sort mutat, a többi görgethető. Korlát nélkül a
+# lista a típusok számával nőtt, és 650 px magas ablakban 15 típustól az Iktatás
+# gomb kicsúszott a látható részből (mérve; szerkeszto-terv.md 17.).
+PAL_ROWS = 11
 # Azonos tónusú, egymástól jól megkülönböztethető készlet — fehér szöveggel
 # mindegyik olvasható marad (a régi, teljesen telített színek harsányak voltak).
 LABEL_COLORS = ("#2f6fe4", "#0f8f8f", "#7c4dd6", "#c07c0a", "#d6456b",
@@ -6199,9 +6203,13 @@ class ComposerTab(ttk.Frame):
 
         p = ttk.LabelFrame(right, text="Doktípus — kattintás vagy számbillentyű")
         p.pack(fill="x", pady=8)
-        self.pal = tk.Listbox(p, height=11, activestyle="none", exportselection=False,
+        lf = ttk.Frame(p)
+        lf.pack(fill="x", padx=6, pady=(6, 2))
+        self.pal = tk.Listbox(lf, height=PAL_ROWS, activestyle="none", exportselection=False,
                               font=("Segoe UI", 9), highlightthickness=0, borderwidth=0)
-        self.pal.pack(fill="x", padx=6, pady=(6, 2))
+        self.pal_sb = ttk.Scrollbar(lf, orient="vertical", command=self.pal.yview)
+        self.pal.configure(yscrollcommand=self.pal_sb.set)
+        self.pal.pack(side="left", fill="x", expand=True)
         self.pal.bind("<ButtonRelease-1>", self._pal_click)
         row = ttk.Frame(p)
         row.pack(fill="x", padx=6, pady=(2, 6))
@@ -6268,7 +6276,12 @@ class ComposerTab(ttk.Frame):
             self.pal.itemconfig(i, background=tint(c), foreground=UI["ink"],
                                 selectbackground=tint(c, 0.72),
                                 selectforeground=UI["ink"])
-        self.pal.configure(height=max(1, len(self.palette)))
+        n = len(self.palette)
+        self.pal.configure(height=max(1, min(PAL_ROWS, n)))
+        if n > PAL_ROWS:                              # a többi sor görgetéssel érhető el
+            self.pal_sb.pack(side="right", fill="y")
+        else:
+            self.pal_sb.pack_forget()
         self._who_changed()
         self._redraw()
 

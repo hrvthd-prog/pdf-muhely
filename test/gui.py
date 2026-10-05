@@ -418,6 +418,11 @@ try:
     ck("görgő: nagyít, a kurzor alatti pont helyben", v.zk and abs(v.zk - 1.15 ** 4) < 0.01 and
        abs(v.c.canvasx(ex) / v.W - fx0) < 0.02, (v.zk, v.title()))
     zk = v.zk
+    # A billentyűesemény a Tk szerinti fókuszhoz megy. Ha a teszt ablaka épp nincs
+    # előtérben (a Windows megtagadja az új ablak aktiválását), a nagyító nem kapja
+    # meg magától — ezért ad néha négy hamis bukást. A fókuszt ezért mi adjuk át.
+    v.focus_force()
+    pump(0.1)
     v.event_generate("<Right>")
     pump(0.3)
     ck("→: következő kép, a nagyítás marad, a kijelölés követi",
@@ -435,6 +440,8 @@ try:
 
     n_before = len(kt.items)
     at(0)
+    c.focus_force()
+    pump(0.1)
     c.event_generate("<Delete>")
     pump(0.1)
     ck("Delete: a kijelölt törlődik", len(kt.items) == n_before - 1)
@@ -1021,6 +1028,31 @@ try:
        app.active_tab() is kt and len(kt.items) == 6 and kt.who == "Nagy Béla" and
        os.path.abspath(koteg) not in ikt.queue, (len(kt.items), kt.who))
     ikt.filter_text.set("")
+
+    print("ÖSSZEÁLLÍTÓ: SOK TÍPUS, ALACSONY ABLAK")
+    # Korlát nélkül a paletta a típusok számával nőtt, és 650 px magas ablakban
+    # 15 típustól az Iktatás gomb kicsúszott a látható részből (szerkeszto-terv.md 17.).
+    app.geometry("1280x650")
+    plusz = [pm.Rule(f"xx{i}", f"Saját típus {i}", f"S{i}", [], [f"xxteszt{i}"]) for i in range(6)]
+    att.rules.extend(plusz)
+    app.nb.select(kt)
+    pump(0.3)
+    kt.refresh()
+    pump(0.4)
+    b = kt.btn_go
+    ck("16 típusnál is látszik az Iktatás gomb",
+       len(kt.palette) >= 16 and b.winfo_ismapped() and
+       b.winfo_rooty() + b.winfo_height() <= kt.winfo_rooty() + kt.winfo_height(),
+       (len(kt.palette), b.winfo_rooty() + b.winfo_height() - kt.winfo_rooty(), kt.winfo_height()))
+    ck("a paletta legfeljebb PAL_ROWS sort mutat, görgetősávval",
+       int(kt.pal.cget("height")) == pm.PAL_ROWS and kt.pal_sb.winfo_ismapped())
+    for r in plusz:
+        att.rules.remove(r)
+    kt.refresh()
+    pump(0.2)
+    ck("kevés típusnál nincs görgetősáv", not kt.pal_sb.winfo_ismapped())
+    app.geometry("1200x840")
+    pump(0.3)
 
     print("SZERKESZTÉS")
     # Word-szerű lap: táblázat vékony téglalapokból, betűnkénti cellák, jelölőnégyzet.
