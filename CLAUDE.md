@@ -9,7 +9,7 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
-és a TAJ-szabályoké `szerkeszto-terv.md`, 14–18. — **új döntést a
+és a TAJ-szabályoké `szerkeszto-terv.md`, 14–19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
 
@@ -27,7 +27,8 @@ beállításfájlokhoz tesztből ne nyúlj.
 **A megjelenést egyik teszt sem méri.** Ha a felülethez nyúlsz, nézd meg:
 
 ```bash
-python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés · 5: Szerkesztés
+python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
+                                   # 5: Szerkesztés (mező) · 6: Bekezdés formázása
 ```
 
 A téma (gombok, mezők, fülek, ikonok) kódból rajzolt grafika — a döntés és a

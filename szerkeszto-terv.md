@@ -526,3 +526,172 @@ A Műhely-oldal változásai:
 
 Tesztek: önteszt (szabályillesztés, nagybetű-jelölő), GUI (a jelölő a mentett
 fájlon), `python test/run-all.py` zöld.
+
+---
+
+## 19. Negyedik kör (2026-10-06): bekezdés-formázás vektoros PDF-en
+
+### 19.1 A kérés
+
+A szerkesztő kapjon **formázási beállításokat**: a vektoros (nem szkennelt) PDF-ek
+szövegét lehessen formázni — a példa a balra zárt bekezdés sorkizárttá tétele.
+**Ne csak soronként, hanem bekezdésenként is** működjön.
+
+### 19.2 Mérés a valódi iraton (a terv alapja)
+
+A `DocGen/pdf-sablonok/TAJ-meghatalmazás.pdf` 7 soros magyar bekezdésén (Calibri
+10,5; a lap Identity-H Type0 részhalmazokkal ágyazza be a betűt):
+
+| mit mértem | eredmény |
+|---|---|
+| a beágyazott részhalmaz `has_glyph` | a bekezdés 38 karakterének **egyikére sem** igaz (az Identity-H cmap glyph-ID-s, nem Unicode-os) |
+| a beágyazott betű `text_length` | **531,3 pt** a valódi 453,2 helyett — **17% hiba** |
+| a gépen lévő `calibri.ttf` `text_length` | **453,6 pt** — 0,4 pt (0,1%) eltérés |
+| `get_text("words")` szóbboxai | a valódi rajzolt szélességek, mérés nélkül |
+| prototípus: 6 sor sorkizárása | minden sor 533,1–533,25-ig ér (cél 533,57), az `ő á ‐` megmaradt, a rajzok száma változatlan (3 → 3) |
+
+**Ebből két döntés következik:**
+
+1. A formázás **a gépen lévő rendszerbetűvel** mér és ír, nem a beágyazottal. A
+   `span_font` (16.2) beágyazott-betű útja ilyen lapon amúgy is mindig elbukik és
+   helyettesít — ezt eddig nem írtuk le, most igen.
+2. Ha a bekezdés betűcsaládja nincs meg a gépen, a formázás **megtagadja magát**, és
+   megnevezi a betűt. A mért 17%-os szélességhiba miatt a csendes helyettesítés
+   láthatóan elrontaná a lapot.
+
+### 19.3 A felhasználó döntései
+
+| kérdés | válasz |
+|---|---|
+| sorkizárás módja | **mindkettő, választható**: alapból a sortörések megtartása (szóköznyújtás), jelölővel újratördelés |
+| funkciókör | **mind a négy**: igazítás · sortávolság és térköz · betű (család, méret, félkövér, dőlt, aláhúzás, szín) · behúzás és a bekezdés szövegének átírása |
+| vegyes formázású bekezdés | **megtartja, ahol tudja; ahol nem, szól** és jóváhagyást kér |
+| hiányzó betű | **megtagadja**, és megnevezi a betűt |
+
+### 19.4 Magfüggvények
+
+A felülettől függetlenül tesztelhetők, az „Eszközök: szerkesztés” szakaszban.
+
+| függvény | mit tud |
+|---|---|
+| `EDIT_VARIANTS`, `edit_font(name, bold, italic)` | a négy betűváltozat fájlja (`calibrib.ttf`, `calibriz.ttf` …); Helveticánál a PDF beépített base14 nevei (`HELV14`) |
+| `span_style(span)` | a span stílusa → `(család, félkövér, dőlt)`. A családot a PDF-betűnévből (a `ABCDEF+` részhalmaz-előtag és a stílusvégződés levágva, `FONT_ALIAS`-szal), a vastagságot és a dőlést a MuPDF `flags`-éből |
+| `style_font(span)` | a span stílusához tartozó **mérhető** betű, vagy `None` — ez a megtagadás kapuja |
+| `text_lines(page)`, `_overlaps` | a lap összes szövegsora alapvonal szerint; két sor egy hasábban van-e |
+| `paragraph_at(page, x, y)` | a **bekezdés**: sorok, bal és jobb szél, alapvonal-távolság, első sor behúzása, méret, vegyes-e, befoglaló doboz |
+| `line_words(line)` | a sor szavai részenként a saját span-jukkal — ettől marad meg a vegyes formázás |
+| `para_text(para)` | a bekezdés szövege egy sorban (a szövegszerkesztő ebből indul) |
+| `guess_align(para)` | a bekezdés mai igazítása — csak a panel előtöltéséhez |
+| `line_positions(…)` | **tiszta függvény**: egy sor szavainak x-pozíciói a kért igazítással |
+| `wrap_words(…)` | **tiszta függvény**: tördelés, az első sor szélessége külön adható meg |
+| `para_reflows(fmt)`, `REFLOW_KEYS` | a művelet újratördel-e (ettől függ a vegyes formázás sorsa) |
+| `para_font_error(para, fmt)` | a két kapu egy helyen: mérhető-e a betű, és kirajzolható-e minden karakter |
+| `para_format(doc, page, para, fmt)` | **egyetlen belépési pont**: redakció + újrarajzolás; visszaad egy figyelmeztetést (`""` ha tiszta) |
+
+Az `fmt` szótárba **csak a megváltoztatott** kulcsok kerülnek — ezért nem kényszerít
+például a méret megadása feleslegesen újratördelést. A felület a `_fill_para`-ban
+rögzített alapértékekhez méri a különbséget.
+
+### 19.5 A bekezdés felismerése — és miért nem a MuPDF blokkjaiból
+
+Az első változat a MuPDF szövegblokkján belül dolgozott. **Mérés buktatta meg:**
+1,5-es sortávolság beállítása után a MuPDF ugyanannak a bekezdésnek **mind a 7 sorát
+külön blokkba** tette — a bekezdés nem volt újra felismerhető, és a *második* művelet
+elbukott volna rajta. A felismerés ezért a lap **összes sorából** dolgozik:
+
+1. a kattintott sorral **vízszintesen fedő** sorok (hasábszűrés — hasábos lapon a másik
+   hasáb sorai alapvonal szerint közéjük keverednének),
+2. az alapvonal-távolság becslése a szomszédokból, **`PARA_MAX_GAP`-pel sapkázva** (a
+   betűméret háromszorosánál nagyobb távolság már nem sortávolság, hanem bekezdések
+   közti térköz — e nélkül az egysoros bekezdés összevonódott a következővel),
+3. futam a távolság- és mérettartó sorokból → ebből becsüljük a **hasáb** jobb szélét,
+4. vágás ott, ahol egy sor **bekezdést zár**: a hasáb `PARA_RAGGED` (0,65) részénél
+   hamarabb ér véget.
+
+A 4. pont küszöbét mérés adta: ugyanazon a bekezdésen a belső sorok a hasáb 82–100%-áig
+érnek (a magyar szavak hossza miatt), a valódi utolsó sor 36%-ig.
+
+Ismert korlát: a bekezdés **jobb széle a leghosszabb soráé**, nem a valódi hasábé. Ha
+minden sor rövid, a hasáb szűkebbnek látszik — a „Behúzás jobb” mezővel igazítható.
+Ezért ad `guess_align` **legalább három sor** alatt mindig „balra”: a jobb szél magukból
+a sorokból jön, így a leghosszabb sor definíció szerint a jobb szélen van, és két sornál
+a balra zárt bekezdés is sorkizártnak látszana.
+
+### 19.6 Két út: eltolás és újratördelés
+
+| művelet | út | vegyes formázás |
+|---|---|---|
+| igazítás (balra / közép / jobbra / **sorkizárt**), sortávolság, térköz, szín, aláhúzás | **eltolás**: a sortörések és a szavak maradnak | **megmarad** (szavanként a saját betűjével írunk újra) |
+| betűméret, betűcsalád, félkövér, dőlt, behúzás, a szöveg átírása | **újratördelés** | **elveszik** → vegyes bekezdésnél jóváhagyást kér |
+
+A sorkizárás mindkét úton elérhető: alapból eltolással, az „Újratördelés” jelölővel a
+szebb, egyenletesebb változat.
+
+A sorkizárás őre **nem a hézag nagyságát korlátozza** (ez volt a terv első változata),
+hanem a sor kitöltöttségét: `JUSTIFY_MIN_FILL = 0,6`. Mérés indokolta — egy hosszú magyar
+szó („Társadalombiztosítási”, 10,5 pt-on ~100 pt) legitim lyukat hagy a sor végén, amit a
+Word is megnyújt; a 4× hézagkorlát ezt tévesen elutasította, és a bekezdés közepén hagyott
+egy balra zárt sort. A kitöltési arány viszont jól elválasztja a valódi bekezdésvéget
+(36%) a hosszú szó okozta lyuktól (82%).
+
+### 19.7 A felület
+
+Új eszköz a rádiócsoportban: **Bekezdés formázása**. A panel a „Kijelölt mező” panel
+helyén jelenik meg, és az „Új szöveg” betűválasztó (a Szöveg eszközé) a többi módban
+elrejtőzik.
+
+Ez **nem volt elég**: méréssel 740 px-es ablakban **110 px hiányzott**. Két lépés oldotta meg:
+
+- a **bal panel görgethetővé** vált (vászon + görgetősáv, a sáv csak ha kell — az
+  Összeállító típuspalettájának mintájára, 17.2). Két buktató: packkel a kiterjedő vászon
+  elvette a görgetősáv helyét, ezért **grid** kell; és a téma sávja 1 px szélességet kér,
+  ezért `sticky="nsew"` kell, különben 1 px-esen jelenik meg;
+- a **gombsor (Bekezdés szövege… / Alkalmaz) a görgethető részen kívülre**, fix alsó
+  sávba került — az Alkalmazért ne kelljen görgetni.
+
+A vásznon a felismert bekezdés szaggatott keretet kap, a jobb szélét függőleges vonal
+jelzi. A panel a kijelöléskor a bekezdés mai értékeivel töltődik ki, és minden művelet
+után újra — így a következő művelet különbsége jól mérhető. Formázás után a bekezdést a
+kattintás pontjából ismerjük fel újra; ha az elmozdult sorok miatt a pont két sor közé
+esne, a `_repara` a bekezdés sávjában több ponton próbálkozik, hogy a kijelölés megmaradjon.
+
+### 19.8 Amit a megvalósítás mért, és a terven módosított
+
+| felfedezés | következmény |
+|---|---|
+| a beágyazott Identity-H részhalmaz `text_length`-e 17%-ot téved, `has_glyph`-je minden karakterre hamis | a formázás rendszerbetűvel mér; a `span_font` (16.2) beágyazott-betű útja ilyen lapon amúgy is mindig elbukik |
+| **az Arial Bold nem ismeri a nem-törő kötőjelet (U+2010)** — a magyar iratok cégjegyzékszáma és címe használja; a karakter csendben eltűnt a lapról | második kapu: karakterfedés-vizsgálat a `para_font_error`-ban |
+| a MuPDF a formázott bekezdést soronként külön blokkba teszi | a felismerés nem blokkalapú (19.5) |
+| egysoros bekezdésnél a távolságbecslés a következő bekezdésig mért | `PARA_MAX_GAP` sapka |
+| a 4× hézagkorlát legitim hosszú-szavas sorokat utasított el | `JUSTIFY_MIN_FILL` |
+| a `pymupdf.Font("helv")` **NimbusSans**-ként ágyazódik be | `FONT_ALIAS`-ba került, különben a szerkesztő saját szövegét sem lehetne formázni |
+| fájl nélkül az Űrlapmező eszközre váltva a `_draw_fields` elszállt (régi hiba) | egysoros őr, a `_page() is None` ágra |
+
+### 19.9 Szándékos egyszerűsítések
+
+- **Elválasztás nincs**: újratördelésnél a szavak egészben mozognak.
+- **A térköz nem tördeli újra a lapot**: a bekezdés eltolódik, a lap többi tartalma nem
+  mozdul. Ezért a panelon „Térköz előtte” van, „utána” nincs — az e nélkül semmit nem
+  csinálna. Ütközésre a keret és az azonnal látható eredmény figyelmeztet.
+- A kiírt szöveg a **tartalomfolyam végére** kerül, ezért a nyers kinyerési sorrend
+  változik; a geometriai olvasási sorrend (`get_text(sort=True)`) és a megjelenés nem.
+  Ez a szerkesztő régi tulajdonsága (`rewrite_span`, `add_text`), nem új.
+- **Times New Roman**: a `;` a szövegrétegből U+037E-ként (görög kérdőjel, vizuálisan
+  azonos) jön vissza. Csak akkor fordul elő, ha a felhasználó erre a családra vált.
+- A sorok szóközei a formázás után **egységesek** lesznek (a dupla szóköz összevonódik).
+- Forgatott lapot (`/Rotate`) a szerkesztő most sem kezel, jobbról balra író szöveget sem.
+- Az aláhúzás rajzolt vonal: a PDF-ben nincs „aláhúzott szöveg”.
+- Hasábos lapon a bekezdés a vízszintes fedés alapján marad egy hasábban; külön
+  hasábfelismerés nincs.
+
+### 19.10 Ellenőrzés
+
+Önteszt **254/254** (új: BEKEZDÉS, 52 ellenőrzés — felismerés, a két tiszta függvény, mind
+a tizenegy művelet, vegyes formázás, a két kapu), GUI **151/151** (új: BEKEZDÉS, 11
+ellenőrzés valódi egéreseményekkel: kijelölés, panel-előtöltés, keret, sorkizárás,
+második művelet ugyanazon a bekezdésen, Ctrl+Z, eszközváltás, mentés), verzió, frissítő
+zöld. Valódi iraton mérve (`DocGen/pdf-sablonok/TAJ-meghatalmazás.pdf`): a 7 soros
+bekezdés sorkizárása után minden sor 533,0–533,3-ig ér (cél 533,57), a szöveg
+karakterre azonos, a rajzok száma változatlan.
+
+Felületfotó: `python tools/ui-kep.py 6 bekezdes.png`.

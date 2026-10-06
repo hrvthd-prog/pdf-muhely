@@ -16,7 +16,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva. **Oldalanként** módban egy többoldalas köteget oldalanként osztasz szét több dolgozó között |
 | **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
-| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, új szöveg és X, **űrlapmezők** (DocGen-sablon), kitakarás |
+| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, új szöveg és X, **bekezdés-formázás** (sorkizárás, sortávolság, betű, behúzás), **űrlapmezők** (DocGen-sablon), kitakarás |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
 
 A program **megjegyzi** az utoljára használt munkamappát, a mellékletek
@@ -36,11 +36,29 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
 ## Szerkesztés: kész PDF javítása, DocGen-sablon készítése
 
 *Eszközök → Szerkesztés*, vagy az Áttekintőben jobb klikk egy cellán →
-**✎ Szerkesztés: <fájl>**. Három eszköz:
+**✎ Szerkesztés: <fájl>**. Négy eszköz:
 
 - **Szöveg és X** — kattints egy szövegre: a beírómezőben átírhatod, a régi szöveg
   *ténylegesen* törlődik (nem csak letakarva), az új ugyanoda, ugyanakkora betűvel
   kerül. Üres helyre kattintva új szöveg (a cellához igazítva); jelölőnégyzetbe: X be/ki.
+- **Bekezdés formázása** — vektoros (nem szkennelt) PDF-en. Kattints egy bekezdésre:
+  szaggatott keret jelzi, mire fog hatni, a panel pedig a bekezdés mai értékeivel
+  töltődik ki. Beállítható az **igazítás** (balra / középre / jobbra / **sorkizárt**),
+  a **sortávolság** (kézzel vagy 1,15× / 1,5× / 2× gombbal), a **térköz előtte**, a
+  **betű** (család, méret, félkövér, dőlt, aláhúzott, szín), a **behúzás**
+  (bal / jobb / első sor), és a *Bekezdés szövege…* gombbal az egész bekezdés
+  szövege átírható. Végül **Alkalmaz**.
+
+  Alapból a **sortörések nem változnak** — a sorkizárás csak a szóközöket nyújtja, így
+  a lap tördelése biztosan nem csúszik el, és a bekezdésen belüli félkövér/dőlt szavak
+  is megmaradnak. Az *Újratördelés* jelölővel a program újratördeli a bekezdést
+  (szebb, egyenletesebb szóközök, de a sortörések és a kiemelések változhatnak —
+  vegyes formázású bekezdésnél ezért rákérdez).
+
+  Ha a bekezdés betűje nincs meg a gépen, vagy a választott betűből hiányzik egy
+  karakter (az Arial Bold például nem ismeri a magyar iratokban használt nem-törő
+  kötőjelet), a program **nem formáz át**, hanem megmondja, mi a baj — a csendes
+  betűcsere láthatóan elrontaná a lapot.
 - **Űrlapmező** — ezzel készül a **DocGen PDF-sablonja**: kattints a cellába, és add
   meg a mező nevét, ami a DocGen-jelölő (pl. `surname`, `Neme=male`,
   `{postal_code} {locality}`). Több kis cellán át húzva betűnkénti mezők lesznek
@@ -53,7 +71,7 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
 Minden lépés visszavonható (Ctrl+Z) a mentésig. A **Mentés** helyben ír; az előző
 példány a dolgozó `.eredeti\` mappájába kerül, a bélyeg megmarad, és az Áttekintőből
 nyitott fájlnál naplósor is készül. Forgatott lapot a szerkesztő nem kezel.
-Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet.
+Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet; a bekezdés-formázásé a 19.
 
 ## A felület
 

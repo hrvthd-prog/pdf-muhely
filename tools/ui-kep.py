@@ -7,6 +7,7 @@ működést méri, a megjelenést nem.
     python tools/ui-kep.py 3 eszkozok.png        # 3: Eszközök (Arckép elhelyezés)
     python tools/ui-kep.py 4 ellenorzes.png      # 4: az Ellenőrzés dialógus
     python tools/ui-kep.py 5 szerkesztes.png     # 5: Eszközök → Szerkesztés (mező mód)
+    python tools/ui-kep.py 6 bekezdes.png        # 6: Szerkesztés → Bekezdés formázása
 
 A valódi beállításfájlokhoz nem nyúl: a script_dir-t ideiglenes mappára irányítja.
 """
@@ -97,6 +98,33 @@ if tab_i == 5:                                  # Eszközök: Szerkesztés, mez�
     ed.open_file(sp)
     ed.mode.set("field")
     ed._mode_changed()
+if tab_i == 6:                                  # Szerkesztés: Bekezdés formázása
+    d = P.open()
+    pg = d.new_page(width=595, height=842)
+    FN, FB = pm.edit_font("Calibri"), pm.edit_font("Calibri", True)
+    pm.add_text(pg, (60, 100), "NYILATKOZAT A SZÁLLÁSHELY VÁLTOZATLANSÁGÁRÓL", FB, 12)
+    PAR = ("Alulírott munkavállaló kijelentem, hogy a bejelentett magyarországi "
+           "szálláshelyem a kérelem benyújtása óta változatlan maradt, és az ott "
+           "megadott adataim a valóságnak minden tekintetben megfelelnek. A "
+           "szálláshely címe, a befogadó nyilatkozata és a bérleti jogviszony "
+           "időtartama a benyújtott iratokkal egyezik.").split()
+    wd = [FN.text_length(w, 10.5) for w in PAR]
+    spw = FN.text_length(" ", 10.5)
+    for r, row in enumerate(pm.wrap_words(wd, spw, 460.0)):
+        for i, x in zip(row, pm.line_positions([wd[i] for i in row], 60.0, 520.0,
+                                               spw, "left")):
+            pm.add_text(pg, (x, 150 + r * 14), PAR[i], FN, 10.5)
+    sp = os.path.join(TMP, "nyilatkozat.pdf")
+    d.save(sp)
+    d.close()
+    ed = app.tabs["Szerkesztés"]
+    app.show(ed)
+    app.update()
+    ed.open_file(sp)
+    ed.mode.set("para")
+    ed._mode_changed()
+    app.update()
+    ed._para_click(ed.doc[0], 200, 149)         # a bekezdés kijelölve, kerettel
 if tab_i == 4:                                  # dialógus: Ellenőrzés
     app.show(app.tabs["Áttekintő"])
     app.update()

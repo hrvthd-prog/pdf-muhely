@@ -1072,6 +1072,19 @@ try:
     sh.commit()
     pm.add_text(pg, (55, 114), "Régi szöveg", P.Font("helv"), 10)
     pm.add_text(pg, (60, 300), "Kitakarandó", P.Font("helv"), 10)
+    # Négysoros balra zárt bekezdés a Bekezdés eszköz próbájához (hasáb: 60..520).
+    FN = pm.edit_font("Calibri")
+    PAR = ("Alulírott munkavállaló kijelentem, hogy a bejelentett magyarországi "
+           "szálláshelyem a kérelem benyújtása óta változatlan maradt, és az ott "
+           "megadott adataim a valóságnak minden tekintetben megfelelnek. A "
+           "szálláshely címe és a bérleti jogviszony időtartama az iratokkal "
+           "egyezik, azokat időközben nem módosítottuk.").split()
+    _wd = [FN.text_length(w, 10.5) for w in PAR]
+    _sp = FN.text_length(" ", 10.5)
+    for _r, _row in enumerate(pm.wrap_words(_wd, _sp, 460.0)):
+        _xs = pm.line_positions([_wd[i] for i in _row], 60.0, 520.0, _sp, "left")
+        for _i, _x in zip(_row, _xs):
+            pm.add_text(pg, (_x, 400 + _r * 14), PAR[_i], FN, 10.5)
     d.set_metadata({"keywords": "pdf-muhely=1;dolgozo=Kiss Anna;hely=02_Feltoltheto"})
     d.save(szp)
     d.close()
@@ -1150,6 +1163,57 @@ try:
     pump(0.2)
     ck("Ctrl+Z: a kitakarás előtti állapot", "Kitakarandó" in ed.doc[0].get_text())
 
+    print("BEKEZDÉS")
+    ed.mode.set("para")
+    ed._mode_changed()
+    pump(0.2)
+    ck("Bekezdés eszköz: a bekezdéspanel látszik, a mezőpanel nem",
+       ed.parabox.winfo_ismapped() and not ed.fieldbox.winfo_ismapped())
+    katt(200, 399)
+    pr = ed.para
+    ck("kattintásra felismeri a négysoros bekezdést",
+       pr is not None and len(pr["lines"]) == 4, None if pr is None else len(pr["lines"]))
+    ck("a panel a bekezdés mai értékeivel töltődött ki",
+       ed.p_align.get() == "left" and abs(ed.p_gap.get() - 14) < 0.5
+       and abs(ed.p_size.get() - 10.5) < 0.1 and ed.p_family.get() == "Calibri",
+       (ed.p_align.get(), ed.p_gap.get(), ed.p_size.get(), ed.p_family.get()))
+    ck("a vásznon ott a bekezdés kerete", bool(c.find_withtag("para")))
+    R = pr["right"]
+    ed.p_align.set("justify")
+    ed._apply_para()
+    pump(0.3)
+    ck("Alkalmaz után a dokumentum módosított", ed.dirty)
+    q = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("sorkizárt: minden sor a jobb szélen, az utolsó kivételével",
+       q is not None and len(q["lines"]) == 4
+       and all(abs(ln["bbox"][2] - R) < 0.6 for ln in q["lines"][:-1]),
+       None if q is None else [round(ln["bbox"][2], 1) for ln in q["lines"]])
+    ck("a bekezdés szövege változatlan", pm.para_text(q).split() == PAR)
+    ck("a kijelölés a formázás után is megvan (jöhet a következő művelet)",
+       ed.para is not None and len(ed.para["lines"]) == 4)
+    ed.p_gap.set(21.0)
+    ed._apply_para()
+    pump(0.3)
+    q2 = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("második művelet ugyanazon a bekezdésen: sortávolság 1,5×",
+       q2 is not None and abs(q2["gap"] - 21) < 0.5 and len(q2["lines"]) == 4,
+       None if q2 is None else (round(q2["gap"], 1), len(q2["lines"])))
+    c.focus_force()
+    pump(0.1)
+    c.event_generate("<Control-z>")
+    pump(0.3)
+    q3 = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("Ctrl+Z: a sortávolság visszaállt, a sorkizárás megmaradt",
+       q3 is not None and abs(q3["gap"] - 14) < 0.5
+       and all(abs(ln["bbox"][2] - R) < 0.6 for ln in q3["lines"][:-1]),
+       None if q3 is None else round(q3["gap"], 1))
+    ed.mode.set("text")
+    ed._mode_changed()
+    pump(0.2)
+    ck("eszközváltás: a mezőpanel visszajött, a keret eltűnt",
+       ed.fieldbox.winfo_ismapped() and not ed.parabox.winfo_ismapped()
+       and not c.find_withtag("para") and ed.para is None)
+
     ed.upper.set(True)
     ed._upper_changed()
     pump(0.2)
@@ -1160,8 +1224,12 @@ try:
     ok = ("Kőműves Győző" in d[0].get_text() and
           sum(1 for _ in d[0].widgets()) == 4 and
           "dolgozo=Kiss Anna" in (d.metadata.get("keywords") or "") and pm.get_upper(d))
+    qs = pm.paragraph_at(d[0], 200, 399)
+    ok_par = (qs is not None and len(qs["lines"]) == 4
+              and all(abs(ln["bbox"][2] - R) < 0.6 for ln in qs["lines"][:-1]))
     d.close()
     ck("mentés helyben: a szöveg, a mezők és a bélyeg is megvan", ok)
+    ck("a sorkizárt bekezdés a mentett fájlban is sorkizárt", ok_par)
     ck("az előző példány a dolgozó .eredeti\\ mappájában",
        os.path.exists(os.path.join(anna, pm.BACKUP_DIR, "Kiss Anna TAJ-megrendelő.pdf")))
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:

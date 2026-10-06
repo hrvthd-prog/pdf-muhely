@@ -29,7 +29,7 @@ import traceback
 import subprocess
 import unicodedata
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 from tkinter import font as tkfont
 from dataclasses import dataclass, field, asdict
 
@@ -1420,14 +1420,55 @@ class RasterTab(ttk.Frame):
 
 EDIT_FONTS = {"Helvetica": None, "Calibri": "calibri.ttf", "Arial": "arial.ttf",
               "Times New Roman": "times.ttf"}
+# A négy betűváltozat fájlja: sima, félkövér, dőlt, félkövér dőlt. A Helveticának
+# nincs fájlja: a PDF beépített base14 neveit használjuk (HELV14).
+EDIT_VARIANTS = {
+    "Calibri":         ("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf"),
+    "Arial":           ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
+    "Times New Roman": ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
+}
+HELV14 = ("helv", "hebo", "heit", "hebi")
+# A PDF-betűnév nem mindig a család neve; a gyakori végződéseket névvel oldjuk fel.
+# A „NimbusSans” a beépített Helvetica beágyazott neve (a PyMuPDF ezt teszi a lapra a
+# `helv` betűnél) — ugyanazzal a metrikával mérhető vissza, ezért pontos. A NimbusRoman
+# és a NimbusMonoPS szándékosan NEM szerepel: azokat a rendszer Times-ával mérnénk, ami
+# más szélességeket adna. Ismeretlen családnál a formázás inkább megtagadja magát, mint
+# hogy rossz szélességgel írjon (szerkeszto-terv.md 19.2).
+FONT_ALIAS = {"arialmt": "Arial", "timesnewromanpsmt": "Times New Roman",
+              "timesnewromanps": "Times New Roman", "nimbussans": "Helvetica"}
 LINE_MAX = 1.6            # ennél vékonyabb kitöltött téglalap vonalnak számít (pt)
 SNAP_MAX = 60             # a kattintástól legfeljebb ennyire keresünk vonalat (pt)
 BOX_MIN, BOX_MAX = 6, 16  # a jelölőnégyzet oldala (pt)
 UNDERLINE_H = 14          # aláhúzásos rovat: ilyen magas sáv a vonal fölött
 
+# ── bekezdés-formázás (szerkeszto-terv.md 19.) ──────────────────────────────
+PARA_GAP_TOL = 0.25       # az alapvonal-távolság ennyivel térhet el a mediántól
+PARA_SIZE_TOL = 0.3       # a betűméret eltérése egy bekezdésen belül (pt)
+# A betűméret ennyiszeresénél nagyobb alapvonal-távolság már nem sortávolság, hanem
+# bekezdések közti térköz. Egysoros bekezdésnél ez a kapu kell: ott nincs saját
+# sortávolság, és a becslés a KÖVETKEZŐ bekezdésig mérne, összevonva a kettőt.
+PARA_MAX_GAP = 3.0
+# A sor bekezdést zár, ha a hasáb szélességének ennyi részét sem éri el. Mérve a
+# TAJ-meghatalmazás 7 soros bekezdésén: a belső sorok 88–100%-ig érnek, a valódi
+# utolsó sor 36%-ig — a kettő között bőven van hely (szerkeszto-terv.md 19.5).
+PARA_RAGGED = 0.65
+# Sorkizártnál csak azt a sort nyújtjuk, amelyik a hasáb ennyi részét kitölti. Nem a
+# hézag nagyságát korlátozzuk: egy hosszú magyar szó („Társadalombiztosítási”, 10,5
+# pt-on ~100 pt) legitim lyukat hagy a sor végén, amit a Word is megnyújt. A mért
+# értékek ugyanazon a bekezdésen: belső sorok 82–100%, a valódi utolsó sor 36%.
+JUSTIFY_MIN_FILL = 0.6
+PARA_ALIGNS = (("left", "Balra"), ("center", "Középre"), ("right", "Jobbra"),
+               ("justify", "Sorkizárt"))
+UNCHANGED = "(változatlan)"   # a betűcsalád-lista első eleme: ne nyúljunk a betűhöz
 
-def _font_path(name: str) -> str:
-    f = EDIT_FONTS.get(name)
+
+def _font_idx(bold: bool, italic: bool) -> int:
+    return (2 if italic else 0) + (1 if bold else 0)
+
+
+def _font_path(name: str, bold: bool = False, italic: bool = False) -> str:
+    v = EDIT_VARIANTS.get(name)
+    f = v[_font_idx(bold, italic)] if v else EDIT_FONTS.get(name)
     return os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", f) if f else ""
 
 
@@ -1436,9 +1477,11 @@ def edit_fonts() -> list:
     return [n for n in EDIT_FONTS if not EDIT_FONTS[n] or os.path.exists(_font_path(n))]
 
 
-def edit_font(name: str) -> "pymupdf.Font":
-    p = _font_path(name)
-    return pymupdf.Font(fontfile=p) if p and os.path.exists(p) else pymupdf.Font("helv")
+def edit_font(name: str, bold: bool = False, italic: bool = False) -> "pymupdf.Font":
+    p = _font_path(name, bold, italic)
+    if p and os.path.exists(p):
+        return pymupdf.Font(fontfile=p)
+    return pymupdf.Font(HELV14[_font_idx(bold, italic)])
 
 
 def page_lines(drawings) -> tuple:
@@ -1568,9 +1611,11 @@ def add_text(page, origin, text: str, font, size: float, color=(0, 0, 0)):
     tw.write_text(page)
 
 
-def _redact(page, rect, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
+def _redact(page, rects, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE):
-    page.add_redact_annot(rect, fill=fill)
+    """Egy téglalap vagy több: az alkalmazás egyszer fut (a lap tartalmát írja újra)."""
+    for r in [rects] if isinstance(rects, pymupdf.Rect) else rects:
+        page.add_redact_annot(r, fill=fill)
     page.apply_redactions(images=images, graphics=graphics)
 
 
@@ -1662,6 +1707,349 @@ def field_name_error(name: str) -> str:
     return ""
 
 
+# ── bekezdés-formázás (szerkeszto-terv.md 19.) ──────────────────────────────
+def span_style(span) -> tuple:
+    """A span stílusa: (betűcsalád, félkövér, dőlt). A családot a PDF-betűnévből
+    olvassuk (a `ABCDEF+` részhalmaz-előtag és a stílusvégződés levágva), a
+    vastagságot és a dőlést a MuPDF már kiszámolt flagjeiből. A család None, ha
+    nincs hozzá rendszerbetűnk."""
+    name = span["font"].split("+")[-1].split(",")[0].split("-")[0]
+    key = name.lower().replace(" ", "")
+    fam = FONT_ALIAS.get(key) or next(
+        (f for f in EDIT_FONTS if f.lower().replace(" ", "") == key), None)
+    return fam, bool(span["flags"] & 16), bool(span["flags"] & 2)
+
+
+def style_font(span):
+    """A span stílusához tartozó betű (rendszerbetű, Helveticánál a PDF beépítettje),
+    vagy None, ha a családot nem tudjuk pontosan mérni. A beágyazott betűt szándékosan
+    nem használjuk: Identity-H cmap-pel a has_glyph minden karakterre hamis, a
+    text_length pedig 17%-ot téved — mérve a TAJ-meghatalmazáson (19.2)."""
+    fam, b, i = span_style(span)
+    if not fam:
+        return None
+    p = _font_path(fam, b, i)
+    return edit_font(fam, b, i) if not p or os.path.exists(p) else None
+
+
+def line_words(line) -> list:
+    """A sor szavai: [[(részszöveg, span), …], …]. Egy szó több span-ból is állhat
+    (félkövér szótag a szó közepén), ezért részenként tartjuk meg a stílust — így
+    marad meg a vegyes formázás az eltolásos úton."""
+    out, cur = [], []
+    for s in line["spans"]:
+        for c in s["text"]:
+            if c.isspace():
+                if cur:
+                    out.append(cur)
+                    cur = []
+            elif cur and cur[-1][1] is s:
+                cur[-1] = (cur[-1][0] + c, s)
+            else:
+                cur.append((c, s))
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _baseline(line) -> float:
+    return line["spans"][0]["origin"][1]
+
+
+def _line_size(line) -> float:
+    return max(s["size"] for s in line["spans"])
+
+
+def text_lines(page) -> list:
+    """A lap összes szövegsora alapvonal szerint rendezve. Szándékosan NEM a MuPDF
+    szövegblokkjait használjuk: formázás után a MuPDF ugyanazt a bekezdést soronként
+    külön blokkba teszi (mérve: 1,5-es sortávolságnál mind a 7 sor külön blokk lett),
+    így a bekezdés nem lenne újra felismerhető, és a második művelet elbukna rajta."""
+    return sorted((ln for b in page.get_text("dict")["blocks"] for ln in b.get("lines", [])
+                   if any(s["text"].strip() for s in ln["spans"])), key=_baseline)
+
+
+def _overlaps(a, b) -> bool:
+    """Két sor egy hasábban van-e: fedik-e egymást vízszintesen."""
+    return min(a["bbox"][2], b["bbox"][2]) > max(a["bbox"][0], b["bbox"][0])
+
+
+def paragraph_at(page, x: float, y: float):
+    """A pontot tartalmazó bekezdés. A kattintott sorral egy hasábban lévő sorokat
+    addig fűzzük össze, amíg az alapvonal-távolság a bekezdés távolságának
+    ±PARA_GAP_TOL-ján belül van és a betűméret ugyanaz; a futamot aztán ott vágjuk,
+    ahol egy sor bekezdést zár (a hasáb PARA_RAGGED részénél hamarabb véget ér).
+    -> szótár, vagy None, ha a pont nem szövegen van."""
+    allp = text_lines(page)
+    i = None
+    for k, ln in enumerate(allp):
+        b = ln["bbox"]
+        if (b[0] - 2 <= x <= b[2] + 2 and b[1] - 2 <= y <= b[3] + 2
+                and (i is None or abs(_baseline(ln) - y) < abs(_baseline(allp[i]) - y))):
+            i = k
+    if i is None:
+        return None
+    # Csak a kattintott sorral egy hasábban lévő sorok: hasábos lapon a másik hasáb
+    # sorai alapvonal szerint közéjük keverednének, és elvágnák a bekezdést.
+    hit = allp[i]
+    lines = [ln for ln in allp if _overlaps(ln, hit)]
+    i = lines.index(hit)
+
+    def fits(a, b, gap) -> bool:
+        return (abs(_line_size(b) - _line_size(a)) <= PARA_SIZE_TOL
+                and abs((_baseline(b) - _baseline(a)) - gap) <= gap * PARA_GAP_TOL)
+
+    def gap_to(d):
+        j = i + d
+        return (abs(_baseline(lines[j]) - _baseline(hit)) if 0 <= j < len(lines)
+                and abs(_line_size(lines[j]) - _line_size(hit)) <= PARA_SIZE_TOL else None)
+
+    big = _line_size(hit) * PARA_MAX_GAP
+    cand = [g for g in (gap_to(-1), gap_to(1)) if g and g <= big]
+    gap = min(cand) if cand else _line_size(hit) * 1.2
+    # Első kör: a méret- és távolságtartó futam — ebből becsüljük a hasáb jobb szélét.
+    lo = hi = i
+    while lo > 0 and fits(lines[lo - 1], lines[lo], gap):
+        lo -= 1
+    while hi < len(lines) - 1 and fits(lines[hi], lines[hi + 1], gap):
+        hi += 1
+    col = max(lines[k]["bbox"][2] for k in range(lo, hi + 1))
+
+    def closes(ln) -> bool:            # rövid sor: itt ért véget a bekezdés
+        b = ln["bbox"]
+        return b[2] - b[0] < (col - b[0]) * PARA_RAGGED
+
+    a = b = i                          # Második kör: vágás a bekezdést záró sorokon
+    while a > lo and not closes(lines[a - 1]):
+        a -= 1
+    while b < hi and not closes(lines[b]):
+        b += 1
+    ls = lines[a:b + 1]
+    bases = [_baseline(ln) for ln in ls]
+    gaps = sorted(q - p for p, q in zip(bases, bases[1:]))
+    # A bal szél a nem-első sorokból: így az első sor behúzása nem rontja el.
+    left = min(ln["bbox"][0] for ln in ls[1:]) if len(ls) > 1 else ls[0]["bbox"][0]
+    styles = {(s["font"], round(s["size"], 1)) for ln in ls for s in ln["spans"]}
+    bb = [ln["bbox"] for ln in ls]
+    return {"lines": ls, "words": [line_words(ln) for ln in ls],
+            "left": left, "right": max(q[2] for q in bb),
+            "gap": gaps[len(gaps) // 2] if gaps else gap,
+            "indent": ls[0]["bbox"][0] - left, "size": _line_size(ls[0]),
+            "mixed": len(styles) > 1,
+            "bbox": pymupdf.Rect(min(q[0] for q in bb), min(q[1] for q in bb),
+                                 max(q[2] for q in bb), max(q[3] for q in bb))}
+
+
+def guess_align(para) -> str:
+    """A bekezdés mai igazítása a sorok széleiből — csak a panel előtöltéséhez, a
+    felhasználó felülírhatja.
+
+    Legalább három sor kell hozzá. A bekezdés jobb széle ugyanis magukból a soraiból
+    jön, így a leghosszabb sor MINDIG a jobb szélen van: két sornál az egyetlen
+    vizsgálható sor (az utolsó előtti) éppen ez lehet, és a balra zárt bekezdés is
+    sorkizártnak látszana. Kevés sornál ezért „left” — az nem változtat semmit, ha a
+    felhasználó nem állítja át."""
+    ls = para["lines"]
+    if len(ls) < 3:
+        return "left"
+    body, L, R = ls[:-1], para["left"], para["right"]   # az utolsó sor mindig rövid
+    tol = para["size"] * 0.3
+    if all(abs(ln["bbox"][2] - R) <= tol for ln in body):
+        return "justify" if all(abs(ln["bbox"][0] - L) <= tol for ln in body) else "right"
+    if all(abs((ln["bbox"][0] + ln["bbox"][2]) / 2 - (L + R) / 2) <= tol for ln in body):
+        return "center"
+    return "left"
+
+
+def line_positions(widths, x0: float, x1: float, space_w: float, align: str,
+                   last: bool = False) -> list:
+    """Egy sor szavainak kezdő x-pozíciói — tiszta függvény. Sorkizártnál a szóközök
+    nyúlnak, hogy az utolsó szó a jobb szélen érjen véget; az utolsó sort és az
+    egyszavas sort nem nyújtjuk. Üres lista: a sort nem szabad sorkizárttá tenni."""
+    n = len(widths)
+    if not n:
+        return []
+    total, gap = sum(widths), space_w
+    if align == "justify" and not last and n > 1:
+        gap = (x1 - x0 - total) / (n - 1)
+        if total < (x1 - x0) * JUSTIFY_MIN_FILL or gap < space_w * 0.5:
+            return []                  # félreismert bekezdésvég vagy túltömött sor
+    span = total + gap * (n - 1)
+    x = x0 if align in ("left", "justify") else (
+        x1 - span if align == "right" else (x0 + x1 - span) / 2)
+    out = []
+    for w in widths:
+        out.append(x)
+        x += w + gap
+    return out
+
+
+def wrap_words(widths, space_w: float, width: float, first_width: float = None) -> list:
+    """Tördelés: a szavak indexei sorokra osztva. Az első sor szélessége külön adható
+    meg (első sor behúzása). Elválasztás nincs — a szó egészben mozog (19.8)."""
+    out, cur, x = [], [], 0.0
+    for i, w in enumerate(widths):
+        lim = width if out else (width if first_width is None else first_width)
+        add = w + (space_w if cur else 0)
+        if cur and x + add > lim:
+            out.append(cur)
+            cur, x, add = [], 0.0, w
+        cur.append(i)
+        x += add
+    if cur:
+        out.append(cur)
+    return out
+
+
+# Ezek a kulcsok újratördelést kényszerítenek: a szóhatárok megváltoznak, ezért a
+# bekezdésen belüli vegyes formázás nem tartható meg (szerkeszto-terv.md 19.6).
+REFLOW_KEYS = ("family", "size", "bold", "italic", "text",
+               "indent_left", "indent_right", "indent_first")
+
+
+def para_reflows(fmt: dict) -> bool:
+    return bool(fmt.get("reflow")) or any(k in fmt for k in REFLOW_KEYS)
+
+
+def para_text(para) -> str:
+    """A bekezdés szövege egy sorban, a sorokat szóközzel fűzve. Az elválasztást nem
+    oldjuk fel: a kötőjeles sorvég kötőjellel marad (szerkeszto-terv.md 19.8)."""
+    return " ".join(" ".join("".join(t for t, _ in w) for w in ln) for ln in para["words"])
+
+
+def _font_jobs(para, fmt: dict) -> list:
+    """(betű, szöveg) párok, amiket a kiírás tényleg használni fog — ebből derül ki,
+    hogy minden karakter kirajzolható-e."""
+    fam = fmt.get("family")
+    if fam:
+        f = edit_font(fam, bool(fmt.get("bold")), bool(fmt.get("italic")))
+        return [(f, fmt.get("text", para_text(para)))]
+    if "text" in fmt:
+        return [(style_font(para["lines"][0]["spans"][0]), fmt["text"])]
+    return [(style_font(s), s["text"]) for ln in para["lines"] for s in ln["spans"]]
+
+
+def para_font_error(para, fmt: dict) -> str:
+    """Üres szöveg, ha a bekezdés formázható; különben miért nem.
+
+    Két kapu. (1) Ha a bekezdés betűcsaládja nincs meg a gépen, nem nyúlunk hozzá: a
+    beágyazott részhalmazzal nem lehet pontosan mérni, a csendes helyettesítés pedig
+    láthatóan elrontaná a lapot (mérve: 17% szélességhiba — 19.2). (2) Ha a kiírásra
+    használt betűből hiányzik egy karakter, az CSENDBEN eltűnne a lapról — az Arial
+    Bold például nem ismeri a nem-törő kötőjelet (U+2010), amit a magyar iratok
+    cégjegyzékszáma és címe használ (mérve a TAJ-meghatalmazáson)."""
+    jobs = _font_jobs(para, fmt)
+    if any(f is None for f, _ in jobs):
+        bad = sorted({span_style(s)[0] or s["font"].split("+")[-1]
+                      for ln in para["lines"] for s in ln["spans"] if style_font(s) is None})
+        return ("A bekezdés betűje nincs meg a gépen: " + ", ".join(bad) +
+                ". A formázás pontatlan lenne, ezért nem nyúlok hozzá. Válassz betűt a "
+                "Betűcsalád listából, ha mégis át akarod formázni.")
+    miss = sorted({c for f, t in jobs for c in t
+                   if not c.isspace() and not f.has_glyph(ord(c))})
+    if miss:
+        return ("A választott betűben nincs meg ez a karakter: "
+                + " ".join(f"{c} (U+{ord(c):04X})" for c in miss) +
+                ". Csendben eltűnne a lapról, ezért nem formázok át.")
+    return ""
+
+
+def para_format(doc, page, para, fmt: dict) -> str:
+    """A bekezdés formázása: a régi sorok redakcióval TÉNYLEGESEN törlődnek (a
+    vonalak és a képek maradnak), az új elrendezés a helyükre kerül. Az fmt kulcsai
+    mind elhagyhatók — csak a megváltoztatott értékeket add meg: align, reflow, gap,
+    dy, family, size, bold, italic, underline, color, indent_left, indent_right,
+    indent_first, text. -> figyelmeztetés a felhasználónak („” ha minden rendben)."""
+    err = para_font_error(para, fmt)
+    if err:
+        return err
+    align = fmt.get("align") or guess_align(para)
+    size = float(fmt.get("size") or para["size"])
+    fam = fmt.get("family")
+    uni = edit_font(fam, bool(fmt.get("bold")), bool(fmt.get("italic"))) if fam else None
+    gap = float(fmt.get("gap") or para["gap"])
+    x0 = para["left"] + float(fmt.get("indent_left", 0))
+    x1 = para["right"] - float(fmt.get("indent_right", 0))
+    first = x0 + float(fmt.get("indent_first", para["indent"]))
+    base0 = _baseline(para["lines"][0]) + float(fmt.get("dy", 0))
+    color = fmt.get("color")
+    resize = uni is not None or "size" in fmt
+
+    cache = {}
+
+    def sysfont(s):                    # egy betűfájl megnyitása szavanként drága
+        k = (s["font"], s["flags"])
+        if k not in cache:
+            cache[k] = style_font(s)
+        return cache[k]
+
+    def parts_of(w):
+        return [(t, uni or sysfont(s), size if resize else s["size"],
+                 color if color is not None else pymupdf.sRGB_to_pdf(s["color"]))
+                for t, s in w]
+
+    if "text" in fmt:                  # a bekezdés szövegének átírása
+        proto = para["lines"][0]["spans"][0]
+        rows = [[[(w, proto)] for w in fmt["text"].split()]]
+    else:
+        rows = para["words"]
+    words = [w for ln in rows for w in ln]
+    if not words:
+        return ""
+    parts = [parts_of(w) for w in words]
+    widths = [sum(f.text_length(t, sz) for t, f, sz, _ in p) for p in parts]
+    ref = parts[0][0]
+    space_w = ref[1].text_length(" ", ref[2])
+
+    if para_reflows(fmt):
+        idx = wrap_words(widths, space_w, x1 - x0, x1 - first)
+    else:
+        idx, k = [], 0
+        for ln in rows:
+            idx.append(list(range(k, k + len(ln))))
+            k += len(ln)
+
+    skipped, place, rules = 0, [], []
+    for r, row in enumerate(idx):
+        lx0 = first if r == 0 else x0
+        ws = [widths[i] for i in row]
+        xs = line_positions(ws, lx0, x1, space_w, align, last=(r == len(idx) - 1))
+        if not xs:                     # sorkizártként nem megy: balra zárva írjuk
+            xs = line_positions(ws, lx0, x1, space_w, "left")
+            skipped += 1
+        base = base0 + r * gap
+        rules.append((base, xs[0], xs[-1] + ws[-1]))
+        for i, x in zip(row, xs):
+            place.append((x, base, parts[i]))
+
+    # A régi sorok törlése: soronként, a rewrite_span 15%-os beljebb húzásával — a
+    # szomszéd sor betűi ne essenek a redakcióba (16.4).
+    _redact(page, [pymupdf.Rect(b[0], b[1] + (b[3] - b[1]) * 0.15,
+                                b[2], b[3] - (b[3] - b[1]) * 0.15)
+                   for b in (ln["bbox"] for ln in para["lines"])])
+
+    writers = {}
+    for x, base, ps in place:
+        for t, f, sz, col in ps:
+            writers.setdefault(col, pymupdf.TextWriter(page.rect)).append(
+                (x, base), t, font=f, fontsize=sz)
+            x += f.text_length(t, sz)
+    for col, w in writers.items():
+        w.write_text(page, color=col)
+    if fmt.get("underline"):           # a PDF-ben nincs „aláhúzott szöveg”: vonal
+        for base, a, b in rules:
+            y = base + size * 0.12
+            page.draw_line((a, y), (b, y), width=max(0.4, size * 0.05),
+                           color=color or (0, 0, 0))
+
+    msg = []
+    if para_reflows(fmt) and para["mixed"]:
+        msg.append("a bekezdés vegyes formázása egységes lett")
+    if skipped:
+        msg.append(f"{skipped} sor nem lett sorkizárt (a hézag túl nagy lett volna)")
+    return "; ".join(msg)
+
+
 class EditorTab(ttk.Frame):
     """Eszközök → Szerkesztés: kész PDF általános szerkesztése. Három eszköz:
     szöveg (átírás, új szöveg, X), űrlapmező (DocGen-sablon), kitakarás. Minden
@@ -1676,6 +2064,7 @@ class EditorTab(ttk.Frame):
                  "kijelölés — átnevezés, törlés (Delete).",
         "erase": "Húzd körbe a területet: a tartalma végleg törlődik (szöveg, kép, "
                  "vonal), a helye fehér lesz.",
+        "para":  "Kattints egy bekezdésre — szaggatott keret jelzi, mire fog hatni.",
     }
     UNDO_MAX = 30
 
@@ -1699,25 +2088,75 @@ class EditorTab(ttk.Frame):
         self.field_name = tk.StringVar(value="")
         self.upper = tk.BooleanVar(value=False)
         self.info = tk.StringVar(value="Válassz egy PDF-et.")
+        # -- bekezdés-formázás --
+        self.para = None                  # a kijelölt bekezdés (paragraph_at szótára)
+        self.para_pt = None               # a kattintás pontja: ide ismerjük fel újra
+        self._base = {}                   # a bekezdés értékei kijelöléskor
+        self.p_align = tk.StringVar(value="left")
+        self.p_reflow = tk.BooleanVar(value=False)
+        self.p_gap = tk.DoubleVar(value=0)
+        self.p_dy = tk.DoubleVar(value=0)
+        self.p_family = tk.StringVar(value=UNCHANGED)
+        self.p_size = tk.DoubleVar(value=0)
+        self.p_bold = tk.BooleanVar(value=False)
+        self.p_italic = tk.BooleanVar(value=False)
+        self.p_under = tk.BooleanVar(value=False)
+        self.p_il = tk.DoubleVar(value=0)
+        self.p_ir = tk.DoubleVar(value=0)
+        self.p_if = tk.DoubleVar(value=0)
+        self.p_color = None               # None: a bekezdés mai színe marad
         self._build(fonts)
 
     def _build(self, fonts):
-        left = ttk.Frame(self, width=340)
-        left.pack(side="left", fill="y", padx=8, pady=8)
-        left.pack_propagate(False)
-        self.files = FileList(left, "PDF-ek", (".pdf",), self._pick, height=4,
+        # A bal panel görgethető: a bekezdéspanellel együtt 740 px-es ablakban nem
+        # férne ki (mérve: 110 px hiányzott), és minden további sor újra elrontaná.
+        # A görgetősáv csak akkor jelenik meg, ha tényleg kell — mint az Összeállító
+        # típuspalettájánál (szerkeszto-terv.md 17.2, 19.7).
+        shell = ttk.Frame(self, width=362)
+        shell.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        shell.pack_propagate(False)
+        self.lcanvas = lc = tk.Canvas(shell, width=340, highlightthickness=0, bd=0,
+                                      background=ttk.Style().lookup("TFrame", "background"))
+        self.lsb = lsb = ttk.Scrollbar(shell, orient="vertical", command=lc.yview)
+        lc.configure(yscrollcommand=lsb.set)
+        # Griddel, nem packkel: a kiterjedő vászon elvenné a görgetősáv helyét, és az
+        # sosem jelenne meg (mérve).
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        shell.columnconfigure(1, minsize=16)      # a görgetősáv ne nyomódjon össze
+        lc.grid(row=0, column=0, sticky="nsew")
+        lsb.grid(row=0, column=1, sticky="nsew")   # a téma sávja 1 px-et kér: ki kell feszíteni
+        lsb.grid_remove()
+        left = ttk.Frame(lc)
+        lc.create_window(0, 0, anchor="nw", window=left, width=340)
+
+        def lsync(_e=None):
+            lc.configure(scrollregion=(0, 0, 340, left.winfo_reqheight()))
+            if left.winfo_reqheight() > lc.winfo_height():
+                lsb.grid()
+            else:
+                lsb.grid_remove()
+                lc.yview_moveto(0)
+        left.bind("<Configure>", lsync)
+        lc.bind("<Configure>", lsync)
+        lc.bind("<MouseWheel>", lambda e: lc.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        # A bekezdés gombsora a görgethető részen KÍVÜL, fix alsó sávban: az Alkalmaz
+        # mindig elérhető legyen, ne kelljen érte görgetni.
+        self.actionbar = ttk.Frame(shell)
+        self.actionbar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.files = FileList(left, "PDF-ek", (".pdf",), self._pick, height=3,
                               memory_key="szerkesztes")
         self.files.pack(fill="both", expand=True)
 
         m = ttk.LabelFrame(left, text="Eszköz")
         m.pack(fill="x", pady=8)
-        for txt, val in (("Szöveg és X", "text"), ("Űrlapmező (DocGen-sablon)", "field"),
-                         ("Kitakarás", "erase")):
+        for txt, val in (("Szöveg és X", "text"), ("Bekezdés formázása", "para"),
+                         ("Űrlapmező (DocGen-sablon)", "field"), ("Kitakarás", "erase")):
             ttk.Radiobutton(m, text=txt, value=val, variable=self.mode,
                             command=self._mode_changed).pack(anchor="w", padx=6, pady=1)
         self.hint = ttk.Label(m, text=self.HINTS["text"], wraplength=310, foreground="#555")
         self.hint.pack(anchor="w", padx=6, pady=(2, 4))
-        t = ttk.Frame(m)
+        self.textrow = t = ttk.Frame(m)
         t.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(t, text="Új szöveg:").pack(side="left")
         ttk.Combobox(t, textvariable=self.font_name, values=fonts, state="readonly",
@@ -1725,7 +2164,9 @@ class EditorTab(ttk.Frame):
         ttk.Spinbox(t, from_=5, to=40, increment=0.5, textvariable=self.font_size,
                     width=5).pack(side="left")
 
-        f = ttk.LabelFrame(left, text="Kijelölt mező — a neve a DocGen-jelölő")
+        # A mező- és a bekezdéspanel EGYMÁS HELYÉN jelenik meg (nem egymás alatt):
+        # 740 px-es ablakban a kettő együtt levágódna (szerkeszto-terv.md 18., 19.7).
+        self.fieldbox = f = ttk.LabelFrame(left, text="Kijelölt mező — a neve a DocGen-jelölő")
         f.pack(fill="x")
         ttk.Entry(f, textvariable=self.field_name).pack(fill="x", padx=6, pady=(6, 2))
         fr = ttk.Frame(f)
@@ -1734,6 +2175,8 @@ class EditorTab(ttk.Frame):
         ttk.Button(fr, text="Mező törlése", command=self._delete_field).pack(side="left", padx=6)
         ttk.Checkbutton(f, text="A DocGen nagybetűvel töltse ki (az egész sablont)",
                         variable=self.upper, command=self._upper_changed).pack(anchor="w", padx=6, pady=(0, 6))
+        self.parabox = self._build_para(left, fonts)
+        self.actionbar.grid_remove()
 
         # A dokumentum műveletei a vászon fölött: a bal panel így alacsony
         # képernyőn is elfér.
@@ -1779,6 +2222,64 @@ class EditorTab(ttk.Frame):
         # amúgy is megkapja a fókuszt.
         c.bind("<Control-z>", lambda e: (self._undo(), "break")[1])
 
+    def _build_para(self, left, fonts):
+        """A bekezdéspanel. A „Kijelölt mező” panel HELYÉN jelenik meg, nem alatta:
+        740 px-es ablakban a kettő együtt levágódna (szerkeszto-terv.md 19.7)."""
+        p = ttk.LabelFrame(left, text="Bekezdés formázása")
+        r = ttk.Frame(p)
+        r.pack(fill="x", padx=6, pady=(6, 0))
+        for val, txt in PARA_ALIGNS:
+            ttk.Radiobutton(r, text=txt, value=val, variable=self.p_align).pack(side="left")
+        ttk.Checkbutton(p, text="Újratördelés (a sortörések változhatnak)",
+                        variable=self.p_reflow).pack(anchor="w", padx=6)
+
+        g = ttk.Frame(p)
+        g.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Label(g, text="Sortáv.:").pack(side="left")
+        ttk.Spinbox(g, from_=1, to=200, increment=0.5, textvariable=self.p_gap,
+                    width=6).pack(side="left", padx=2)
+        # A „×1,5” a bekezdés MAI távolságát szorozza: a PDF-ben nincs „szimpla
+        # sortávolság”, amihez képest mérhetnénk.
+        for k, t in ((1.15, "1,15×"), (1.5, "1,5×"), (2.0, "2×")):
+            ttk.Button(g, text=t, width=4, command=lambda k=k: self.p_gap.set(
+                round(self._base.get("gap", 0) * k, 2))).pack(side="left", padx=1)
+
+        d = ttk.Frame(p)
+        d.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Label(d, text="Térköz előtte:").pack(side="left")
+        ttk.Spinbox(d, from_=-400, to=400, increment=1, textvariable=self.p_dy,
+                    width=6).pack(side="left", padx=2)
+        ttk.Label(d, text="pt", foreground="#555").pack(side="left")
+
+        i = ttk.Frame(p)
+        i.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Label(i, text="Behúzás b / j / első:").pack(side="left")
+        for v in (self.p_il, self.p_ir, self.p_if):
+            ttk.Spinbox(i, from_=-400, to=400, increment=2, textvariable=v,
+                        width=4).pack(side="left", padx=1)
+
+        b = ttk.Frame(p)
+        b.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Label(b, text="Betű:").pack(side="left")
+        ttk.Combobox(b, textvariable=self.p_family, values=[UNCHANGED] + fonts,
+                     state="readonly", width=13).pack(side="left", padx=2)
+        ttk.Spinbox(b, from_=4, to=72, increment=0.5, textvariable=self.p_size,
+                    width=5).pack(side="left")
+        ttk.Label(b, text="pt", foreground="#555").pack(side="left", padx=1)
+
+        s = ttk.Frame(p)
+        s.pack(fill="x", padx=6, pady=(2, 0))
+        ttk.Checkbutton(s, text="Félkövér", variable=self.p_bold).pack(side="left")
+        ttk.Checkbutton(s, text="Dőlt", variable=self.p_italic).pack(side="left", padx=4)
+        ttk.Checkbutton(s, text="Aláhúzott", variable=self.p_under).pack(side="left")
+        self.p_swatch = ttk.Button(s, text="Szín…", width=7, command=self._pick_color)
+        self.p_swatch.pack(side="right")
+
+        a = self.actionbar
+        ttk.Button(a, text="Bekezdés szövege…", command=self._edit_para_text).pack(side="left")
+        ttk.Button(a, text="Alkalmaz", command=self._apply_para).pack(side="right")
+        return p
+
     # -- fájl --
     def set_folder(self, folder):
         self.files.set_folder(folder)
@@ -1807,6 +2308,7 @@ class EditorTab(ttk.Frame):
         self.doc, self.path, self.log_parent = doc, path, log_parent
         self.page_no, self.view_zoom, self.undo, self.dirty = 0, 1.0, [], False
         self.sel_xref = None
+        self.para = self.para_pt = None
         self.field_name.set("")
         self.page_spin.configure(to=doc.page_count)
         self.page_var.set("1")
@@ -1829,6 +2331,7 @@ class EditorTab(ttk.Frame):
         except ValueError:
             return
         self.sel_xref = None
+        self.para = self.para_pt = None
         self._render()
 
     def _view_zoom(self, k):
@@ -1852,7 +2355,12 @@ class EditorTab(ttk.Frame):
         c.configure(scrollregion=(0, 0, pix.width, pix.height))
         self._dr = page.get_drawings()
         self._lines = page_lines(self._dr)
+        # A bekezdést a kattintás pontjából ismerjük fel újra: formázás és visszavonás
+        # után is a mostani laphoz tartozó szótár kell (a régi sorai már nem élnek).
+        if self.mode.get() == "para" and self.para_pt:
+            self.para = self._repara(page)
         self._draw_fields()
+        self._draw_para()
         n = sum(1 for _ in page.widgets())
         self.upper.set(get_upper(self.doc))          # visszavonás után is a dokumentumé
         self._say(f"{self.page_no + 1}/{self.doc.page_count}. oldal · {n} űrlapmező")
@@ -1861,8 +2369,8 @@ class EditorTab(ttk.Frame):
         """Mező módban a mezők kerete és neve — a PDF-ben láthatatlanok."""
         c, z = self.canvas, self.zoom
         c.delete("fld")
-        if self.mode.get() != "field":
-            return
+        if self.mode.get() != "field" or self._page() is None:
+            return                     # nyitott fájl nélkül is lehet eszközt váltani
         for w in self._page().widgets():
             r = w.rect
             sel = w.xref == self.sel_xref
@@ -1873,9 +2381,33 @@ class EditorTab(ttk.Frame):
                           font=("Segoe UI", 7), fill=UI["accent"], tags="fld")
 
     def _mode_changed(self):
-        self.hint.configure(text=self.HINTS[self.mode.get()])
+        mode = self.mode.get()
+        self.hint.configure(text=self.HINTS[mode])
         self._cancel_entry()
+        self.fieldbox.pack_forget()
+        self.parabox.pack_forget()
+        (self.parabox if mode == "para" else self.fieldbox).pack(fill="x")
+        self.actionbar.grid() if mode == "para" else self.actionbar.grid_remove()
+        # Az „Új szöveg” betűválasztó csak a Szöveg eszközé — máshol csak helyet foglal.
+        self.textrow.pack(fill="x", padx=6, pady=(0, 6)) if mode == "text"             else self.textrow.pack_forget()
+        if mode != "para":
+            self.para = self.para_pt = None
         self._draw_fields()
+        self._draw_para()
+
+    def _draw_para(self):
+        """A kijelölt bekezdés szaggatott kerete és a jobb széle: az Alkalmaz előtt
+        látszik, mire fog hatni a formázás."""
+        c, z = self.canvas, self.zoom
+        c.delete("para")
+        if self.mode.get() != "para" or not self.para:
+            return
+        r = self.para["bbox"]
+        c.create_rectangle(r.x0 * z - 2, r.y0 * z - 2, r.x1 * z + 2, r.y1 * z + 2,
+                           outline=UI["warn"], dash=(4, 2), width=2, tags="para")
+        x = self.para["right"] * z
+        c.create_line(x, r.y0 * z - 10, x, r.y1 * z + 10, fill=UI["accent"],
+                      dash=(2, 2), tags="para")
 
     # -- egér --
     def _pt(self, e):
@@ -1887,7 +2419,7 @@ class EditorTab(ttk.Frame):
         self.canvas.delete("band")
 
     def _drag(self, e):
-        if not self._press or self.mode.get() == "text":
+        if not self._press or self.mode.get() in ("text", "para"):
             return
         (x0, y0), (x1, y1), z = self._press, self._pt(e), self.zoom
         self.canvas.delete("band")
@@ -1912,6 +2444,8 @@ class EditorTab(ttk.Frame):
                 self._change(lambda: erase_area(page, rect), "Kitakarva.")
         elif mode == "field":
             self._field_drag(page, rect) if drag else self._field_click(page, x1, y1)
+        elif mode == "para":
+            self._para_click(page, x1, y1)
         else:
             self._text_click(page, x1, y1)
 
@@ -1945,6 +2479,154 @@ class EditorTab(ttk.Frame):
         self._change(lambda: own.append(rewrite_span(self.doc, page, span, text, fb)), "Átírva.")
         if own and not own[0] and text.strip():
             self._say(f"Az eredeti betűben nincs meg minden betű — {self.font_name.get()} betűvel írtam.")
+
+    # -- bekezdés --
+    def _repara(self, page):
+        """A kijelölt bekezdés újrafelismerése a mostani lapon. Formázás után a sorok
+        elmozdulhatnak (igazítás, behúzás, sortávolság, térköz), és a kattintás pontja
+        két sor közé eshet — ilyenkor a bekezdés sávjában több ponton próbálkozunk,
+        hogy a kijelölés és a keret megmaradjon a következő művelethez."""
+        p = paragraph_at(page, *self.para_pt)
+        if p is not None or not self.para:
+            return p
+        r, x = self.para["bbox"], self.para_pt[0]
+        for yy in (_baseline(self.para["lines"][0]) - 1, self.para_pt[1]):
+            for xx in (x, (r.x0 + r.x1) / 2, r.x0 + 4):
+                p = paragraph_at(page, xx, yy)
+                if p is not None:
+                    return p
+        return None
+
+    def _para_click(self, page, x, y):
+        p = paragraph_at(page, x, y)
+        if p is None:
+            self.para = self.para_pt = None
+            self._draw_para()
+            self._say("Ott nincs szöveg — kattints egy bekezdésre.")
+            return
+        self.para, self.para_pt = p, (x, y)
+        self._fill_para()
+        self._draw_para()
+        err = para_font_error(p, {})
+        self._say(f"{len(p['lines'])} soros bekezdés · {dict(PARA_ALIGNS)[guess_align(p)].lower()}"
+                  + (f" · {err}" if err else ""))
+
+    def _fill_para(self):
+        """A panel a bekezdés MAI értékeivel: ehhez mérjük, mit változtatott a
+        felhasználó — csak a megváltoztatott kulcsok mennek át a para_format-nak, így
+        a méretváltás nem kényszerít feleslegesen újratördelést."""
+        p = self.para
+        fam, bold, ital = span_style(p["lines"][0]["spans"][0])
+        self._base = {"align": guess_align(p), "gap": round(p["gap"], 2),
+                      "size": round(p["size"], 2), "family": fam or UNCHANGED,
+                      "bold": bold, "italic": ital,
+                      "il": 0.0, "ir": 0.0, "if": round(p["indent"], 1)}
+        self.p_align.set(self._base["align"])
+        self.p_gap.set(self._base["gap"])
+        self.p_size.set(self._base["size"])
+        self.p_family.set(self._base["family"])
+        self.p_bold.set(bold)
+        self.p_italic.set(ital)
+        self.p_under.set(False)
+        self.p_reflow.set(False)
+        self.p_dy.set(0)
+        self.p_il.set(0)
+        self.p_ir.set(0)
+        self.p_if.set(self._base["if"])
+        self.p_color = None
+        self.p_swatch.configure(text="Szín…")
+
+    def _pick_color(self):
+        rgb = colorchooser.askcolor(title="A bekezdés szövegszíne", parent=self)[0]
+        if rgb:
+            self.p_color = tuple(v / 255 for v in rgb)
+            self.p_swatch.configure(text="Szín ✓")
+
+    def _para_fmt(self) -> dict:
+        """A panelon megváltoztatott értékek — ennyit adunk a para_format-nak."""
+        b, fmt = self._base, {}
+        if self.p_align.get() != b["align"]:
+            fmt["align"] = self.p_align.get()
+        if self.p_reflow.get():
+            fmt["reflow"] = True
+        for key, var, base in (("gap", self.p_gap, b["gap"]),
+                               ("indent_left", self.p_il, b["il"]),
+                               ("indent_right", self.p_ir, b["ir"]),
+                               ("indent_first", self.p_if, b["if"]),
+                               ("dy", self.p_dy, 0.0),
+                               ("size", self.p_size, b["size"])):
+            if abs(float(var.get()) - base) > 0.01:
+                fmt[key] = float(var.get())
+        if self.p_under.get():
+            fmt["underline"] = True
+        if self.p_color is not None:
+            fmt["color"] = self.p_color
+        fam = self.p_family.get()
+        if (fam != b["family"] or self.p_bold.get() != b["bold"]
+                or self.p_italic.get() != b["italic"]):
+            # A félkövér/dőlt változathoz tudnunk kell a családot: abból választjuk a
+            # betűfájlt (calibrib.ttf, calibriz.ttf …).
+            if fam == UNCHANGED:
+                return {"__err": "A félkövérhez és a dőlthöz válassz betűcsaládot."}
+            fmt.update(family=fam, bold=self.p_bold.get(), italic=self.p_italic.get())
+        return fmt
+
+    def _apply_para(self, text=None):
+        if not self.para:
+            messagebox.showinfo("Bekezdés", "Előbb kattints egy bekezdésre.")
+            return
+        fmt = self._para_fmt()
+        if "__err" in fmt:
+            messagebox.showwarning("Betű", fmt["__err"])
+            return
+        if text is not None:
+            fmt["text"] = text
+        if not fmt:
+            self._say("A bekezdésen nincs mit megváltoztatni.")
+            return
+        err = para_font_error(self.para, fmt)
+        if err:
+            messagebox.showwarning("A bekezdést nem formázom át", err)
+            return
+        if para_reflows(fmt) and self.para["mixed"] and not messagebox.askyesno(
+                "Vegyes formázás",
+                "A bekezdésben többféle betű vagy méret van (például félkövér szavak).\n\n"
+                "Ez a művelet újratördeli a bekezdést, ezért a formázása EGYSÉGES lesz — "
+                "a kiemelések elvesznek. A lépés visszavonható (Ctrl+Z).\n\nFolytassuk?"):
+            return
+        para, page, out = self.para, self._page(), []
+        if fmt.get("dy"):              # a bekezdés eltolódik: a horgony is vele megy
+            self.para_pt = (self.para_pt[0], self.para_pt[1] + fmt["dy"])
+        self._change(lambda: out.append(para_format(self.doc, page, para, fmt)),
+                     "Bekezdés formázva.")
+        if out and out[0]:
+            self._say(f"Bekezdés formázva — {out[0]}.")
+
+    def _edit_para_text(self):
+        """A bekezdés szövegének átírása: a program a hasáb szélességére tördeli újra."""
+        if not self.para:
+            messagebox.showinfo("Bekezdés", "Előbb kattints egy bekezdésre.")
+            return
+        win = tk.Toplevel(self)
+        win.title("A bekezdés szövege")
+        win.transient(self.winfo_toplevel())
+        ttk.Label(win, text="A program a hasáb szélességére tördeli újra, a panelon beállított "
+                            "igazítással. A bekezdésen belüli vegyes formázás egységes lesz.",
+                  wraplength=470, foreground="#555").pack(anchor="w", padx=10, pady=(10, 6))
+        t = tk.Text(win, width=64, height=10, wrap="word", font=("Segoe UI", 10))
+        t.pack(fill="both", expand=True, padx=10)
+        t.insert("1.0", para_text(self.para))
+        t.focus_set()
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=10, pady=8)
+
+        def ok():
+            txt = " ".join(t.get("1.0", "end").split())
+            win.destroy()
+            if txt:
+                self._apply_para(text=txt)
+        ttk.Button(bar, text="Alkalmaz", command=ok).pack(side="right")
+        ttk.Button(bar, text="Mégsem", command=win.destroy).pack(side="right", padx=6)
 
     # -- mező --
     def _field_click(self, page, x, y):
@@ -2048,6 +2730,8 @@ class EditorTab(ttk.Frame):
             return None
         self.dirty = True
         self._render()
+        if self.para:              # a _render újra felismerte: a panel is kövesse
+            self._fill_para()
         self._say(msg)
         return out
 
@@ -2063,6 +2747,8 @@ class EditorTab(ttk.Frame):
         self.dirty = bool(self.undo)
         self.sel_xref = None
         self._render()
+        if self.para:
+            self._fill_para()
 
     def _bytes(self) -> bytes:
         """Mentendő bájtok: a használt betűk részhalmaza, tömörítve."""
@@ -8749,6 +9435,212 @@ def _selftest() -> int:
     ck("mentés után is olvasható mezők", sum(1 for _ in d2[0].widgets()) == 2)
     d2.close()
     d.close()
+
+    print("BEKEZDÉS")
+    # Próbalap: cím + két balra zárt bekezdés ragged jobb széllel, a hasáb 60..520.
+    d = pymupdf.open()
+    pg = d.new_page(width=595, height=842)
+    FB, FN = edit_font("Calibri", True), edit_font("Calibri")
+    COL, GAP, SZ = 460.0, 14.0, 10.5
+
+    def fill(page, words, base, font, size, x0=60.0, gap=GAP, col=COL):
+        """Balra zárt bekezdés: a hasáb szélessége tördeli, a szavak a tördelés
+        szerinti helyükre kerülnek — ugyanazokkal a magfüggvényekkel, mint a fülön."""
+        wd = [font.text_length(w, size) for w in words]
+        sp = font.text_length(" ", size)
+        rows = wrap_words(wd, sp, col)
+        for r, row in enumerate(rows):
+            xs = line_positions([wd[i] for i in row], x0, x0 + col, sp, "left")
+            for i, x in zip(row, xs):
+                add_text(page, (x, base + r * gap), words[i], font, size)
+        return len(rows)
+
+    P1 = ("Alulírott munkavállaló kijelentem, hogy a bejelentett magyarországi "
+          "szálláshelyem a kérelem benyújtása óta változatlan maradt, és az ott "
+          "megadott adataim a valóságnak minden tekintetben megfelelnek. A "
+          "szálláshely címe, a befogadó nyilatkozata és a bérleti jogviszony "
+          "időtartama a benyújtott iratokkal egyezik, azokat nem módosítottuk.").split()
+    P2 = ("A nyilatkozatot a hatóság előtt felhasználni kívánom, és tudomásul veszem, "
+          "hogy a valótlan tartalmú nyilatkozat jogkövetkezményekkel járhat.").split()
+    add_text(pg, (60, 100), "A NYILATKOZAT TÁRGYA", FB, 12)
+    n1 = fill(pg, P1, 140, FN, SZ)
+    n2 = fill(pg, P2, 140 + n1 * GAP + 20, FN, SZ)
+    base_pdf, nd = d.tobytes(), len(pg.get_drawings())
+    ck("a próbalap felépült: cím + két bekezdés", n1 >= 4 and n2 >= 2, (n1, n2))
+
+    # -- felismerés --
+    p = paragraph_at(pg, 200, 139)
+    ck("a bekezdés sorai a kattintásból (a cím és a másik bekezdés nélkül)",
+       p is not None and len(p["lines"]) == n1, None if p is None else len(p["lines"]))
+    ck("bal szél, alapvonal-távolság, méret",
+       abs(p["left"] - 60) < 0.5 and abs(p["gap"] - GAP) < 0.5 and abs(p["size"] - SZ) < 0.1,
+       (p["left"], p["gap"], p["size"]))
+    ck("egységes formázású bekezdés: nem vegyes", not p["mixed"])
+    ck("a mai igazítás: balra zárt", guess_align(p) == "left", guess_align(p))
+    ck("a második bekezdés külön bekezdés",
+       len(paragraph_at(pg, 200, 140 + n1 * GAP + 20 - 1)["lines"]) == n2)
+    ck("a cím egysoros bekezdés", len(paragraph_at(pg, 100, 98)["lines"]) == 1)
+    ck("szövegen kívül nincs bekezdés", paragraph_at(pg, 560, 700) is None)
+    ck("a bekezdés szövege visszaolvasható", para_text(p).split() == P1, para_text(p)[:60])
+
+    # -- line_positions és wrap_words: tiszta függvények --
+    xs = line_positions([30, 20, 25], 100, 200, 4, "justify")
+    ck("sorkizárt hézag: az utolsó szó pontosan a jobb szélen ér véget",
+       xs == [100, 142.5, 175.0] and abs(xs[-1] + 25 - 200) < 1e-9, xs)
+    ck("az utolsó sort nem nyújtjuk",
+       line_positions([30, 20], 100, 200, 4, "justify", last=True) == [100, 134])
+    ck("egyszavas sort nem nyújtunk", line_positions([30], 100, 200, 4, "justify") == [100])
+    ck("rövid sort nem teszünk sorkizárttá (félreismert bekezdésvég)",
+       line_positions([10, 10], 100, 200, 4, "justify") == [])
+    ck("jobbra zárt: az utolsó szó a jobb szélen",
+       line_positions([30, 20], 100, 200, 4, "right") == [146, 180])
+    ck("középre: a sor a hasáb közepén",
+       line_positions([30, 20], 100, 200, 4, "center") == [123, 157])
+    ck("üres sorhoz nincs pozíció", line_positions([], 100, 200, 4, "left") == [])
+    ck("tördelés: a sorok a szélesség alá esnek",
+       wrap_words([30, 30, 30, 30], 4, 70) == [[0, 1], [2, 3]],
+       wrap_words([30, 30, 30, 30], 4, 70))
+    ck("tördelés: az első sor szélessége külön adható meg (behúzás)",
+       wrap_words([30, 30, 30], 4, 70, 30) == [[0], [1, 2]])
+
+    # -- sorkizárás: az eltolásos úton a sortörések NEM változnak --
+    before = pg.get_text(sort=True).split()
+    ck("formázás előtt nincs betűhiba", para_font_error(p, {}) == "")
+    ck("sorkizárás figyelmeztetés nélkül", para_format(d, pg, p, {"align": "justify"}) == "")
+    jd = pymupdf.open("pdf", d.tobytes())
+    jg = jd[0]
+    q = paragraph_at(jg, 200, 139)
+    ck("sorkizárás után ugyanannyi sor (a sortörések nem változtak)",
+       len(q["lines"]) == n1, len(q["lines"]))
+    R1 = p["right"]            # a bekezdés jobb széle: a leghosszabb soráé (19.5)
+    ck("minden sor a jobb szélen ér véget, az utolsó kivételével",
+       all(abs(ln["bbox"][2] - R1) < 0.6 for ln in q["lines"][:-1])
+       and q["lines"][-1]["bbox"][2] < R1 - 1,
+       [round(ln["bbox"][2], 1) for ln in q["lines"]])
+    ck("a szöveg karakterre azonos maradt (olvasási sorrendben)",
+       jg.get_text(sort=True).split() == before)
+    ck("a bekezdés most sorkizártnak látszik", guess_align(q) == "justify", guess_align(q))
+    ck("a lap rajzai érintetlenek", len(jg.get_drawings()) == nd)
+    ck("a formázott bekezdés újra felismerhető, ugyanannyi sorral",
+       len(paragraph_at(jg, 200, 139)["lines"]) == n1)
+    jd.close()
+
+    # -- a többi művelet, mindig a próbalap friss példányán --
+    def once(fmt, probe=(200, 139)):
+        """Egy formázás a friss próbalapon -> (üzenet, az új bekezdés, az új lap)."""
+        dd = pymupdf.open("pdf", base_pdf)
+        m = para_format(dd, dd[0], paragraph_at(dd[0], 200, 139), fmt)
+        g = pymupdf.open("pdf", dd.tobytes())[0]
+        dd.close()
+        return m, paragraph_at(g, *probe), g
+
+    _m, r, _g = once({"align": "center"})
+    ck("középre: minden sor a bekezdés közepén",
+       all(abs((ln["bbox"][0] + ln["bbox"][2]) / 2 - (60 + R1) / 2) < 1.5
+           for ln in r["lines"]),
+       [round((ln["bbox"][0] + ln["bbox"][2]) / 2, 1) for ln in r["lines"]])
+    _m, r, _g = once({"align": "right"})
+    ck("jobbra: minden sor a jobb szélen",
+       all(abs(ln["bbox"][2] - R1) < 0.6 for ln in r["lines"]),
+       [round(ln["bbox"][2], 1) for ln in r["lines"]])
+    _m, r, _g = once({"gap": 21.0})
+    ck("sortávolság 1,5×: az első alapvonal marad, a többi 21 pt-tal lép",
+       r is not None and len(r["lines"]) == n1 and abs(r["gap"] - 21) < 0.5
+       and abs(_baseline(r["lines"][0]) - 140) < 0.5,
+       None if r is None else (len(r["lines"]), round(r["gap"], 1)))
+    _m, r, _g = once({"dy": 30.0}, (200, 169))
+    ck("térköz előtte 30 pt: a bekezdés lejjebb került, a sorok száma marad",
+       r is not None and len(r["lines"]) == n1 and abs(_baseline(r["lines"][0]) - 170) < 0.5,
+       None if r is None else _baseline(r["lines"][0]))
+    _m, r, _g = once({"size": 8.0})
+    ck("méret 8 pt: kevesebb sor, a szöveg megmarad",
+       r is not None and len(r["lines"]) < n1 and abs(r["size"] - 8) < 0.1
+       and para_text(r).split() == P1,
+       None if r is None else (len(r["lines"]), r["size"]))
+    _m, r, _g = once({"family": "Calibri", "bold": True})
+    ck("félkövér: a szövegréteg félkövérnek jelzi, a szöveg megmarad",
+       r is not None and all(s["flags"] & 16 for ln in r["lines"] for s in ln["spans"])
+       and para_text(r).split() == P1)
+    _m, r, _g = once({"indent_left": 20.0, "indent_first": 15.0})
+    ck("behúzás: az első sor beljebb, a többi a bal behúzásnál",
+       r is not None and abs(r["lines"][0]["bbox"][0] - 95) < 0.6
+       and abs(r["lines"][1]["bbox"][0] - 80) < 0.6,
+       None if r is None else [round(ln["bbox"][0], 1) for ln in r["lines"][:2]])
+    _m, _r, g = once({"underline": True})
+    ck("aláhúzás: soronként egy vonal került a lapra",
+       len(g.get_drawings()) == nd + n1, (len(g.get_drawings()), nd + n1))
+    _m, r, _g = once({"color": (1, 0, 0)})
+    ck("szín: a szövegréteg pirosat jelez",
+       r is not None and all(s["color"] == 0xFF0000 for ln in r["lines"] for s in ln["spans"]),
+       None if r is None else [hex(s["color"]) for ln in r["lines"] for s in ln["spans"]][:3])
+    NEW = "Ez a bekezdés új szöveget kapott, amit a program a hasáb szélességére tördel."
+    # Egysoros bekezdésnél a PARA_MAX_GAP kapu tartja távol a következő bekezdést.
+    _m, r, g = once({"text": NEW})
+    ck("szövegátírás: az új szöveg bent, a régi eltűnt",
+       r is not None and para_text(r).split() == NEW.split()
+       and "szálláshelyem" not in g.get_text(), para_text(r) if r else None)
+    m, r, _g = once({"align": "justify", "reflow": True})
+    ck("újratördelés + sorkizárás: a sorok a jobb szélen, a szöveg megmarad",
+       r is not None and all(abs(ln["bbox"][2] - R1) < 0.6 for ln in r["lines"][:-1])
+       and para_text(r).split() == P1, m)
+    d.close()
+
+    # -- vegyes formázás: az eltolásos út megtartja, az újratördelő szól --
+    d2 = pymupdf.open()
+    g2 = d2.new_page(width=595, height=842)
+    add_text(g2, (60, 140), "Fontos:", FB, SZ)
+    add_text(g2, (60 + FB.text_length("Fontos: ", SZ), 140),
+             "a nyilatkozatot a hatóság előtt felhasználni kívánom, és", FN, SZ)
+    add_text(g2, (60, 140 + GAP), "tudomásul veszem a jogkövetkezményeket is.", FN, SZ)
+    pv = paragraph_at(g2, 200, 141)
+    ck("vegyes formázású bekezdés: a program vegyesnek látja", pv["mixed"])
+    ck("az eltolásos út nem tördel újra, és nem figyelmeztet",
+       not para_reflows({"align": "justify"})
+       and para_format(d2, g2, pv, {"align": "justify"}) == "")
+    g3d = pymupdf.open("pdf", d2.tobytes())
+    g3 = g3d[0]
+    fonts3 = {s["font"] for b in g3.get_text("dict")["blocks"]
+              for ln in b.get("lines", []) for s in ln["spans"]}
+    ck("sorkizárás után megvan a félkövér ÉS a sima betű is",
+       any("Bold" in f for f in fonts3) and any("Bold" not in f for f in fonts3), fonts3)
+    ck("újratördelő művelet vegyes bekezdésen figyelmeztet",
+       "egységes" in para_format(g3d, g3, paragraph_at(g3, 200, 141), {"size": 9.0}))
+    g3d.close()
+    d2.close()
+
+    # -- a két kapu: ismeretlen betűcsalád és hiányzó karakter --
+    d4 = pymupdf.open()
+    g4 = d4.new_page(width=595, height=842)
+    # A PyMuPDF beépített Helveticája NimbusSans-ként ágyazódik be; ugyanazzal a
+    # metrikával mérhető vissza, ezért formázható (FONT_ALIAS).
+    add_text(g4, (60, 140), "Helvetica betűvel írt sor, amit vissza tudunk mérni",
+             pymupdf.Font("helv"), 10)
+    ck("a beépített Helvetica felismerése (NimbusSans)",
+       span_style(paragraph_at(g4, 200, 139)["lines"][0]["spans"][0])[0] == "Helvetica",
+       span_style(paragraph_at(g4, 200, 139)["lines"][0]["spans"][0]))
+    ck("a Helvetica bekezdés formázható", para_font_error(paragraph_at(g4, 200, 139), {}) == "")
+    # A Courier (NimbusMonoPS) szándékosan nincs a listán: nem tudjuk pontosan mérni.
+    add_text(g4, (60, 300), "Courier betuvel irt sor amit nem tudunk megmerni",
+             pymupdf.Font("cour"), 10)
+    pc = paragraph_at(g4, 200, 299)
+    ec = para_font_error(pc, {})
+    ck("ismeretlen betűcsalád: megtagadja magát, és megnevezi a betűt",
+       "NimbusMonoPS" in ec, ec)
+    txt4 = g4.get_text()
+    ck("a megtagadott bekezdés nem módosul",
+       para_format(d4, g4, pc, {"align": "justify"}) == ec and g4.get_text() == txt4)
+    ck("de a felületről választott betűvel már átformázható",
+       para_font_error(pc, {"family": "Calibri"}) == "")
+    # Az Arial Bold nem ismeri a nem-törő kötőjelet: a karakter csendben eltűnne.
+    add_text(g4, (60, 400), "Cegjegyzekszam: 19‐09‐503741 es meg egy kis szoveg",
+             FN, SZ)
+    p5 = paragraph_at(g4, 200, 399)
+    e5 = para_font_error(p5, {"family": "Arial", "bold": True})
+    ck("hiányzó karakter: az Arial Bold nem ismeri az U+2010-et, ezért megtagadja",
+       "U+2010" in e5, e5)
+    ck("ugyanaz a bekezdés Calibrivel átmegy",
+       para_font_error(p5, {"family": "Calibri", "bold": True}) == "")
+    d4.close()
 
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")
