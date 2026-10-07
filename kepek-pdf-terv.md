@@ -1310,3 +1310,80 @@ mappákat kínálja (nem a munkamappát), a `parent_dir` a munkamappa marad, ék
 nélküli részlet feloldása a céllal együtt, kétes részletnél szűkítés és
 figyelmeztetés, és az Áttekintőből hívva a dolgozó kitöltődik úgy, hogy a
 munkamappa NEM változik).
+
+---
+
+## 18. A PDF-metaadat zsákutcája, és a névsorrend megfordítása (2026-10-07)
+
+### 18.1 A kérdés
+
+Felvihetők-e utólag a felismert iratokra metaadatok (cím, kategória), hogy a
+Windows Intézőben *azokra* lehessen szűrni — így a fájlnév elejéről eltűnhetne a
+dolgozó neve, és a szem a doktípusra esne.
+
+### 18.2 A mérés: az Intéző nem olvas PDF-metaadatot
+
+Írni triviális lenne: a `stamp_pdf_file` növekményes mentéssel már ma is hozzáír a
+kész fájlhoz, és a `rename_plan` logikája minden meglévő iratról kitalálja, micsoda.
+
+A fogadó oldal viszont nem tudja elolvasni. Készítettem egy PDF-et kitöltött
+`title`, `subject`, `author` és `keywords` mezővel, majd a Windows Shell API-ján
+(`Shell.Application` → `GetDetailsOf`, ugyanaz, amiből az Intéző oszlopai jönnek)
+lekérdeztem:
+
+```
+Címkék  (18) = ''      Cím        (21) = ''      Kategóriák (23) = ''
+Szerzők (20) = ''      Tárgy      (22) = ''      Megjegyzések (24) = ''
+```
+
+Mind üres — pedig a fájlban benne vannak. Kontroll: ugyanez a lekérdezés egy
+XLSX-en `Szerzők = DocGen`-t ad, tehát a módszer jó, és konkrétan a PDF-nél bukik.
+
+Az ok a registryben: a
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem\PropertyHandlers\.pdf`
+kulcs **nem létezik**. Ami `.pdf`-hez regisztrálva van, az az Adobe
+`pdfprevhndlr.dll`-je — de az *előnézet*-kezelő, nem tulajdonság-kezelő.
+
+Mérve a fejlesztői ÉS az éles (céges) gépen is: nincs property handler. Az
+ellenőrzés egysoros, ha a helyzet valaha változna:
+
+```powershell
+Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem\PropertyHandlers\.pdf"
+```
+
+Ami viszont **van**: beépített tartalom-indexelő (`Windows.Data.Pdf.dll`), tehát a
+Windows Kereső a PDF-ek *szövegében* tud keresni — a metaadat-mezőkben nem.
+
+**Következtetés: metaadatot nem írunk.** Láthatatlan maradna, cserébe minden
+iktatás egy újabb írási lépéssel járna.
+
+### 18.3 Amit helyette csináltunk: a doktípus áll elöl
+
+```
+NAV jövedelemigazolás — Kiss Anna (aláírt).pdf
+Tartózkodási engedély formanyomtatvány — John Doe (aláírt, fotóval ellátva).pdf
+```
+
+Ez telepítés nélkül, ma megoldja a kimondott célt: a szem a típusra esik, és a név
+szerinti rendezés típusonként csoportosít.
+
+Az indok, amiért ez nem veszteség: **az iratok dolgozónkénti mappában vannak**
+(`Kiss Anna\02_Feltoltheto\`). Ott a névvel kezdődő fájlnév semmit nem
+csoportosít — minden fájl ugyanazé a dolgozóé —, viszont épp azt a karakterhelyet
+foglalja, ahol a típust keressük. A név megmarad a fájlnévben (a feltöltéshez),
+csak hátrébb.
+
+Elválasztó: `NAME_SEP = " — "`. A `norm()` a gondolatjelet is elválasztónak veszi
+(`[_\-.\u2013\u2014]+`), így a szabályillesztés nem romlik — mérve mind a 4
+kötelező típusra.
+
+**A migráció már készen volt:** a 15.3-as visszamenőleges átnevező egy körben
+átviszi a meglévő iratokat, mert a célnevet mindig a `target_name`-ből számolja.
+Valódi mappán mérve 5/5 irat átnevezve, az eldönthetetlen érintetlen.
+
+A `test/gui.py` fixture-nevei mostantól szintén `target_name`-ből jönnek, nem
+beégetve — így a következő névváltoztatás nem töri el a teszteket.
+
+### 18.4 Ellenőrzés
+
+Önteszt **260/260** (új: „NÉVSORREND: A DOKTÍPUS ELÖL”, 5 ellenőrzés), GUI 179/179.

@@ -3025,6 +3025,14 @@ DOC_TYPES_DEFAULT = [
 # norm() minden jelölőt kitöröl az illesztés előtt.
 MARK_SIGNED = "aláírt"
 MARK_PHOTO = "fotóval ellátva"
+# A doktípus áll ELÖL, a dolgozó neve mögötte:
+#   NAV jövedelemigazolás — Kiss Anna (aláírt).pdf
+# Miért: az iratok amúgy is dolgozónkénti mappában vannak, ott a névvel kezdődő
+# fájlnév semmit nem csoportosít (minden fájl ugyanazé a dolgozóé), viszont épp
+# azt a helyet foglalja, ahol a szem a típust keresi. A PDF-metaadat (Cím,
+# Címkék) nem volt járható út: a Windows Intéző property handler nélkül nem
+# olvassa, és egyik gépen sincs telepítve — mérve (kepek-pdf-terv.md 18.).
+NAME_SEP = " — "
 SUFFIX = MARK_SIGNED                       # az Iktató „Utótag” mezőjének alapértéke
 LOG_NAME = "iktato-naplo.csv"
 # Külön mentésmappa (korábban .eredeti) NINCS: a felülírt példány a dolgozó
@@ -3190,12 +3198,12 @@ def target_name(dir_name: str, doc_type: str, suffix: str = SUFFIX,
                 photo: bool = False) -> str:
     """Horváth Dániel + Előzetes megállapodás -> teljes fájlnév.
 
-    A jelölők egy zárójelbe kerülnek, vesszővel:
-        Kiss Anna Útlevél (aláírt).pdf
-        Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf
+    A DOKTÍPUS áll elöl, a dolgozó neve mögötte; a jelölők egy zárójelben:
+        Útlevél — Kiss Anna (aláírt).pdf
+        Tartózkodási engedély formanyomtatvány — Kiss Anna (aláírt, fotóval ellátva).pdf
     """
     marks = [m.strip() for m in (suffix, MARK_PHOTO if photo else "") if m and m.strip()]
-    stem = " ".join(p for p in (dir_name.strip(), doc_type.strip()) if p)
+    stem = NAME_SEP.join(p for p in (doc_type.strip(), dir_name.strip()) if p)
     if marks:
         stem += " (" + ", ".join(marks) + ")"
     stem = re.sub(r"\s+", " ", stem)
@@ -4697,7 +4705,7 @@ def norm(s: str) -> str:
     # A jelölők nem részei az azonosításnak. A „kesz” a régi _kesz utótag.
     s = re.sub(r"\b(alairt|signed|fotoval ellatva|kesz)\b", " ", s)
     s = re.sub(r"\(\s*,?\s*\)", " ", s)             # a jelölőktől kiürült zárójel
-    s = re.sub(r"[_\-.]+", " ", s)                  # elválasztók szóközzé
+    s = re.sub(r"[_\-.\u2013\u2014]+", " ", s)      # elválasztók (a gondolatjel is) szóközzé
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -9768,6 +9776,31 @@ def _selftest() -> int:
            ("Kiss Anna", "utlevel", DIR_UP), st)
         ck("a felismerhetetlen nevű továbbra is kézi",
            len(a2["unknown"]) == 1 and not read_stamp(ismeretlen))
+
+    print("NÉVSORREND: A DOKTÍPUS ELÖL")
+    # A dolgozó neve a MAPPÁBÓL úgyis látszik; a fájlnév elején a típus álljon,
+    # hogy az Intézőben arra essen a szem, és a rendezés típusonként csoportosítson.
+    # A PDF-metaadat nem volt járható út (kepek-pdf-terv.md 18.).
+    ck("a típus áll elöl, a dolgozó mögötte",
+       target_name("Kiss Anna", "NAV jövedelemigazolás") ==
+       "NAV jövedelemigazolás — Kiss Anna (aláírt).pdf",
+       target_name("Kiss Anna", "NAV jövedelemigazolás"))
+    ck("fotójelölővel is",
+       target_name("John Doe", "Tartózkodási engedély formanyomtatvány", SUFFIX, True) ==
+       "Tartózkodási engedély formanyomtatvány — John Doe (aláírt, fotóval ellátva).pdf",
+       target_name("John Doe", "Tartózkodási engedély formanyomtatvány", SUFFIX, True))
+    ck("jelölő nélkül nincs üres zárójel",
+       target_name("Kiss Anna", "Útlevél", "") == "Útlevél — Kiss Anna.pdf")
+    ck("az új sorrendet is a helyes szabályra illeszti (a gondolatjel nem zavar)",
+       all(match_rule(target_name("Kiss Anna", t), RULES)[0] is not None and
+           match_rule(target_name("Kiss Anna", t), RULES)[0].id == rid
+           for t, rid in (("Útlevél", "utlevel"), ("Meghatalmazás", "meghat"),
+                          ("NAV jövedelemigazolás", "nav"),
+                          ("Előzetes megállapodás", "elozetes"))))
+    ck("egy mappa listája típus szerint csoportosul",
+       sorted(target_name("Kiss Anna", t, "") for t in
+              ("Útlevél", "NAV jövedelemigazolás", "Előzetes megállapodás"))[0]
+       .startswith("Előzetes megállapodás"))
 
     print("ÖSSZEÁLLÍTÓ")
     ck("oldaltartomány: 1-3,5", page_ranges([0, 1, 2, 4]) == "1-3,5", page_ranges([0, 1, 2, 4]))
