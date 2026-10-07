@@ -33,6 +33,7 @@ msgs, opened = [], []
 for n in ("showinfo", "showwarning", "showerror"):
     setattr(pm.messagebox, n, lambda *a, _n=n, **k: msgs.append((_n, a[0] if a else "")))
 pm.messagebox.askyesnocancel = lambda *a, **k: True          # 5 MB fölött: tömörítve
+pm.messagebox.askyesno = lambda *a, **k: True                # átnevezés / áthelyezés: igen
 pm.open_path = lambda p: opened.append(p)
 res = []
 
@@ -51,6 +52,19 @@ def find_btn(w, prefix):
         if got is not None:
             return got
     return None
+
+
+def tidy_sorok(win):
+    """A Rendezés jelölőnégyzetes listájának sorai szövegként. (Korábban egy Text
+    widget volt; most CheckList/Treeview — iratonkénti jelölőnégyzettel.)"""
+    out = []
+    stack = list(win.winfo_children())
+    while stack:
+        w = stack.pop()
+        stack.extend(w.winfo_children())
+        if w.winfo_class() == "Treeview":
+            out += [" ".join(str(v) for v in w.item(i, "values")) for i in w.get_children()]
+    return out
 
 
 def mentes_ut(worker, stem):
@@ -234,10 +248,9 @@ try:
     att._open_tidy()
     pump(0.2)
     tidy = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
-    body = [w for w in tidy.winfo_children() if w.winfo_class() == "Text"]
+    body = tidy_sorok(tidy)
     ck("a Rendezés előnézete felsorolja a mozgatandó fájlt",
-       bool(body) and "Lapos Lajos Útlevél aláírt.pdf" in body[0].get("1.0", "end"),
-       body[0].get("1.0", "end")[:200] if body else "nincs Text")
+       any("Lapos Lajos Útlevél aláírt.pdf" in r for r in body), body)
     tidy.destroy()
     pump(0.2)
     ck("mozgatás nélkül semmi nem változott",
@@ -254,11 +267,11 @@ try:
     tidy2 = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
     labels2 = " ".join(w.cget("text") for w in tidy2.winfo_children()
                        if w.winfo_class() == "TLabel")
-    body2 = [w for w in tidy2.winfo_children() if w.winfo_class() == "Text"]
+    body2 = tidy_sorok(tidy2)
     ck("a kapu jelzi a kihagyott, nem dolgozói mappát",
        "nyaralas 2026" in labels2 and "kihagyok" in labels2, labels2[:200])
     ck("a kihagyott mappa nincs a mozgatási előnézetben",
-       bool(body2) and "IMG_0001.jpg" not in body2[0].get("1.0", "end"))
+       not any("IMG_0001.jpg" in r for r in body2), body2)
     tidy2.destroy()
     pump(0.2)
     ck("a kép a helyén maradt",
@@ -307,7 +320,7 @@ try:
     # Arckép-jelölő: csak a fotóigényes típusnál él, és típusváltáskor kiürül
     ck("a jelölő tiltva az útlevélnél",
        ikt.arckep_cb.instate(["disabled"]) and not ikt.arckep_kesz.get())
-    ikt.doc_type.set("Tart_eng_formanyomtatvány")
+    ikt.doc_type.set("Tartózkodási engedély formanyomtatvány")
     ikt._type_chosen()
     ck("a jelölő él a formanyomtatványnál", ikt.arckep_cb.instate(["!disabled"]))
     ck("fotó nélkül az előkészítettbe megy",
@@ -572,19 +585,19 @@ try:
     ck("a dolgozó mappáját kapva a szülő lesz a munkamappa, a név kitöltve",
        pl.parent_dir == root and pl.who == "Kiss Anna", (pl.parent_dir, pl.who))
     ck("alapértelmezett típus a fotóigényes nyomtatvány",
-       pl.doc_type.get() == "Tart_eng_formanyomtatvány", pl.doc_type.get())
+       pl.doc_type.get() == "Tartózkodási engedély formanyomtatvány", pl.doc_type.get())
     pl.angle.set(0)
     pl._render_photo()
     pl._iktat()
     pump(0.2)
     # A fotó épp most került rá: a jelölő a névben is ott van (egységes metodika).
     kesz2 = os.path.join(
-        anna_up, "Kiss Anna Tart_eng_formanyomtatvány (aláírt, fotóval ellátva).pdf")
+        anna_up, "Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf")
     ck("az arcképes irat a feltölthetőbe került, „fotóval ellátva” jelölővel",
        os.path.isfile(kesz2), (kesz2, os.listdir(anna_up)))
     sp = pm.read_stamp(kesz2)
     ck("az arcképes irat bélyeget kap",
-       (sp.get("dolgozo"), sp.get("tipus")) == ("Kiss Anna", "Tart_eng_formanyomtatvány"),
+       (sp.get("dolgozo"), sp.get("tipus")) == ("Kiss Anna", "Tartózkodási engedély formanyomtatvány"),
        sp)
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
         last = list(csv.reader(f, delimiter=";"))[-1]
@@ -710,7 +723,7 @@ try:
         d.close()
         return r
 
-    forma, elo2, utl = ("Kiss Anna Tart_eng_formanyomtatvány (aláírt).pdf",
+    forma, elo2, utl = ("Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt).pdf",
                         "Kiss Anna Előzetes megállapodás (aláírt) (2).pdf",
                         "Kiss Anna Útlevél (másolat).pdf")
     # A formanyomtatványra arcképet is kell helyezni, a jelölő nincs bepipálva:
@@ -721,7 +734,7 @@ try:
     sf = pm.read_stamp(os.path.join(anna, pm.DIR_PREP, forma))
     ck("Összeállító: iratonkénti bélyeg a cél alkönyvtárával",
        (sf.get("dolgozo"), sf.get("tipus"), sf.get("hely")) ==
-       ("Kiss Anna", "Tart_eng_formanyomtatvány", pm.DIR_PREP), sf)
+       ("Kiss Anna", "Tartózkodási engedély formanyomtatvány", pm.DIR_PREP), sf)
     ck("ütközés: új néven (2), a régi érintetlen",
        pdf_info(elo2)[0] == ["oldal 3", "oldal 4"] and pdf_info(os.path.basename(elo))[0] == [""])
     ck("Útlevél: a szerkesztett utótaggal, elforgatva (/Rotate 90)",
@@ -1263,6 +1276,89 @@ try:
     ck("naplósor a szerkesztésről", last[5].startswith("SZERKESZTVE") and
        last[3] == "Kiss Anna TAJ-megrendelő.pdf", last)
     ck("mentés után nincs „nincs mentve”", not ed.dirty)
+
+    print("ELLENŐRZŐ: ROSSZ HELY, JELÖLŐNÉGYZETEK, VISSZAMENŐLEGES ÁTNEVEZÉS")
+    # A gyökérben hagyott, felismert nevű irat eddig az „unknown” kosárba esett, és
+    # a párbeszéd azt írta rá, hogy a nevét sem ismerjük fel — ez volt az Áttekintő
+    # „hibás adat” panasz valódi oka (kepek-pdf-terv.md 15.1).
+    audit_root = mkdir(TMP, "ellenorzo")
+    jd = mkdir(audit_root, "John Doe")
+    jd_up, jd_pr = mkdir(jd, pm.DIR_UP), mkdir(jd, pm.DIR_PREP)
+    empty_pdf(os.path.join(jd, "John Doe Egyoldalu hozzajarulasi nyilatkozat alairt.pdf"))
+    empty_pdf(os.path.join(jd_up, "John Doe Tart_eng_formanyomtatvany alairt_kesz.pdf"))
+    empty_pdf(os.path.join(jd_up, "John Doe Utlevel.pdf"))
+    empty_pdf(os.path.join(jd_pr, "IMG_20260101.pdf"))
+    belyeges = os.path.join(jd_pr, "szkennelt_0042.pdf")
+    d = P.open()
+    d.new_page()
+    pm.set_stamp(d, "John Doe", "Meghatalmazás", "meghat", pm.DIR_UP)
+    d.save(belyeges)
+    d.close()
+
+    ares = pm.audit_folder(audit_root, att.rules)
+    ck("ékezet nélküli név is felismerhető (nem ezen bukik az ellenőrző)",
+       pm.match_rule("John Doe Meghatalmazas alairt.pdf", att.rules)[0].id == "meghat")
+    ck("a gyökérben fekvő, felismert nevű irat „rossz helyen”, nem „ismeretlen”",
+       [r[1] for r in ares["misplaced"]] ==
+       ["John Doe Egyoldalu hozzajarulasi nyilatkozat alairt.pdf"] and
+       len(ares["unknown"]) == 1, (ares["misplaced"], ares["unknown"]))
+
+    # Átnevezés: a bélyeg a bizonyíték, a név a tartalék, az eldönthetetlen kimarad.
+    terv = pm.rename_plan(audit_root, att.rules, ikt.types)
+    ujak = {os.path.basename(r[1]): r[2] for r in terv}
+    ck("átnevezési terv: a bélyegből és a névből is az egységes alak jön",
+       ujak.get("szkennelt_0042.pdf") == "John Doe Meghatalmazás (aláírt).pdf" and
+       ujak.get("John Doe Tart_eng_formanyomtatvany alairt_kesz.pdf") ==
+       "John Doe Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf" and
+       ujak.get("John Doe Utlevel.pdf") == "John Doe Útlevél.pdf", ujak)
+    ck("amit nem lehet eldönteni, azt nem nevezi át",
+       ujak.get("IMG_20260101.pdf") is None and
+       any(r[1].endswith("IMG_20260101.pdf") and not r[4] for r in terv), terv)
+
+    # A jelölőnégyzetes párbeszéd: Mind / Egyiket se, és legalább egy kell.
+    att.parent_dir = audit_root
+    att.refresh()
+    pump(0.3)
+    att._open_rename()
+    pump(0.5)
+    rwin = [w for w in att.winfo_children() if w.winfo_class() == "Toplevel"][-1]
+
+    def deep(win, cls=None, prefix=None):
+        out, stack = [], list(win.winfo_children())
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if cls and w.winfo_class() == cls:
+                out.append(w)
+            if prefix and "text" in w.keys() and str(w.cget("text")).startswith(prefix):
+                out.append(w)
+        return out
+
+    cl = att.rename_cl
+    gomb = deep(rwin, prefix="Átnevezés")[0]
+    ck("átnevezés: minden sor alapból kijelölve", len(cl.selected()) == 4,
+       len(cl.selected()))
+    cl.set_all(False)
+    pump(0.2)
+    ck("„Egyiket se” után a gomb tiltott (legalább egy irat kell)",
+       not cl.selected() and "disabled" in gomb.state(), gomb.state())
+    cl.set_all(True)
+    pump(0.2)
+    ck("„Mind kijelöl” visszakapcsol, a gomb a darabszámot mutatja",
+       len(cl.selected()) == 4 and "disabled" not in gomb.state(), gomb.cget("text"))
+    gomb.invoke()
+    pump(0.8)
+    ck("átnevezés után az egységes nevek vannak a lemezen",
+       sorted(os.listdir(jd_up)) ==
+       ["John Doe Előzetes megállapodás (aláírt).pdf"] * 0 +
+       ["John Doe Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf",
+        "John Doe Útlevél.pdf"] and
+       "John Doe Meghatalmazás (aláírt).pdf" in os.listdir(jd_pr),
+       (os.listdir(jd_up), os.listdir(jd_pr)))
+    ck("az eldönthetetlen irat érintetlen", os.path.isfile(os.path.join(jd_pr, "IMG_20260101.pdf")))
+    att.parent_dir = root
+    att.refresh()
+    pump(0.3)
 
     print("MINDEN FÜL: A LEGKISEBB ABLAKBAN SEM LÓG LE GOMB")
     # Az Arckép fülön a Mentés és az Iktatás MINDEN ablakméretben levágódott (a bal

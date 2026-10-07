@@ -1103,3 +1103,87 @@ ismeri: a mentés nem irat. Egy helyen kellett megfogni, mert a mátrix
 Önteszt 255/255 (új: „a mentést az is_noise kiszűri”), GUI 156/156. Valódi
 mappaszerkezeten mérve: az új nevek a helyes szabályra illeszkednek, a 01-ben
 fekvő mentés nem kap duplikátum-jelzést, és `.eredeti` mappa nem jön létre.
+
+---
+
+## 15. Az Áttekintő „hibás adat” panasza — a valódi ok (2026-10-07)
+
+### 15.1 Amit a gyanú mondott, és amit a mérés
+
+A bejelentés szerint az ellenőrző az **ékezetes betűkön** bukik el (`…alairt.pdf`),
+illetve azon, hogy az irat **nem a megfelelő mappában** van.
+
+**Az ékezet nem hibás.** A `norm()` mindkét oldalon ékezetet bont (`strip_accents`),
+a `kw_hit` szintén. Mérve: `Meghatalmazas alairt.pdf` és `Meghatalmazás aláírt.pdf`
+is a `meghat` szabályra illeszkedik; 5 név-változatból 5 helyes.
+
+**A hely viszont hibás volt, és rosszabbul, mint hittük.** Az `audit_folder`-ben:
+
+```python
+if rule is not None and not amb and sub in WORK_DIRS:
+    res["stampable"].append(…)
+else:
+    res["unknown"].append((who, rel))      # ← ide esett a gyökérben fekvő irat
+```
+
+A dolgozói mappa gyökerében fekvő iratnál `sub == ""`, tehát az `unknown` ágra
+futott — és a párbeszéd azt írta rá, hogy **„BÉLYEG ÉS FELISMERT NÉV SINCS — kézzel”**,
+holott a nevét tökéletesen felismertük. Mérve: 6 teszt-iratból 3 esett ide.
+Ez a „hibás adat”.
+
+Javítás: külön `misplaced` kategória (felismert név, rossz hely), saját szakasszal
+a jelentésben és saját darabszámmal a fejlécben.
+
+### 15.2 Áthelyezés iratonkénti jelölőnégyzettel
+
+A mozgatás **nem visszavonható**, ezért nem lehet „mindent vagy semmit”. A Rendezés
+párbeszéd olvasható `Text` előnézete helyett **`CheckList`**: soronként
+jelölőnégyzet, „Mind kijelöl” / „Egyiket se” gomb, és az Áthelyezés gomb **tiltott,
+amíg nulla az kijelölés** — legalább egy iratot ki kell választani.
+
+`CheckList` = Treeview egy „☑/☐” oszloppal, nem sok `ttk.Checkbutton` egy görgetett
+vásznon: 150 dolgozó × több irat mellett az utóbbi érezhetően lassú, a Treeview
+viszont virtualizál. A bizonytalan („TIPP”) sorok halványan jelennek meg.
+
+Az Ellenőrzés párbeszédből az *Áthelyezés…* gomb ugyanide vezet — nem építettünk
+belőle másodikat.
+
+**Buktató, amibe belefutottam:** a `CheckList.keys` attribútum **elfedi a Tk
+`widget.keys()` metódusát**. Minden widgetfa-bejáró (teszt, segéd) elromlik tőle,
+csendben és távol a hibahelytől. Ezért `_keys`.
+
+### 15.3 Visszamenőleges átnevezés (`rename_plan` / `rename_apply`)
+
+A meglévő iratok átnevezése a 14.1-es metodikára. A forrás sorrendje:
+
+1. **a bélyeg** (`read_stamp`) — ez bizonyíték: oda iktattuk, az a típus;
+2. a **felismert név** (`match_rule`), ebből az **Iktató doktípusa** (`rule_type`),
+   nem a szabály neve — a szabály `name`-je oszlopcímke („Aláírt formanyomtatvány”),
+   nem dokumentumnév. Enélkül `Kiss Anna Aláírt formanyomtatvány (aláírt)…` lenne (mérve).
+3. ahol egyik sem dönt: **nem tippelünk** — a sor `biztos=False`, kijelöletlen,
+   és a párbeszéd külön kiírja, hogy azokhoz nem nyúlunk.
+
+Az „aláírt” jelölőt a bélyeg helye (`02_Feltoltheto`) vagy a név adja; a fotójelölőt
+a név (`fotóval ellátva` vagy a régi `_kesz`). Nem generált iratra (útlevél, diploma)
+nem kerül „aláírt”. Az átnevezés **soha nem ír felül** meglévő iratot: ütközésnél (2), (3).
+
+Valódi iratokon mérve, egy körben:
+
+```
+szkennelt_0042.pdf                              -> John Doe Meghatalmazás (aláírt).pdf          [bélyeg]
+John Doe Tart_eng_formanyomtatvany alairt_kesz  -> John Doe Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf
+John Doe Utlevel.pdf                            -> John Doe Útlevél.pdf
+IMG_20260101.pdf                                -> (érintetlen: se bélyeg, se egyértelmű név)
+```
+
+A `DOC_TYPES_DEFAULT` első eleme ezért lett `Tart_eng_formanyomtatvány` helyett
+**`Tartózkodási engedély formanyomtatvány`**: a fájlnévbe ez kerül.
+
+### 15.4 Ellenőrzés
+
+Önteszt 255/255, GUI **165/165** (új: „ELLENŐRZŐ: ROSSZ HELY, JELÖLŐNÉGYZETEK,
+VISSZAMENŐLEGES ÁTNEVEZÉS” — 9 ellenőrzés: az ékezet nem bukik el, a gyökérben
+fekvő irat „rossz helyen” és nem „ismeretlen”, a terv a bélyegből és a névből is
+helyes, az eldönthetetlent békén hagyja, a Mind/Egyiket se működik, nulla
+kijelölésnél a gomb tiltott, és az átnevezés után a lemezen az egységes nevek
+vannak).

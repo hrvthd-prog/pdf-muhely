@@ -50,7 +50,7 @@ app.geometry("1280x740+20+20")
 app.nb.select(app.nb.tabs()[min(tab_i, len(app.nb.tabs()) - 1)])
 if tab_i == 1:                                  # Iktató: tegyünk a sorba egy PDF-et
     ikt = app.tabs["Iktató"]
-    ikt.doc_type.set("Tart_eng_formanyomtatvány")
+    ikt.doc_type.set("Tartózkodási engedély formanyomtatvány")
     ikt._type_chosen()
     d = P.open()
     for k in range(3):

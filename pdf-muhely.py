@@ -699,6 +699,88 @@ class CropDialog(tk.Toplevel):
         self.destroy()
 
 
+class CheckList(ttk.Frame):
+    """Jelölőnégyzetes lista: soronként egy művelet, „Mind” és „Egyiket se” gombbal.
+
+    Treeview egy „☑/☐” oszloppal, nem sok ttk.Checkbutton egy görgetett vásznon:
+    több száz sornál (150 dolgozó × több irat) az érezhetően lassú, a Treeview
+    viszont virtualizál. Kattintás a soron vagy Szóköz vált.
+
+    A hívó `fill(rows)`-zal tölt és `selected()`-del kérdez; a `count_var`
+    szövegváltozó mindig a kijelöltek számát mutatja (ebből tiltható a gomb).
+    """
+
+    def __init__(self, master, headings, widths, height=14, on_change=None):
+        super().__init__(master)
+        self.on_change = on_change
+        self._keys = {}            # iid -> a hívó kulcsa (a `keys` a Tk metódusa!)
+        self.on = {}
+        cols = ("_ck",) + tuple(f"c{i}" for i in range(len(headings)))
+        self.tv = ttk.Treeview(self, columns=cols, show="headings", height=height,
+                               selectmode="browse")
+        self.tv.heading("_ck", text="✓")
+        self.tv.column("_ck", width=34, stretch=False, anchor="center")
+        for c, h, w in zip(cols[1:], headings, widths):
+            self.tv.heading(c, text=h)
+            self.tv.column(c, width=w, stretch=(w >= 240))
+        sb = ttk.Scrollbar(self, orient="vertical", command=self.tv.yview)
+        self.tv.configure(yscrollcommand=sb.set)
+        self.tv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tv.bind("<Button-1>", self._click)
+        self.tv.bind("<space>", lambda e: (self._toggle(self.tv.focus()), "break")[1])
+        # A „tipp” sorok halványan: a biztos és a bizonytalan eset ránézésre váljon el.
+        self.tv.tag_configure("tipp", foreground=COL_WARN)
+
+    def fill(self, rows, checked=True):
+        """rows: [(kulcs, (cella, …), tipp-e)] — a kulcsot adja vissza a selected()."""
+        self.tv.delete(*self.tv.get_children())
+        self._keys, self.on = {}, {}
+        for i, (key, cells, tipp) in enumerate(rows):
+            iid = str(i)
+            self._keys[iid] = key
+            self.on[iid] = checked
+            self.tv.insert("", "end", iid=iid, tags=("tipp",) if tipp else (),
+                           values=(("☑" if checked else "☐"),) + tuple(cells))
+        self._changed()
+
+    def _click(self, e):
+        iid = self.tv.identify_row(e.y)
+        if iid and self.tv.identify_region(e.x, e.y) != "heading":
+            self._toggle(iid)
+
+    def _toggle(self, iid):
+        if iid not in self.on:
+            return
+        self.on[iid] = not self.on[iid]
+        self.tv.set(iid, "_ck", "☑" if self.on[iid] else "☐")
+        self._changed()
+
+    def set_all(self, val: bool):
+        for iid in self.on:
+            self.on[iid] = val
+            self.tv.set(iid, "_ck", "☑" if val else "☐")
+        self._changed()
+
+    def selected(self):
+        return [self._keys[i] for i in self.tv.get_children() if self.on[i]]
+
+    def _changed(self):
+        if self.on_change:
+            self.on_change(len(self.selected()))
+
+
+def checklist_box(parent, headings, widths, height=14, on_change=None):
+    """CheckList + „Mind kijelöl” / „Egyiket se” gombsor. -> a CheckList."""
+    cl = CheckList(parent, headings, widths, height, on_change)
+    cl.pack(fill="both", expand=True, padx=14)
+    row = ttk.Frame(parent)
+    row.pack(fill="x", padx=14, pady=(4, 0))
+    ttk.Button(row, text="Mind kijelöl", command=lambda: cl.set_all(True)).pack(side="left")
+    ttk.Button(row, text="Egyiket se", command=lambda: cl.set_all(False)).pack(side="left", padx=6)
+    return cl
+
+
 class FileList(ttk.Frame):
     """Listbox + görgetősáv + Frissítés/Tallózás gombpár."""
 
@@ -2856,7 +2938,9 @@ class EditorTab(ttk.Frame):
 # ───────────────────────────── 5. fül: iktató ─────────────────────────────
 # ── konfiguráció ────────────────────────────────────────────────────────────
 DOC_TYPES_DEFAULT = [
-    "Tart_eng_formanyomtatvány",
+    # Kiírva és ékezettel — ez kerül a fájlnévbe:
+    # „John Doe Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf”
+    "Tartózkodási engedély formanyomtatvány",
     "Nyilatkozat szálláshely változatlanságáról",
     "Előzetes megállapodás",
     "Elfogadó nyilatkozat",
@@ -4886,6 +4970,91 @@ def is_worker_folder(folder: str, rules: list, depth: int = 3) -> bool:
                and os.path.splitext(rel)[1].lower() in (".pdf", ".docx"))
 
 
+def name_is_signed(rel: str) -> bool:
+    """Látszik-e a néven, hogy aláírt példány. A norm() ezt a szót szándékosan
+    kitörli (az illesztéshez), ezért itt strip_accents-szel nézzük."""
+    low = strip_accents(os.path.basename(rel))
+    return any(k in low for k in (strip_accents(MARK_SIGNED), "signed"))
+
+
+def name_has_photo(rel: str) -> bool:
+    """Rajta van-e már az arckép a név szerint. A régi „_kesz” utótag ugyanezt
+    jelentette — a visszamenőleges átnevezéshez azt is el kell fogadni."""
+    low = strip_accents(os.path.basename(rel))
+    return strip_accents(MARK_PHOTO) in low or "_kesz" in low
+
+
+def rule_type(rule, ikt_types, rules):
+    """A szabályhoz tartozó Iktató-doktípus (a fájlnévbe ez kerül), vagy None.
+    Ugyanaz az illesztés, ami a típuspalettát is sorba rakja (palette_types)."""
+    return next((t for t in ikt_types
+                 if match_rule(target_name("X", t), rules) == (rule, False)), None)
+
+
+def rename_plan(parent: str, rules: list, ikt_types=None, depth: int = 2) -> list:
+    """A meglévő iratok átnevezése az egységes metodikára (kepek-pdf-terv.md 14.1).
+
+    -> [(dolgozó, rel, új név, indok, biztos-e)]
+    Csak azokat adja vissza, ahol az új név TÉR EL a mostanitól.
+
+    A forrás sorrendje: a **bélyeg** a bizonyíték (oda iktattuk, az a típus), a
+    név csak tartalék. Ahol egyik sem dönt — nincs bélyeg és a név sem illeszkedik
+    egyértelműen —, ott nem tippelünk: `biztos=False`, és a párbeszéd külön jelzi.
+    """
+    out = []
+    ikt_types = load_types() if ikt_types is None else ikt_types
+    for who in worker_dirs(parent):
+        folder = os.path.join(parent, who)
+        for rel in walk_files(folder, depth):
+            if is_noise(rel) or not rel.lower().endswith(".pdf"):
+                continue
+            path = os.path.join(folder, rel)
+            st = read_stamp(path)
+            rule, amb = match_rule(rel, rules)
+            if st.get("tipus"):
+                tipus, indok, biztos = st["tipus"], "bélyeg", True
+            elif rule is not None and not amb:
+                # A szabály NEVE oszlopcímke („Aláírt formanyomtatvány”), nem
+                # dokumentumnév — a fájlnévbe az Iktató doktípusa való. Enélkül
+                # „Kiss Anna Aláírt formanyomtatvány (aláírt)…” lenne (mérve).
+                tipus = rule_type(rule, ikt_types, rules) or rule.name
+                indok, biztos = "felismert név", True
+            else:
+                out.append((who, rel, None,
+                            "se bélyeg, se egyértelmű név — kézzel", False))
+                continue
+            # Aláírt-e: a bélyeg helye a bizonyíték, a név a tartalék. A nem
+            # generált iratra (útlevél, diploma) nem kerül „aláírt” jelölő.
+            r = rule if rule is not None else doc_type_rule(tipus, rules)
+            generalt = r is None or r.generated
+            alairt = (st.get("hely") == DIR_UP) or name_is_signed(rel)
+            uj = target_name(who, tipus, MARK_SIGNED if (generalt and alairt) else "",
+                             photo=bool(r and r.arckep and name_has_photo(rel)))
+            if uj != os.path.basename(rel):
+                out.append((who, rel, uj, indok, biztos))
+    return out
+
+
+def rename_apply(parent: str, items) -> tuple:
+    """A kiválasztott átnevezések végrehajtása. -> (kész, [(dolgozó\\rel, hiba)])
+    Ütközésnél (2), (3) … — soha nem írunk felül meglévő iratot."""
+    done, errs = 0, []
+    for who, rel, uj, _indok, _biztos in items:
+        if not uj:
+            continue
+        folder = os.path.join(parent, who)
+        src = os.path.join(folder, rel)
+        dstdir = os.path.dirname(src)
+        try:
+            cel = os.path.join(dstdir, unique_name(dstdir, uj)[0])
+            check_path_len(cel)
+            os.rename(src, cel)
+            done += 1
+        except OSError as e:
+            errs.append((os.path.join(who, rel), str(e)))
+    return done, errs
+
+
 def migracio_terv(folder: str, rules: list, depth: int = 3) -> list:
     """Mit hova mozgatnánk egy dolgozó mappájában.
     -> [(relatív út, cél | None, indok, biztos-e)]
@@ -4968,12 +5137,13 @@ def audit_folder(parent: str, rules: list, depth: int = 2, on_step=None) -> dict
     tartalom (13.6). Ez az egyetlen hely, ahol minden PDF-et megnyitunk — a
     mátrix szándékosan csak a név szerint fel nem ismerteket nézi meg.
     -> {"stampable": [(dolgozó, rel, út, szabály, alkönyvtár)],
+        "misplaced": [(dolgozó, rel, út, szabály)],  # felismert név, rossz hely
         "unknown": [(dolgozó, rel)],            # se bélyeg, se felismert név
         "foreign": [(dolgozó, rel, bélyeg dolgozója)],
         "mismatch": [(dolgozó, rel, bélyeg típusa, név szerinti típus)],
         "dupes": [[(dolgozó, rel), …]], "seen": n}"""
-    res = {"stampable": [], "unknown": [], "foreign": [], "mismatch": [],
-           "dupes": [], "seen": 0}
+    res = {"stampable": [], "misplaced": [], "unknown": [], "foreign": [],
+           "mismatch": [], "dupes": [], "seen": 0}
     by_hash = {}
     for who in worker_dirs(parent):
         folder = os.path.join(parent, who)
@@ -4992,6 +5162,13 @@ def audit_folder(parent: str, rules: list, depth: int = 2, on_step=None) -> dict
                 # megadja, mit írjunk — találgatva nem bélyegzünk (13.6).
                 if rule is not None and not amb and sub in WORK_DIRS:
                     res["stampable"].append((who, rel, path, rule, sub))
+                elif rule is not None and not amb:
+                    # A NEVÉT felismerjük, csak nem a 01/02 valamelyikében fekszik
+                    # (jellemzően a dolgozói mappa gyökerében). Ez eddig az
+                    # „unknown” kosárba esett, és a párbeszéd azt írta rá, hogy a
+                    # nevét sem ismerjük fel — ez volt az Áttekintő „hibás adat”
+                    # panasz valódi oka. Mérve: 6 teszt-iratból 3 esett ide.
+                    res["misplaced"].append((who, rel, path, rule))
                 else:
                     res["unknown"].append((who, rel))
             else:
@@ -6350,20 +6527,29 @@ class AttekintoTab(ttk.Frame):
                            (" …" if len(skipped) > 6 else "")).pack(anchor="w",
                                                                     padx=14, pady=(0, 6))
 
-        txt = tk.Text(win, width=88, height=22, wrap="none")
-        txt.pack(fill="both", expand=True, padx=14)
-        for name in hu_sorted(list(plans)):
-            _folder, t = plans[name]
-            txt.insert(tk.END, f"{name}\n")
-            for rel, dst, reason, sure in t:
-                mark = "  →  " if dst else "  ·  "
-                txt.insert(tk.END, f"   {rel}{mark}{dst or 'marad'}"
-                                   f"    [{'' if sure else 'TIPP: '}{reason}]\n")
-            txt.insert(tk.END, "\n")
-        txt.configure(state="disabled")
+        # Iratonkénti jelölőnégyzet: a mozgatás nem visszavonható, ezért a
+        # felhasználó döntsön soronként — ne „mindent vagy semmit” legyen. A
+        # mozgatható sorok alapból bejelölve; a tippek is, de halványan jelölve.
+        cl = checklist_box(
+            win, ("Dolgozó", "Fájl", "Hova", "Miért"), (150, 330, 120, 220), 18,
+            on_change=lambda n: go.configure(
+                text=f"Áthelyezés ({n} fájl)",
+                state=("normal" if n else "disabled")))
+        self.tidy_cl = cl
 
         row = ttk.Frame(win)
         row.pack(fill="x", padx=14, pady=12)
+        go = ttk.Button(row, text="Áthelyezés")
+        sorok = []
+        for name in hu_sorted(list(plans)):
+            folder, t = plans[name]
+            for rel, dst, reason, sure in t:
+                if not dst:
+                    continue                   # marad a gyökérben: nincs mit mozgatni
+                sorok.append(((folder, rel, dst, reason, sure),
+                              (name, rel, dst, ("" if sure else "TIPP: ") + reason),
+                              not sure))
+        cl.fill(sorok)
 
         def only_dirs():
             made = 0
@@ -6378,14 +6564,21 @@ class AttekintoTab(ttk.Frame):
             self.refresh()
 
         def move_all():
+            pick = cl.selected()
+            if not pick:                   # a gomb tiltva van; ez csak öv + nadrágtartó
+                return
             if not messagebox.askyesno(
                     "Rendezés",
-                    f"{movable} fájl mozgatása a helyére.\n\n"
+                    f"{len(pick)} fájl mozgatása a helyére.\n\n"
                     "Ez NEM visszavonható (a fájlok a mappán belül mozognak).\n"
                     "Folytatjuk?", parent=win):
                 return
+            # Mappánként csoportosítva: a migracio_vegrehajt egy dolgozóra dolgozik.
+            per_folder = {}
+            for folder, rel, dst, reason, sure in pick:
+                per_folder.setdefault(folder, []).append((rel, dst, reason, sure))
             done, errs = 0, []
-            for _name, (folder, t) in plans.items():
+            for folder, t in per_folder.items():
                 try:
                     ensure_work_dirs(folder)
                 except OSError as e:
@@ -6407,9 +6600,11 @@ class AttekintoTab(ttk.Frame):
 
         b = ttk.Button(row, text="Csak a mappák létrehozása", command=only_dirs)
         b.pack(side="left")
-        if movable:
-            ttk.Button(row, text=f"Mappák + {movable} fájl mozgatása",
-                       command=move_all).pack(side="left", padx=8)
+        # Az Áthelyezés gomb a lista fölött jött létre (a visszahívása állítja a
+        # feliratát); itt kerül a helyére. Üres kijelölésnél tiltott: legalább egy
+        # iratot ki kell választani.
+        go.configure(command=move_all)
+        go.pack(side="left", padx=8)
         ttk.Button(row, text="Mégsem", command=win.destroy).pack(side="right")
         b.focus_set()
         win.bind("<Escape>", lambda e: win.destroy())
@@ -6439,6 +6634,7 @@ class AttekintoTab(ttk.Frame):
         ttk.Label(win, wraplength=640, justify="left",
                   text=f"{res['seen']} PDF átnézve. "
                        f"{len(res['stampable'])} bélyegezhető utólag, "
+                       f"{len(res['misplaced'])} rossz helyen, "
                        f"{len(res['foreign'])} idegen bélyeg, "
                        f"{len(res['mismatch'])} eltérő típus, "
                        f"{len(res['dupes'])} tartalom-azonos csoport.").pack(
@@ -6458,6 +6654,10 @@ class AttekintoTab(ttk.Frame):
         section(f"BÉLYEGEZHETŐ UTÓLAG ({len(res['stampable'])}) — a névből és a helyből",
                 [f"{w}\\{rel}  →  {rule.name} / {sub}"
                  for w, rel, _p, rule, sub in res["stampable"][:200]])
+        section(f"ROSSZ HELYEN ({len(res['misplaced'])}) — a nevét felismerjük, de nem "
+                f"a {DIR_PREP}/{DIR_UP} mappában fekszik",
+                [f"{w}\\{rel}  →  {rule.name}"
+                 for w, rel, _p, rule in res["misplaced"][:200]])
         section(f"IDEGEN BÉLYEG ({len(res['foreign'])}) — más dolgozó irata?",
                 [f"{w}\\{rel}  →  a bélyeg szerint: {other}"
                  for w, rel, other in res["foreign"]])
@@ -6491,7 +6691,91 @@ class AttekintoTab(ttk.Frame):
         if res["stampable"]:
             ttk.Button(row, text=f"Bélyegzés ({len(res['stampable'])} irat)",
                        command=do_stamp).pack(side="left")
+        if res["misplaced"]:
+            # Az áthelyezés a Rendezés párbeszédében történik (iratonkénti
+            # jelölőnégyzettel) — nem építünk belőle másodikat.
+            ttk.Button(row, text=f"Áthelyezés… ({len(res['misplaced'])})",
+                       command=lambda: (win.destroy(), self._open_tidy())).pack(
+                side="left", padx=6)
+        ttk.Button(row, text="Átnevezés…",
+                   command=lambda: (win.destroy(), self._open_rename())).pack(side="left")
         ttk.Button(row, text="Bezárás", command=win.destroy).pack(side="right")
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ---------------- visszamenőleges átnevezés az egységes metodikára ----------------
+    def _open_rename(self):
+        """A meglévő iratok átnevezése a „(aláírt, fotóval ellátva)” metodikára
+        (kepek-pdf-terv.md 14.1). A bélyeg a bizonyíték, a név a tartalék; ahol
+        egyik sem dönt, a sor TIPP-ként, kijelöletlenül jön — ott nem tippelünk."""
+        if not self.rows:
+            self._info("Nincs beolvasott mappa.", warn=True)
+            return
+        self._info("Nevek vizsgálata…")
+        self.update_idletasks()
+        ikt = self.app.tabs.get("Iktató")
+        try:
+            terv = rename_plan(self.parent_dir, self.rules,
+                               ikt.types if ikt else None)
+        except OSError as e:
+            self._info(f"A vizsgálat nem futott le: {e}", warn=True)
+            return
+        jo = [t for t in terv if t[2]]
+        elakadt = [t for t in terv if not t[2]]
+        if not jo:
+            self._info(f"Minden irat neve megfelel a metodikának."
+                       + (f" {len(elakadt)} iratnál nem lehet eldönteni." if elakadt else ""),
+                       ok=not elakadt, warn=bool(elakadt))
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Átnevezés az egységes metodikára")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        ttk.Label(win, wraplength=760, justify="left",
+                  text=f"{len(jo)} irat neve tér el a metodikától "
+                       f"(„Név Doktípus (aláírt, fotóval ellátva).pdf”). "
+                       f"A bélyeggel ellátottaknál a típus bizonyított, a többinél a "
+                       f"felismert névből jön. Az átnevezés nem ír felül meglévő "
+                       f"iratot: ütközésnél (2), (3) … lesz belőle."
+                       + (f"\n\n⚠ {len(elakadt)} iratnál se bélyeg, se egyértelmű név — "
+                          f"azokhoz nem nyúlunk." if elakadt else "")).pack(
+            anchor="w", padx=14, pady=(14, 8))
+
+        self.rename_cl = cl = checklist_box(
+            win, ("Dolgozó", "Mostani név", "Új név", "Miből"),
+            (140, 300, 300, 100), 18,
+            on_change=lambda n: go.configure(
+                text=f"Átnevezés ({n} irat)",
+                state=("normal" if n else "disabled")))
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=12)
+        go = ttk.Button(row, text="Átnevezés")
+        cl.fill([(t, (t[0], os.path.basename(t[1]), t[2], t[3]), not t[4]) for t in jo])
+
+        def do_rename():
+            pick = cl.selected()
+            if not pick:
+                return
+            if not messagebox.askyesno(
+                    "Átnevezés",
+                    f"{len(pick)} irat átnevezése.\n\n"
+                    "A fájlok a helyükön maradnak, csak a nevük változik.\n"
+                    "Folytatjuk?", parent=win):
+                return
+            done, errs = rename_apply(self.parent_dir, pick)
+            win.destroy()
+            self.refresh()
+            if errs:
+                messagebox.showwarning(
+                    "Átnevezés — részben",
+                    f"{done} irat átnevezve, {len(errs)} nem:\n\n" +
+                    "\n".join(f"{a}: {b}" for a, b in errs[:8]))
+            self._info(f"{done} irat átnevezve." + (f" {len(errs)} hiba." if errs else ""),
+                       ok=not errs, warn=bool(errs))
+
+        go.configure(command=do_rename)
+        go.pack(side="left")
+        ttk.Button(row, text="Mégsem", command=win.destroy).pack(side="right")
         win.bind("<Escape>", lambda e: win.destroy())
 
     # ---------------- kötegelt tömörítés ----------------
@@ -8768,7 +9052,7 @@ def _selftest() -> int:
             ck("régi szabályfájl: az arckép-jelölő az alapértelmezésből pótlódik",
                next(r for r in R if r.id == "forma").arckep)
             ck("célmappa régi szabályfájllal is 01, amíg nincs fotó",
-               target_subdir("Tart_eng_formanyomtatvány", R, False) == DIR_PREP)
+               target_subdir("Tartózkodási engedély formanyomtatvány", R, False) == DIR_PREP)
             # A „taj” később született: a régi fájlhoz hozzáadódik…
             regi = [asdict(r) for r in DEFAULT_RULES if r.id != "taj"]
             with open(settings_path(), "w", encoding="utf-8") as f:
@@ -8918,9 +9202,9 @@ def _selftest() -> int:
        file_loc(os.path.join(DIR_UP, "Regi", "a.pdf")) == "F")
     ck("célmappa: útlevél -> 02", target_subdir("Útlevél", RULES) == DIR_UP)
     ck("célmappa: formanyomtatvány fotó nélkül -> 01",
-       target_subdir("Tart_eng_formanyomtatvány", RULES, False) == DIR_PREP)
+       target_subdir("Tartózkodási engedély formanyomtatvány", RULES, False) == DIR_PREP)
     ck("célmappa: formanyomtatvány fotóval -> 02",
-       target_subdir("Tart_eng_formanyomtatvány", RULES, True) == DIR_UP)
+       target_subdir("Tartózkodási engedély formanyomtatvány", RULES, True) == DIR_UP)
     ck("célmappa: ismeretlen típus -> 02", target_subdir("Saját irat", RULES) == DIR_UP)
     ck("worker_root: a 02-ből egyet vissza",
        worker_root(os.path.join("X", "Kiss Anna", DIR_UP)) ==
@@ -9405,7 +9689,7 @@ def _selftest() -> int:
        shorts == ["Forma", "Előz", "Elism", "Hozzá", "Megh", "Útl", "SzVált", "SzIg",
                   "Végz", "NAV", "Munk", "Saját irat"], shorts)
     ck("paletta: az Iktató-típus neve marad, az Áttekintőből a szabály neve jön",
-       pal[0][0] == "Tart_eng_formanyomtatvány" and pal[5][0] == "Útlevél")
+       pal[0][0] == "Tartózkodási engedély formanyomtatvány" and pal[5][0] == "Útlevél")
     ck("paletta-név -> az Áttekintő felismeri",
        all(match_rule(target_name("Kiss Anna", t), RULES)[0] is r for t, r in pal if r))
     dirs = ["Kiss Anna", "Kiss Anna Mária", "Nagy Béla", "Ökrös Zsófia"]
