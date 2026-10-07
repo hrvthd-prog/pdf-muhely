@@ -1255,3 +1255,58 @@ magassága a szabályok/típusok számától **független** (12, 20 és 30 szab�
 
 Önteszt 255/255, GUI **173/173** (új: „FELÜLET: SZÁMOZÁS, FÜLSTÍLUS, RASZTERIZÁLÁS,
 DIALÓGUSOK” — 7 ellenőrzés).
+
+---
+
+## 17. Egységes dolgozóválasztó (2026-10-07)
+
+### 17.1 Hol választunk dolgozót, és hogyan
+
+| Fül | Eddig | Most |
+|---|---|---|
+| Összeállító | legördülő (Combobox) | **közös `WorkerPicker`** |
+| Arckép elhelyezés | **sima szövegmező** | **közös `WorkerPicker`** |
+| Iktató | kattintás a dolgozói csempék rácsán + szűrőmező | változatlan |
+| Áttekintő | `filter_text` — a mátrixot szűri | nem választó, változatlan |
+
+Az Arckép fülön a nevet fejből kellett tudni, vagy a munkamappát átállítani a
+dolgozó mappájára — pedig a lista ott volt a kezünkben. Az **Iktató nem kapott
+legördülőt**: ott a dolgozói csempék rácsa *maga* a választéklista, és gazdagabb
+is (látszik, hány irat van kint) — legördülővé alakítani visszalépés lenne.
+
+A két fül nem két egyforma Combobox lett, hanem **egy közös widget**
+(`WorkerPicker`): ugyanaz a szűkítés, ugyanaz a szóhasználat, ugyanaz az Enter-
+viselkedés. Az `arrow_suffix` az egyetlen eltérés — az Arckép fülön a találat mögé
+kiírja a célt (`→ Nagy Béla\02_Feltoltheto`).
+
+A régi `ComposerTab._fill_who` / `_who_enter` / `_who_changed` hármasból így egy
+`_who_changed` maradt, ami csak a `self.who`-t tükrözi.
+
+### 17.2 A közben kiesett valódi hiba: a `set_folder` találgatása
+
+A `PlacerTab.set_folder` eddig így döntötte el, hogy munkamappát vagy dolgozói
+mappát kapott:
+
+```python
+if base in worker_dirs(parent):      # „a mappa benne van a szülője almappái között”
+```
+
+Ez viszont **szinte minden mappára igaz**, a munkamappára is — a `worker_dirs`
+egyszerűen listázza az almappákat. Következmény: a `parent_dir` a munkamappa
+SZÜLŐJE lett, és a dolgozóválasztóba a munkamappa neve került a dolgozók helyett
+(mérve: a legördülő egyetlen eleme `gyujto` volt). Szövegmezővel ez évekig nem
+tűnt fel, mert a felhasználó úgyis beírta a nevet; legördülővel azonnal látszott.
+
+Van rá **pontos** jel, nem kell találgatni: a felső sáv munkamappája. A
+`refresh_all` azt adja át, az Áttekintő „Arckép elhelyezése” menüje pedig a
+dolgozó mappáját — tehát „a kapott mappa ≠ a munkamappa” pontosan azt jelenti,
+hogy dolgozói mappát kaptunk.
+
+### 17.3 Ellenőrzés
+
+Önteszt 255/255, GUI **179/179** (új: „DOLGOZÓVÁLASZTÓ: EGYSÉGES LEGÖRDÜLŐ MINDKÉT
+FÜLÖN” — 6 ellenőrzés: azonos osztály mindkét fülön, üres mezőnél a dolgozói
+mappákat kínálja (nem a munkamappát), a `parent_dir` a munkamappa marad, ékezet
+nélküli részlet feloldása a céllal együtt, kétes részletnél szűkítés és
+figyelmeztetés, és az Áttekintőből hívva a dolgozó kitöltődik úgy, hogy a
+munkamappa NEM változik).

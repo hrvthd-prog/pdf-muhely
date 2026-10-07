@@ -785,6 +785,74 @@ def checklist_box(parent, headings, widths, height=14, on_change=None):
     return cl
 
 
+class WorkerPicker(ttk.Frame):
+    """Dolgozóválasztó: legördülő a munkamappa dolgozói mappáival + visszajelzés.
+
+    Egy helyen, mert két fülön kell ugyanaz (Összeállító, Arckép elhelyezés). Az
+    Arckép fülön eddig sima szövegmező volt: a nevet fejből kellett tudni, vagy a
+    munkamappát átállítani a dolgozó mappájára — pedig a lista ott volt a kezünkben.
+
+    A beírt részlet szűkíti a legördülőt; ha a mező már EGY dolgozót jelöl, újra
+    mindenkit mutat — különben váltani csak visszatörölve lehetne. Enter kiegészíti
+    a nevet a teljesre.
+
+    `arrow_suffix`: a találat mögé írt cél (az Arckép fülön a „\\02_Feltoltheto”).
+    """
+
+    def __init__(self, master, arrow_suffix: str = "", on_change=None,
+                 on_select=None, wraplength: int = 0):
+        super().__init__(master)
+        self.arrow_suffix = arrow_suffix
+        self.on_change, self.on_select = on_change, on_select
+        self.dirs = []
+        self.who = None
+        self.var = tk.StringVar(value="")
+        self.msg = tk.StringVar(value="")
+        self.cb = ttk.Combobox(self, textvariable=self.var, postcommand=self._fill)
+        self.cb.pack(fill="x")
+        self.lbl = ttk.Label(self, textvariable=self.msg, wraplength=wraplength)
+        self.lbl.pack(anchor="w", pady=(2, 0))
+        self.cb.bind("<Return>", lambda e: self._enter())
+        self.cb.bind("<<ComboboxSelected>>", lambda e: self._selected())
+        self.var.trace_add("write", lambda *a: self.refresh())
+
+    def set_dirs(self, dirs):
+        self.dirs = dirs
+        self.refresh()
+
+    def _fill(self):
+        who, hits = resolve_worker(self.var.get(), self.dirs)
+        self.cb.configure(values=self.dirs if who else hits)
+
+    def refresh(self):
+        self.who, hits = resolve_worker(self.var.get(), self.dirs)
+        if self.who:
+            msg, col = f"→ {self.who}{self.arrow_suffix}", COL_OK
+        elif not self.var.get().strip():
+            msg, col = "válaszd a listából, vagy írd be a nevét (elég egy részlete)", ""
+        else:
+            msg, col = (f"{len(hits)} találat — pontosíts" if hits
+                        else "nincs ilyen dolgozói mappa"), COL_WARN
+        self.msg.set(msg)
+        self.lbl.configure(foreground=col)
+        if self.on_change:
+            self.on_change()
+
+    def warn(self, text):
+        """Külső hibaüzenet a mező alá (pl. „előbb válaszd ki a dolgozót”)."""
+        self.msg.set(text)
+        self.lbl.configure(foreground=COL_WARN)
+
+    def _enter(self):
+        if self.who:
+            self.var.set(self.who)      # a részletből a teljes név
+        self._selected()
+
+    def _selected(self):
+        if self.on_select:
+            self.on_select()
+
+
 class FileList(ttk.Frame):
     """Listbox + görgetősáv + Frissítés/Tallózás gombpár."""
 
@@ -945,19 +1013,20 @@ class PlacerTab(ttk.Frame):
         # a fotó épp most került rá. Ez zárja be a kört 01 → fotó → 02.
         ik = ttk.LabelFrame(left, text=f"Iktatás a {DIR_UP} mappába")
         ik.pack(fill="x", pady=(0, 8))
-        wr = ttk.Frame(ik)
-        wr.pack(fill="x", padx=6, pady=(4, 0))
-        ttk.Label(wr, text="Dolgozó:").pack(side="left")
-        ttk.Entry(wr, textvariable=self.who_text, width=20).pack(side="left", padx=4)
-        self.who_lbl = ttk.Label(ik, textvariable=self.who_msg, wraplength=320)
-        self.who_lbl.pack(anchor="w", padx=6)
+        ttk.Label(ik, text="Dolgozó:").pack(anchor="w", padx=6, pady=(4, 0))
+        # Ugyanaz a választó, mint az Összeállítón (WorkerPicker): legördülő a
+        # munkamappa dolgozói mappáival. Eddig itt sima szövegmező volt.
+        self.picker = WorkerPicker(ik, arrow_suffix=f"\\{DIR_UP}",
+                                   on_change=self._who_changed, wraplength=300)
+        self.picker.pack(fill="x", padx=6)
+        self.who_text, self.who_msg = self.picker.var, self.picker.msg
+        self.who_lbl, self.who_cb = self.picker.lbl, self.picker.cb
         tr = ttk.Frame(ik)
         tr.pack(fill="x", padx=6, pady=2)
         ttk.Label(tr, text="Típus:").pack(side="left")
         self.type_cbo = ttk.Combobox(tr, textvariable=self.doc_type, width=24,
                                      state="readonly")
         self.type_cbo.pack(side="left", padx=4)
-        self.who_text.trace_add("write", lambda *a: self._who_changed())
 
         ttk.Label(left, textvariable=self.pos_info, foreground="#333", wraplength=320).pack(anchor="w")
 
@@ -1013,19 +1082,22 @@ class PlacerTab(ttk.Frame):
     def set_folder(self, folder):
         self.pdfs.set_folder(folder)
         self.imgs.set_folder(folder)
-        # A munkamappa a dolgozói mappák szülője; ha egy dolgozó mappáját kaptuk
-        # (Áttekintő → „Arckép elhelyezése”), a szülőt vesszük, a nevet kitöltjük.
-        base = os.path.basename(os.path.normpath(folder))
-        parent = os.path.dirname(os.path.normpath(folder))
-        if parent and base and os.path.isdir(os.path.join(parent, base)):
-            try:
-                if base in worker_dirs(parent):
-                    self.parent_dir = parent
-                    self.refresh()
-                    self.who_text.set(base)
-                    return
-            except OSError:
-                pass
+        # Honnan tudjuk, hogy a kapott mappa a MUNKAMAPPA vagy egy DOLGOZÓÉ? A
+        # felső sáv munkamappája az egyetlen biztos jel: a refresh_all azt adja
+        # át, az Áttekintő „Arckép elhelyezése” menüje pedig a dolgozó mappáját.
+        #
+        # Korábban ezt találgatás döntötte el (benne van-e a mappa a szülője
+        # almappái között) — ez viszont szinte MINDEN mappára igaz, a
+        # munkamappára is. Következmény: a munkamappa szülője lett a parent_dir,
+        # és a dolgozóválasztóba a munkamappa neve került a dolgozók helyett
+        # (mérve: a legördülő egyetlen eleme „gyujto” volt).
+        work = getattr(self.app, "folder", None)
+        work = work.get() if work is not None else folder
+        if os.path.normpath(folder) != os.path.normpath(work):
+            self.parent_dir = os.path.dirname(os.path.normpath(folder))
+            self.refresh()
+            self.who_text.set(os.path.basename(os.path.normpath(folder)))
+            return
         self.parent_dir = folder
         self.refresh()
 
@@ -1036,6 +1108,7 @@ class PlacerTab(ttk.Frame):
             self.dirs = worker_dirs(self.parent_dir)
         except OSError:
             self.dirs = []
+        self.picker.set_dirs(self.dirs)
         ikt = getattr(self.app, "tabs", {}).get("Iktató")
         types = ikt.types if ikt else load_types()
         self.type_cbo.configure(values=types)
@@ -1045,23 +1118,13 @@ class PlacerTab(ttk.Frame):
             pick = next((t for t in types
                          if (doc_type_rule(t, rules) or Rule("", "", "")).arckep), None)
             self.doc_type.set(pick or (types[0] if types else ""))
-        self._who_changed()
 
     def _rules(self) -> list:
         att = getattr(self.app, "tabs", {}).get("Áttekintő")
         return att.rules if att else rules_from(default_settings())
 
     def _who_changed(self):
-        self.who, hits = resolve_worker(self.who_text.get(), self.dirs)
-        if self.who:
-            msg, col = f"→ {self.who}\\{DIR_UP}", COL_OK
-        elif not self.who_text.get().strip():
-            msg, col = "a nevéből elég egy részlet", ""
-        else:
-            msg, col = (f"{len(hits)} találat — pontosíts" if hits
-                        else "nincs ilyen dolgozói mappa"), COL_WARN
-        self.who_msg.set(msg)
-        self.who_lbl.configure(foreground=col)
+        self.who = self.picker.who
 
     def _iktat(self):
         """A fotóval ellátott irat a dolgozó 02_Feltoltheto mappájába, az Iktató
@@ -1070,8 +1133,7 @@ class PlacerTab(ttk.Frame):
             messagebox.showwarning("Hiányzik", "PDF és kép is kell az iktatáshoz.")
             return
         if not self.who:
-            self.who_msg.set("Előbb válaszd ki a dolgozót.")
-            self.who_lbl.configure(foreground=COL_WARN)
+            self.picker.warn("Előbb válaszd ki a dolgozót.")
             return
         dt = self.doc_type.get()
         if not dt:
@@ -7312,13 +7374,12 @@ class ComposerTab(ttk.Frame):
         # ── jobb oldali panel: dolgozó, típuspaletta, kimenet ──
         w = ttk.LabelFrame(right, text="Dolgozó (kötegenként egy)")
         w.pack(fill="x")
-        self.who_cb = ttk.Combobox(w, textvariable=self.who_text, postcommand=self._fill_who)
-        self.who_cb.pack(fill="x", padx=6, pady=(6, 2))
-        self.who_cb.bind("<Return>", lambda e: self._who_enter())
-        self.who_cb.bind("<<ComboboxSelected>>", lambda e: self.canvas.focus_set())
-        self.who_text.trace_add("write", lambda *a: self._who_changed())
-        self.who_lbl = ttk.Label(w, textvariable=self.who_msg)
-        self.who_lbl.pack(anchor="w", padx=6, pady=(0, 6))
+        self.picker = WorkerPicker(w, on_change=self._who_changed,
+                                   on_select=lambda: self.canvas.focus_set(),
+                                   wraplength=PANEL_W - 24)
+        self.picker.pack(fill="x", padx=6, pady=(6, 6))
+        self.who_text, self.who_msg = self.picker.var, self.picker.msg
+        self.who_lbl, self.who_cb = self.picker.lbl, self.picker.cb
 
         p = ttk.LabelFrame(right, text="Doktípus — kattintással")
         p.pack(fill="x", pady=8)
@@ -7390,6 +7451,7 @@ class ComposerTab(ttk.Frame):
             self.dirs = worker_dirs(self.folder)
         except OSError:
             self.dirs = []
+        self.picker.set_dirs(self.dirs)
         ikt, att = self.app.tabs["Iktató"], self.app.tabs["Áttekintő"]
         self.palette = palette_types(ikt.types, att.rules)
         self.pal.delete(0, tk.END)
@@ -7424,30 +7486,9 @@ class ComposerTab(ttk.Frame):
         r = next((r for t, r in self.palette if t == doc_type), None)
         return "" if r and not r.generated else SUFFIX
 
-    def _fill_who(self):
-        """A legördülő tartalma: a beírt részletre illeszkedő nevek — de ha a mező
-        már EGY dolgozót jelöl, mind a név, különben váltani csak visszatörölve
-        lehetne."""
-        who, hits = resolve_worker(self.who_text.get(), self.dirs)
-        self.who_cb.configure(values=self.dirs if who else hits)
-
     def _who_changed(self):
-        self.who, hits = resolve_worker(self.who_text.get(), self.dirs)
-        if self.who:
-            msg, col = f"→ {self.who}", COL_OK
-        elif not self.who_text.get().strip():
-            msg, col = "írd be a nevét (elég egy részlete)", ""
-        else:
-            msg, col = (f"{len(hits)} találat — pontosíts" if hits
-                        else "nincs ilyen dolgozói mappa"), COL_WARN
-        self.who_msg.set(msg)
-        self.who_lbl.configure(foreground=col)
+        self.who = self.picker.who
         self._refresh_out()
-
-    def _who_enter(self):
-        if self.who:
-            self.who_text.set(self.who)
-            self.canvas.focus_set()
 
     # ---------------- címkézés ----------------
     def _pal_click(self, e):

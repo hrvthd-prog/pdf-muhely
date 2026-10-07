@@ -656,10 +656,10 @@ try:
     kt.who_text.set("kiss")
     ck("dolgozó a mező részletéből", kt.who == "Kiss Anna", kt.who_msg.get())
     kt.who_text.set("dolgozó 1")          # kétes részlet: 11 találat
-    kt._fill_who()
+    kt.picker._fill()
     szukitett = list(kt.who_cb.cget("values"))
     kt.who_text.set("Kiss Anna")          # már EGY dolgozót jelöl
-    kt._fill_who()
+    kt.picker._fill()
     ck("a legördülő kiválasztás után is mind a nevet adja (nem kell visszatörölni)",
        len(kt.who_cb.cget("values")) == len(kt.dirs) > 11,
        (len(kt.who_cb.cget("values")), len(kt.dirs)))
@@ -1378,6 +1378,47 @@ try:
     att.parent_dir = root
     att.refresh()
     pump(0.3)
+
+    print("DOLGOZÓVÁLASZTÓ: EGYSÉGES LEGÖRDÜLŐ MINDKÉT FÜLÖN")
+    # Az Arckép fülön eddig sima szövegmező volt: a nevet fejből kellett tudni,
+    # vagy a munkamappát átállítani a dolgozó mappájára. Most ugyanaz a
+    # WorkerPicker, mint az Összeállítón.
+    app.show(pl)
+    pump(0.4)
+    ck("az Arckép fül dolgozóválasztója legördülő, és ugyanaz az osztály",
+       pl.picker.cb.winfo_class() == "TCombobox" and type(pl.picker) is type(kt.picker),
+       pl.picker.cb.winfo_class())
+    pl.who_text.set("")
+    pump(0.2)
+    pl.picker._fill()
+    ck("üres mezőnél a legördülő a dolgozói mappákat kínálja (nem a munkamappát)",
+       list(pl.picker.cb.cget("values")) == pl.dirs and "Kiss Anna" in pl.dirs,
+       list(pl.picker.cb.cget("values"))[:4])
+    # A munkamappa/dolgozói mappa megkülönböztetése: korábban találgatás döntötte
+    # el (benne van-e a szülő almappái között) — az a munkamappára is igaz volt,
+    # így a parent_dir a munkamappa SZÜLŐJE lett.
+    ck("a munkamappát kapva a parent_dir a munkamappa marad",
+       os.path.normpath(pl.parent_dir) == os.path.normpath(root), pl.parent_dir)
+    pl.who_text.set("nagy bela")               # ékezet nélkül
+    pump(0.2)
+    ck("ékezet nélküli részlet is feloldódik, és kiírja a célt",
+       pl.who == "Nagy Béla" and pm.DIR_UP in pl.who_msg.get(),
+       (pl.who, pl.who_msg.get()))
+    pl.who_text.set("dolgozó 1")               # kétes részlet: sok találat
+    pump(0.2)
+    pl.picker._fill()
+    ck("kétes részletnél szűkít és figyelmeztet",
+       pl.who is None and "találat" in pl.who_msg.get() and
+       len(pl.picker.cb.cget("values")) >= 2, (pl.who, pl.who_msg.get()))
+    munkamappa_elotte = app.folder.get()
+    app.goto_arckep(os.path.join(root, "Nagy Béla"))
+    pump(0.5)
+    ck("az Áttekintőből hívva a dolgozó kitöltődik, a munkamappa NEM változik",
+       pl.who == "Nagy Béla" and app.folder.get() == munkamappa_elotte and
+       os.path.normpath(pl.parent_dir) == os.path.normpath(root),
+       (pl.who, app.folder.get(), pl.parent_dir))
+    pl.who_text.set("")
+    pump(0.2)
 
     print("FELÜLET: SZÁMOZÁS, FÜLSTÍLUS, RASZTERIZÁLÁS, DIALÓGUSOK")
     app.nb.select(kt)
