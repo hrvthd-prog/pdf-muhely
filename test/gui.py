@@ -1237,6 +1237,46 @@ try:
     ck("naplósor a szerkesztésről", last[5].startswith("SZERKESZTVE") and
        last[3] == "Kiss Anna TAJ-megrendelő.pdf", last)
     ck("mentés után nincs „nincs mentve”", not ed.dirty)
+
+    print("MINDEN FÜL: A LEGKISEBB ABLAKBAN SEM LÓG LE GOMB")
+    # Az Arckép fülön a Mentés és az Iktatás MINDEN ablakméretben levágódott (a bal
+    # panel 990 px-et kért, a legnagyobb ablakban is 658 jutott). A görgethető
+    # panel + fix alsó gombsáv ezt oldja meg; ez a teszt a visszaesést fogja meg.
+    app.geometry("940x620")               # az app minsize-ja
+    pump(0.8)
+
+    def latszik(w, tab):
+        return (w.winfo_ismapped() and
+                w.winfo_rooty() + w.winfo_height() <= tab.winfo_rooty() + tab.winfo_height())
+
+    for nev, gomb in (("Arckép elhelyezés", "btn_iktat"), ("Összeállító", "btn_go")):
+        tab = app.tabs[nev]
+        app.show(tab)
+        pump(0.6)
+        b = getattr(tab, gomb)
+        ck(f"{nev}: a záró gomb görgetés nélkül is látszik", latszik(b, tab),
+           (b.winfo_rooty() + b.winfo_height() - tab.winfo_rooty(), tab.winfo_height()))
+
+    # A görgethető panelen MINDEN vezérlő elérhető: a végére görgetve látszik az alja.
+    pl = app.tabs["Arckép elhelyezés"]
+    app.show(pl)
+    pump(0.5)
+    vaszon = next(c for c in pl.shell.winfo_children() if c.winfo_class() == "Canvas")
+    sav = next(c for c in pl.shell.winfo_children() if c.winfo_class() == "TScrollbar")
+    ck("Arckép: a panel görgetősávja megjelenik, ha nem fér ki", sav.winfo_ismapped())
+    vaszon.yview_moveto(1.0)
+    pump(0.4)
+    ck("Arckép: a végére görgetve a Típus legördülő látszik",
+       latszik(pl.type_cbo, pl), (pl.type_cbo.winfo_rooty() - pl.winfo_rooty(), pl.winfo_height()))
+    # Az Összeállító panelje a szokásos ablakban KIFÉR: ott nincs görgetősáv.
+    app.geometry("1200x840")
+    pump(0.5)
+    kt2 = app.tabs["Összeállító"]
+    app.show(kt2)
+    pump(0.5)
+    ksav = next(c for c in kt2.winfo_children()[0].winfo_children()
+                if c.winfo_class() == "TScrollbar")
+    ck("Összeállító: szokásos ablakban nincs panelgörgetés", not ksav.winfo_ismapped())
 finally:
     app.destroy()
     shutil.rmtree(TMP, ignore_errors=True)

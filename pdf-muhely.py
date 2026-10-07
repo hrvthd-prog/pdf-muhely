@@ -503,6 +503,71 @@ def open_image_pdf(path, crop=None, levels=None):
     return out
 
 
+# A görgetéssel saját dolga van (lista, rács, nagyítás): ezeken a vásznon átívelő
+# panelgörgetés nem lép közbe.
+_NO_WHEEL = ("Listbox", "Treeview", "Text", "Canvas", "TCombobox", "Spinbox", "TSpinbox")
+
+
+def scroll_panel(parent, width: int = 340, side: str = "left", padx=(8, 0)):
+    """Fix szélességű oldalpanel, amely SZÜKSÉG ESETÉN görget.
+
+    Visszatér: ``(shell, inner)``. A tartalom az ``inner``-be megy; a ``shell``
+    gridelt, így fix alsó sáv az 1. sorba tehető (Szerkesztés: „Alkalmaz”).
+    Alacsony ablakban a panel alja eddig egyszerűen levágódott — az Arcképnél a
+    Mentés és az Iktatás gomb MINDEN ablakméretben kint volt (990 px kellett,
+    658 jutott; mérve). A görgetősáv csak akkor jelenik meg, ha tényleg kell.
+    """
+    shell = ttk.Frame(parent, width=width + 22)
+    shell.pack(side=side, fill="y", padx=padx, pady=8)
+    shell.pack_propagate(False)
+    c = tk.Canvas(shell, width=width, highlightthickness=0, bd=0,
+                  background=ttk.Style().lookup("TFrame", "background"))
+    sb = ttk.Scrollbar(shell, orient="vertical", command=c.yview)
+    c.configure(yscrollcommand=sb.set)
+    # Griddel, nem packkel: a kiterjedő vászon elvenné a görgetősáv helyét, és az
+    # sosem jelenne meg (mérve).
+    shell.rowconfigure(0, weight=1)
+    shell.columnconfigure(0, weight=1)
+    shell.columnconfigure(1, minsize=16)      # a görgetősáv ne nyomódjon össze
+    c.grid(row=0, column=0, sticky="nsew")
+    sb.grid(row=0, column=1, sticky="nsew")   # a téma sávja 1 px-et kér: ki kell feszíteni
+    sb.grid_remove()
+    inner = ttk.Frame(c)
+    win = c.create_window(0, 0, anchor="nw", window=inner, width=width)
+    bound = set()
+
+    def wheel(e):
+        c.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        return "break"
+
+    def sync(_e=None):
+        req, have = inner.winfo_reqheight(), c.winfo_height()
+        # Ha van hely, a panel kifeszül: így az expand=True-s részek (Kimenet,
+        # fájllisták) nagy ablakban is kitöltik az aljat, mint görgetés előtt.
+        c.itemconfigure(win, height=max(req, have))
+        c.configure(scrollregion=(0, 0, width, max(req, have)))
+        if req > have:
+            sb.grid()
+        else:
+            sb.grid_remove()
+            c.yview_moveto(0)
+        # A görgő a panel BÁRMELY pontján működjön: a Tk az esemény célwidgetjéhez
+        # viszi, és az nem bugyborékol a szülőhöz — ezért widgetenként kötjük.
+        # A tartalom építés közben nő, ezért itt (a <Configure>-ben), nem egyszer.
+        stack = [inner]
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if w not in bound and w.winfo_class() not in _NO_WHEEL:
+                bound.add(w)
+                w.bind("<MouseWheel>", wheel)
+
+    inner.bind("<Configure>", sync)
+    c.bind("<Configure>", sync)
+    c.bind("<MouseWheel>", wheel)
+    return shell, inner
+
+
 class CropDialog(tk.Toplevel):
     """Minimális képszerkesztő: húzz téglalapot a megtartandó rész köré.
     Vágás és fényerő/kontraszt; forgatni az elhelyezésnél amúgy lehet."""
@@ -731,16 +796,18 @@ class PlacerTab(ttk.Frame):
         self.refresh()
 
     def _build(self):
-        left = ttk.Frame(self, width=340)
-        left.pack(side="left", fill="y", padx=8, pady=8)
-        left.pack_propagate(False)
+        # A bal panel görgethető: a tartalma 990 px-et kér, és a legnagyobb ablakban
+        # is csak 658 jutott — a Mentés és az Iktatás gomb EDDIG MINDIG levágódott.
+        self.shell, left = scroll_panel(self, 340, padx=8)
 
-        self.pdfs = FileList(left, "PDF nyomtatványok", (".pdf",), self._open_pdf, height=6,
+        self.pdfs = FileList(left, "PDF nyomtatványok", (".pdf",), self._open_pdf, height=4,
                              memory_key="nyomtatvanyok")
-        self.pdfs.pack(fill="both", expand=True)
-        self.imgs = FileList(left, "Arcképek", IMG_EXT, self._load_img, height=6,
+        # A görgethető panelen a listák NEM nyúlnak: expand=True-val ketten elvitték
+        # a teljes magasságot, és minden más a látható rész alá csúszott.
+        self.pdfs.pack(fill="x")
+        self.imgs = FileList(left, "Arcképek", IMG_EXT, self._load_img, height=4,
                              memory_key="arckepek")
-        self.imgs.pack(fill="both", expand=True, pady=(8, 0))
+        self.imgs.pack(fill="x", pady=(8, 0))
         self.img_lbl = ttk.Label(left, text="(nincs kép)", foreground="#555", wraplength=320)
         self.img_lbl.pack(anchor="w", pady=(4, 0))
         ttk.Button(left, text="Körülvágás, fényerő…",
@@ -785,7 +852,8 @@ class PlacerTab(ttk.Frame):
         dd.pack(anchor="w", padx=6, pady=2)
         ttk.Label(dd, text="DPI:").pack(side="left")
         ttk.Spinbox(dd, from_=72, to=1200, textvariable=self.dpi, width=6).pack(side="left", padx=6)
-        ttk.Button(o, text="Mentés másként…", command=self._save).pack(fill="x", padx=6, pady=6)
+        ttk.Label(o, text="a mentés és az iktatás a panel alján",
+                  foreground=UI["ink_soft"]).pack(anchor="w", padx=6, pady=(0, 6))
 
         # Iktatás: a kész (fotóval ellátott) irat mindig a feltölthető mappába megy —
         # a fotó épp most került rá. Ez zárja be a kört 01 → fotó → 02.
@@ -803,11 +871,17 @@ class PlacerTab(ttk.Frame):
         self.type_cbo = ttk.Combobox(tr, textvariable=self.doc_type, width=24,
                                      state="readonly")
         self.type_cbo.pack(side="left", padx=4)
-        ttk.Button(ik, text="Iktatás a feltölthetőbe",
-                   command=self._iktat).pack(fill="x", padx=6, pady=6)
         self.who_text.trace_add("write", lambda *a: self._who_changed())
 
         ttk.Label(left, textvariable=self.pos_info, foreground="#333", wraplength=320).pack(anchor="w")
+
+        # A fül két záró művelete a görgethető részen KÍVÜL, fix alsó sávban: ezekért
+        # ne kelljen görgetni (a Szerkesztés „Alkalmaz” sávjának mintájára).
+        bar = ttk.Frame(self.shell)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(bar, text="Mentés másként…", command=self._save).pack(fill="x")
+        self.btn_iktat = ttk.Button(bar, text="Iktatás a feltölthetőbe", command=self._iktat)
+        self.btn_iktat.pack(fill="x", pady=(4, 0))
 
         right = ttk.Frame(self)
         right.pack(side="right", fill="both", expand=True, padx=(0, 8), pady=8)
@@ -2112,34 +2186,7 @@ class EditorTab(ttk.Frame):
         # férne ki (mérve: 110 px hiányzott), és minden további sor újra elrontaná.
         # A görgetősáv csak akkor jelenik meg, ha tényleg kell — mint az Összeállító
         # típuspalettájánál (szerkeszto-terv.md 17.2, 19.7).
-        shell = ttk.Frame(self, width=362)
-        shell.pack(side="left", fill="y", padx=(8, 0), pady=8)
-        shell.pack_propagate(False)
-        self.lcanvas = lc = tk.Canvas(shell, width=340, highlightthickness=0, bd=0,
-                                      background=ttk.Style().lookup("TFrame", "background"))
-        self.lsb = lsb = ttk.Scrollbar(shell, orient="vertical", command=lc.yview)
-        lc.configure(yscrollcommand=lsb.set)
-        # Griddel, nem packkel: a kiterjedő vászon elvenné a görgetősáv helyét, és az
-        # sosem jelenne meg (mérve).
-        shell.rowconfigure(0, weight=1)
-        shell.columnconfigure(0, weight=1)
-        shell.columnconfigure(1, minsize=16)      # a görgetősáv ne nyomódjon össze
-        lc.grid(row=0, column=0, sticky="nsew")
-        lsb.grid(row=0, column=1, sticky="nsew")   # a téma sávja 1 px-et kér: ki kell feszíteni
-        lsb.grid_remove()
-        left = ttk.Frame(lc)
-        lc.create_window(0, 0, anchor="nw", window=left, width=340)
-
-        def lsync(_e=None):
-            lc.configure(scrollregion=(0, 0, 340, left.winfo_reqheight()))
-            if left.winfo_reqheight() > lc.winfo_height():
-                lsb.grid()
-            else:
-                lsb.grid_remove()
-                lc.yview_moveto(0)
-        left.bind("<Configure>", lsync)
-        lc.bind("<Configure>", lsync)
-        lc.bind("<MouseWheel>", lambda e: lc.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        shell, left = scroll_panel(self, 340, padx=(8, 0))
         # A bekezdés gombsora a görgethető részen KÍVÜL, fix alsó sávban: az Alkalmaz
         # mindig elérhető legyen, ne kelljen érte görgetni.
         self.actionbar = ttk.Frame(shell)
@@ -6859,9 +6906,9 @@ class ComposerTab(ttk.Frame):
         self._redraw()
 
     def _build(self):
-        right = ttk.Frame(self, width=PANEL_W)
-        right.pack(side="right", fill="y", padx=(0, 8), pady=8)
-        right.pack_propagate(False)
+        # A jobb panel görgethető: 940x620-as (minimális) ablakban 647 px kellett és
+        # 466 jutott — az Utótag mező és az „arckép rajta” jelölő levágódott (mérve).
+        _shell, right = scroll_panel(self, PANEL_W, side="right", padx=(0, 8))
         left = ttk.Frame(self)
         left.pack(side="left", fill="both", expand=True)
 
@@ -6948,8 +6995,10 @@ class ComposerTab(ttk.Frame):
 
         o = ttk.LabelFrame(right, text="Kimenet")
         o.pack(fill="both", expand=True)
-        go = ttk.Frame(o)                  # alulra: kis ablakban is látsszon
-        go.pack(side="bottom", fill="x", padx=6, pady=(2, 6))
+        # Az Iktatás a görgethető panelen KÍVÜL, fix alsó sávban: kis ablakban eddig
+        # a panel aljával együtt levágódott, most görgetés nélkül is ott van.
+        go = ttk.Frame(_shell)
+        go.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.btn_go = ttk.Button(go, text="Iktatás", command=self._iktat)
         self.btn_go.pack(side="left", fill="x", expand=True)
         ttk.Button(go, text="Visszavonás", command=self._undo).pack(side="left", padx=(6, 0))
@@ -6969,7 +7018,9 @@ class ComposerTab(ttk.Frame):
         self.suffix_ent = ttk.Entry(sf2, textvariable=self.suffix, state="disabled")
         self.suffix_ent.pack(side="left", fill="x", expand=True, padx=4)
         self.suffix.trace_add("write", lambda *a: self._suffix_changed())
-        self.tree = ttk.Treeview(o, columns=("name", "n", "note"), show="", height=4,
+        # height=2 a KÉRT magasság; ha van hely, az expand=True kifeszíti. Négy sort
+        # kérve a panel a szokásos ablakban is görgetni kezdett (mérve).
+        self.tree = ttk.Treeview(o, columns=("name", "n", "note"), show="", height=2,
                                  selectmode="browse")
         self.tree.column("name", width=170, stretch=True)
         self.tree.column("n", width=40, anchor="e", stretch=False)

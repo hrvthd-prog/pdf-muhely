@@ -695,3 +695,65 @@ bekezdés sorkizárása után minden sor 533,0–533,3-ig ér (cél 533,57), a s
 karakterre azonos, a rajzok száma változatlan.
 
 Felületfotó: `python tools/ui-kep.py 6 bekezdes.png`.
+
+---
+
+## 20. Javítás (2026-10-07): a levágódó oldalpanelek — közös `scroll_panel`
+
+### 20.1 A mérés
+
+Az **Arckép elhelyezés** fül bal panelje **990 px**-et kért. A program legnagyobb
+ablakában (1900×1150) is csak **658 px** jutott neki, a minimálisban (940×620)
+**433**. Vagyis a *Mentés másként…* és az *Iktatás a feltölthetőbe* gomb — a fül
+két záró művelete — **soha, egyetlen ablakméretben sem volt elérhető**. A modul
+emiatt használhatatlan volt, nem csak kényelmetlen.
+
+Ugyanez az **Összeállító** jobb paneljén a minimális ablakban jelentkezett
+(647 px kellett, 466 jutott): az *Utótag* mező és az *„arckép rajta”* jelölő esett ki.
+
+Az Iktató, az Áttekintő, az Összefűzés és a Raszterizálás mérve rendben volt.
+
+### 20.2 A megoldás
+
+A Szerkesztés fül már hordozott egy görgethető bal panelt (19.7). Ez most közös
+segédfüggvény: **`scroll_panel(parent, width, side, padx) -> (shell, inner)`**, és
+mindhárom fül ezt használja.
+
+Három dolgot tud, amit az eredeti nem:
+
+1. **Ha van hely, a panel kifeszül** (`height=max(req, have)` a vászonablakon), így
+   az `expand=True`-s részek — Összeállító *Kimenet* — nagy ablakban is kitöltik az
+   aljat, pontosan mint görgetés előtt. Nincs visszacsatolás: a *kért* magasság
+   független a kiosztottól.
+2. **A görgő a panel bármely pontján működik.** A Tk a `<MouseWheel>`-t a kurzor
+   alatti widgetnek adja, és az **nem bugyborékol a szülőhöz** — ezért widgetenként
+   kötjük, a `<Configure>`-ben (a tartalom építés közben nő). Kimarad, aminek saját
+   görgetése van: `_NO_WHEEL` (Listbox, Treeview, Text, Canvas, legördülők).
+3. A görgetősáv **csak akkor látszik, ha tényleg kell**.
+
+### 20.3 Fix alsó gombsáv — mert a görgetés önmagában kevés
+
+A görgethetőség azt garantálja, hogy egy vezérlő *elérhető*; a záró művelethez ez
+kevés, azt *látni* kell. A Szerkesztés „Alkalmaz” sávjának mintájára a shell 1. sora
+fix, görgetésen kívüli gombsáv:
+
+- **Arckép**: *Mentés másként…* + *Iktatás a feltölthetőbe*
+- **Összeállító**: *Iktatás* + *Visszavonás* (a `btn_go` látszódását a 17.2-es
+  regressziós teszt már méri — a pusztán görgethető változat elbukott rajta, jól)
+
+### 20.4 Két méretcsökkentés, hogy ne kelljen feleslegesen görgetni
+
+- Arckép: a két fájllista 6 → **4 sor**, és már nem `expand=True` (ketten elvitték a
+  teljes magasságot, minden más a látható rész alá csúszott). Így a fül lényege, az
+  *Igazítás*, görgetés nélkül látszik.
+- Összeállító: a *Kimenet* fa kért magassága 4 → **2 sor**; ha van hely, az
+  `expand=True` kifeszíti. Négy sort kérve a panel a szokásos ablakban is görgetett.
+
+### 20.5 Ellenőrzés
+
+Önteszt 254/254, GUI **156/156** (új: „MINDEN FÜL: A LEGKISEBB ABLAKBAN SEM LÓG LE
+GOMB” — 940×620-ban mindkét záró gomb látszik; az Arckép panelja görgetősávot mutat
+és a végére görgetve a Típus legördülő is látszik; az Összeállító panelja szokásos
+ablakban nem görget), verzió, frissítő zöld.
+
+Felületfotó: `python tools/ui-kep.py 3 arckep.png` és `... 0 osszeallito.png`.
