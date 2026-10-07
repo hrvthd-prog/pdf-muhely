@@ -1187,3 +1187,71 @@ fekvő irat „rossz helyen” és nem „ismeretlen”, a terv a bélyegből é
 helyes, az eldönthetetlent békén hagyja, a Mind/Egyiket se működik, nulla
 kijelölésnél a gomb tiltott, és az átnevezés után a lemezen az egységes nevek
 vannak).
+
+---
+
+## 16. Felületi javítások (2026-10-07)
+
+### 16.1 A kiválasztott fül: telt gomb, nem aláhúzás
+
+A kiválasztott fül eddig fehér kártya volt, alul egy 3 képpontos akcentuscsíkkal
+(`accent_bar`). Mostantól a **teljes felülete** akcentuskék, a felirat fehér
+(`st.map(..., foreground=[("selected", "#ffffff")])`) — olvasható marad, és nem kell
+a vékony csíkot keresni, hogy melyik fül aktív. Ugyanez az Eszközök alfülsávján.
+
+### 16.2 Doktípus: nincs többé számbillentyű
+
+16-nál több egyedi doktípusnál az 1–9 billentyű csak az **első kilencet** érte el, a
+többi néma maradt — a felhasználó joggal hitte hibásnak. Egy fél megoldás rosszabb,
+mint a kattintás, ezért a számbillentyűs címkézés megszűnt, és a sorszám a paletta
+feliratai elől is eltűnt. A **Backspace** (címke le) marad, a nagyítóban is.
+A súgószövegek és a „0 · címke le” gomb felirata ehhez igazodtak.
+
+### 16.3 Raszterizálás: kép is
+
+A fül fájllistája és a Tallózás ablaka eddig csak PDF-et mutatott; a képeket kézzel
+kellett átállítani „Minden fájl”-ra. Mostantól `(".pdf",) + IMG_EXT`, és a futtatás
+képnél `open_image_pdf`-fel nyit (egyoldalas PDF) — onnantól a lépés ugyanaz.
+
+### 16.4 Az alkalmazás jele: irat köteg, nem „PM” monogram
+
+Lekerekített jelvényen egy irat behajtott sarokkal, mögötte egy második lap. A két
+egymásra csúsztatott lap a köteget mondja, a behajtott sarok az irat bevett jele —
+ugyanaz a forma, mint az `ICON_PATHS["doc"]`, tehát a jel és az ikonkészlet egy
+nyelvet beszél. A monogram betűfüggő volt és 32 képpontban mosódott.
+
+**Két buktató, mérve a 10× nagyításon:**
+
+- A korábbi „felső derengés” külön lekerekített kártya volt: az **alsó** sarkai is
+  lekerekedtek, és félmagasságban benyomták a jelvény oldalát — nyolcszögnek látszott.
+  Most egyetlen alakzat.
+- A `round_pts` **sarkonként három pontot** ad (bélyegképekhez ez a gyors), amitől a
+  32 képpontos jelvény szögletes. Itt egyszer rajzolunk, úgyhogy `smooth=True` —
+  ingyen van, és valódi körívet ad.
+
+### 16.5 A verzió utáni dátum levágódása
+
+Az app **DPI-unaware**, GDI-skálázással fut (`SetProcessDpiAwarenessContext(-5)`, a
+`__main__`-ban, szándékos egyszerűsítés). 125–150%-os Windows-nagyításnál a GDI
+szélesebben rajzolja a szöveget, mint ahogy a Tk a logikai pixeleken kimérte — a sor
+**vége** csúszik le, vagyis épp a verzió utáni dátum. A fejléc két felirata ezért
+`DPI_SLACK = 14` képpont jobb oldali ráhagyást kap, ami a különbséget elnyeli.
+
+**Amit nem tudtam igazolni:** ez a gép 100%-os nagításon fut, ott a felirat
+mérve sosem vágódott le (`req_w == width == 214`). A javítás a kódban dokumentált
+GDI-skálázásos egyszerűsítésre céloz; 125–150%-on érdemes visszanézni.
+
+A `tools/ui-kep.py` mostantól átmásolja a `verzio.json`-t az ideiglenes mappába —
+enélkül a felületfotón „ismeretlen verzió” állt, és épp ezt a sort nem lehetett megnézni.
+
+### 16.6 Dialógusok: mérve rendben
+
+Hat párbeszédet mértem egy 768 képpont magas képernyőre (Ellenőrzés, Rendezés,
+Átnevezés, Beállítások, Hiánylista, Típusok): mind kifér. A Beállítások és a Típusok
+magassága a szabályok/típusok számától **független** (12, 20 és 30 szabállyal is
+618–620 px) — a listák belül görgetnek. Nincs mit javítani.
+
+### 16.7 Ellenőrzés
+
+Önteszt 255/255, GUI **173/173** (új: „FELÜLET: SZÁMOZÁS, FÜLSTÍLUS, RASZTERIZÁLÁS,
+DIALÓGUSOK” — 7 ellenőrzés).

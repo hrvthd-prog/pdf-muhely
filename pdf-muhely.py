@@ -112,6 +112,10 @@ UI = {
     "shade1":    "#dde3ef",   # vászon-árnyék, világos háttéren
     "shade2":    "#e7ecf5",
 }
+# Ráhagyás a GDI-skálázott (DPI-unaware) szövegrajzolásnak: 150%-nál a GDI kb.
+# feleannyival szélesebb glifákat rajzol, mint amennyit a Tk logikai pixelben
+# kimért — a fix méretű feliratok vége enélkül levágódik.
+DPI_SLACK = 14
 FONT_UI = ("Segoe UI", 10)
 FONT_SB = ("Segoe UI Semibold", 10)
 FONT_SM = ("Segoe UI", 9)
@@ -1502,7 +1506,10 @@ class RasterTab(ttk.Frame):
     def _build(self):
         top = ttk.Frame(self)
         top.pack(fill="both", expand=True, padx=10, pady=10)
-        self.files = FileList(top, "Raszterizálandó PDF", (".pdf",), self._pick, height=8)
+        # Képet is: eddig csak PDF látszott a listában és a Tallózás ablakában, a
+        # képeket kézzel kellett átállítani a „Minden fájl” szűrőre.
+        self.files = FileList(top, "Raszterizálandó PDF vagy kép",
+                              (".pdf",) + IMG_EXT, self._pick, height=8)
         self.files.pack(fill="both", expand=True)
         self.lbl = ttk.Label(top, text="(nincs kiválasztva)", foreground="#555")
         self.lbl.pack(anchor="w", pady=(6, 0))
@@ -1538,7 +1545,7 @@ class RasterTab(ttk.Frame):
 
     def _run(self):
         if not self.path:
-            messagebox.showwarning("Nincs fájl", "Válassz ki egy PDF-et.")
+            messagebox.showwarning("Nincs fájl", "Válassz ki egy PDF-et vagy képet.")
             return
         stem = os.path.splitext(os.path.basename(self.path))[0]
         dst = filedialog.asksaveasfilename(title="Mentés másként",
@@ -1553,7 +1560,9 @@ class RasterTab(ttk.Frame):
         try:
             self.app.status("Raszterizálás…")
             self.update_idletasks()
-            doc = open_checked(self.path)
+            # A kép egyoldalas PDF-ként nyílik — onnantól a lépés ugyanaz.
+            doc = (open_image_pdf(self.path)
+                   if self.path.lower().endswith(IMG_EXT) else open_checked(self.path))
             flat = rasterize_doc(doc, self.dpi.get(), self._parse_pages(doc.page_count))
             flat.save(dst, garbage=4, deflate=True)
             flat.close()
@@ -7083,10 +7092,10 @@ class OutDoc:
 
 class PageViewer(tk.Toplevel):
     """Nagyított előnézet — nem modális, közben a rácsban lehet vonszolni, és a
-    számbillentyű itt is címkéz. A nagyítás az illesztéshez képest értendő,
+    Backspace itt is leveszi a címkét. A nagyítás az illesztéshez képest értendő,
     lapozáskor a nézettel együtt megmarad; képnél a felső határa a natív felbontás."""
 
-    HINT = ("1–9: címke és tovább · görgő: nagyítás · húzás: mozgatás · "
+    HINT = ("Backspace: címke le · görgő: nagyítás · húzás: mozgatás · "
             "←/→: előző/következő · dupla kattintás: illesztés · Esc: bezárás")
 
     def __init__(self, tab):
@@ -7311,7 +7320,7 @@ class ComposerTab(ttk.Frame):
         self.who_lbl = ttk.Label(w, textvariable=self.who_msg)
         self.who_lbl.pack(anchor="w", padx=6, pady=(0, 6))
 
-        p = ttk.LabelFrame(right, text="Doktípus — kattintás vagy számbillentyű")
+        p = ttk.LabelFrame(right, text="Doktípus — kattintással")
         p.pack(fill="x", pady=8)
         lf = ttk.Frame(p)
         lf.pack(fill="x", padx=6, pady=(6, 2))
@@ -7323,7 +7332,7 @@ class ComposerTab(ttk.Frame):
         self.pal.bind("<ButtonRelease-1>", self._pal_click)
         row = ttk.Frame(p)
         row.pack(fill="x", padx=6, pady=(2, 6))
-        ttk.Button(row, text="0 · címke le", command=lambda: self._label(None)).pack(side="left")
+        ttk.Button(row, text="Címke le", command=lambda: self._label(None)).pack(side="left")
         ttk.Button(row, text="Típusok…", command=self._edit_types).pack(side="right")
         ttk.Button(p, text="Címke a szövegből (ahol van)",
                    command=self._label_from_text).pack(fill="x", padx=6, pady=(0, 6))
@@ -7385,7 +7394,7 @@ class ComposerTab(ttk.Frame):
         self.palette = palette_types(ikt.types, att.rules)
         self.pal.delete(0, tk.END)
         for i, (t, _r) in enumerate(self.palette):
-            self.pal.insert(tk.END, f" {i + 1 if i < 9 else ' '}   {t}")
+            self.pal.insert(tk.END, f"  {t}")
             c = LABEL_COLORS[i % len(LABEL_COLORS)]
             self.pal.itemconfig(i, background=tint(c), foreground=UI["ink"],
                                 selectbackground=tint(c, 0.72),
@@ -7449,17 +7458,16 @@ class ComposerTab(ttk.Frame):
         self.canvas.focus_set()
 
     def _key(self, e, item=None):
-        """1–9: a kijelöltek (a nagyítóban a látott oldal) címkéje a paletta
-        ennyiedik típusa, utána tovább a következő oldalra; 0 / Backspace: címke le."""
-        k = "0" if e.keysym == "BackSpace" else e.char
-        if len(k) != 1 or not k.isdigit():
+        """Backspace: címke le a kijelöltekről (a nagyítóban a látott oldalról).
+
+        A számbillentyűs címkézés megszűnt: 16-nál több egyedi doktípusnál az 1–9
+        csak az első kilencet érte el, a többi típus néma maradt — a felhasználó
+        joggal hitte hibásnak. Egy fél megoldás rosszabb, mint a kattintás."""
+        if e.keysym != "BackSpace":
             return None
         if item is not None:
             self.sel = {item}
-        if k == "0":
-            self._label(None)
-        elif int(k) <= len(self.palette):
-            self._label(self.palette[int(k) - 1][0])
+        self._label(None)
         return "break"
 
     def _label(self, doc_type):
@@ -7469,7 +7477,7 @@ class ComposerTab(ttk.Frame):
         if self._b or not todo:
             if not todo:
                 self.app.status("Jelöld ki az oldalakat (kattintás, Ctrl/Shift+kattintás), "
-                                "aztán nyomj számot.")
+                                "aztán kattints a Doktípus listában.")
             return
         doc = None
         if doc_type is not None:
@@ -7744,10 +7752,10 @@ class ComposerTab(ttk.Frame):
                           justify="center", font=("Segoe UI", 11),
                           text="Nincs oldal.\nAdj hozzá PDF-et vagy képeket — a sorrend "
                                "vonszolással állítható.\nJelöld ki az oldalakat, és nyomj "
-                               "számot (1–9): ez lesz a doktípusuk.\nCtrl+kattintás: több oldal · "
+                               "a Doktípus listában a típusra.\nCtrl+kattintás: több oldal · "
                                "Shift+kattintás: tartomány · dupla kattintás: nagyítás")
         bad = sum(1 for it in self.items if it.bad)
-        self.info.set(f"{n} oldal · {len(self.sel)} kijelölve · 1–9: címke · 0: címke le · "
+        self.info.set(f"{n} oldal · {len(self.sel)} kijelölve · címke: a Doktípus listából · "
                       "dupla kattintás: nagyítás" +
                       (f" · {bad} nem olvasható (kimarad)" if bad else ""))
 
@@ -7856,7 +7864,7 @@ class ComposerTab(ttk.Frame):
         docs = self._out_docs()
         if not docs:
             messagebox.showwarning("Nincs irat", "Címkézz fel legalább egy oldalt: jelöld ki, "
-                                                 "és nyomj számot (1–9).")
+                                                 "majd kattints a Doktípus listában.")
             return
         folder = os.path.join(self.folder, self.who)
         jobs = []
@@ -8257,6 +8265,44 @@ def _arc(cx, cy, r, a0, a1, steps=12):
             for i in range(steps + 1)]
 
 
+def draw_app_mark(c, size: int = 32):
+    """Az alkalmazás jele a fejlécben: lekerekített jelvényen egy irat behajtott
+    sarokkal, mögötte egy második lap.
+
+    Miért ez: a program a nyomtatás–aláírás–szkennelés UTÁNI lépéseket végzi —
+    iratokat rak össze, iktat és néz át. A két egymásra csúsztatott lap pont ezt
+    mondja („köteg”), a behajtott sarok pedig az „irat” bevett jele (ugyanaz a
+    forma, mint az ICON_PATHS „doc” ikonja — egy nyelvet beszél a felület).
+    A korábbi „PM” monogram betűfüggő volt és 32 képpontban mosódott.
+    """
+    k = size / 32.0                       # a rajz 32×32-es rácson készült
+
+    def P(*pts):
+        return [(x * k, y * k) for x, y in pts]
+
+    # Egyetlen, egyszínű jelvény, SIMÍTOTT sarokkal. Két dolgot kellett javítani:
+    # a korábbi „felső derengés” külön lekerekített kártya volt, és az ALSÓ sarkai
+    # is lekerekedtek — félmagasságban benyomták a jelvény oldalát; a round_pts
+    # pedig sarkonként három pontot ad (bélyegképekhez gyors), amitől 32 képpontban
+    # nyolcszögnek látszik. Itt egyetlen alakzatot rajzolunk egyszer: a smooth=True
+    # ingyen van, és valódi körívet ad (mérve a 10× nagyításon).
+    c.create_polygon(round_pts(1 * k, 1 * k, 31 * k, 31 * k, 6.5 * k),
+                     fill=UI["accent"], outline="", smooth=True)
+    # Hátsó lap: jobbra-fel csúsztatva kilátszik — ettől lesz köteg, nem egy lap.
+    c.create_polygon(P((13, 7), (20, 7), (23.5, 10.5), (23.5, 21.5), (13, 21.5)),
+                     fill="#a9c4fa", outline="", smooth=False)
+    # Elülső lap, behajtott sarokkal (ugyanaz a forma, mint a „doc” ikon).
+    c.create_polygon(P((8, 10.5), (15.5, 10.5), (19, 14), (19, 25), (8, 25)),
+                     fill="#ffffff", outline="", smooth=False)
+    c.create_polygon(P((15.5, 10.5), (15.5, 14), (19, 14)),
+                     fill="#8fb0f2", outline="", smooth=False)
+    # Sorok az iraton: a tartalom jele. Vastagságuk a mérettel nő.
+    lw = max(1, round(1.4 * k))
+    for y, x1 in ((16.8, 16.5), (19.6, 16.5), (22.4, 13.5)):
+        c.create_line(*P((10.5, y), (x1, y)), fill=UI["accent"],
+                      width=lw, capstyle="round")
+
+
 ICON_PATHS = {
     # (pontsorok, zárt-e) — 24×24-es rácson, stroke stílusban
     "folder": ([[(3, 7), (9, 7), (11, 9.5), (21, 9.5), (21, 19), (3, 19)]], True),
@@ -8510,14 +8556,14 @@ def build_theme(root):
             ], 8 + P, (9, 5))
         nine("Modern.tab", [
             round_png(S, R, B, None, 0, pad=P, bg=B),
-            (("selected",), round_png(S, R, W, UI["line"], 1.1, shadow=1.6, pad=P,
-                                      accent_bar=(UI["accent"], 3), bg=B)),
+            (("selected",), round_png(S, R, UI["accent"], None, 0, shadow=1.6,
+                                      pad=P, bg=B)),
             (("active",), round_png(S, R, UI["hover"], None, 0, pad=P, bg=B)),
         ], R + P, (17, 7))
         nine("Light.tab", [
             round_png(S, R, B, None, 0, pad=P, bg=B),
-            (("selected",), round_png(S, R, W, UI["line"], 1.1, shadow=1.4, pad=P,
-                                      bg=B)),
+            (("selected",), round_png(S, R, UI["accent"], None, 0, shadow=1.4,
+                                      pad=P, bg=B)),
             (("active",), round_png(S, R, UI["hover"], None, 0, pad=P, bg=B)),
         ], R + P, (16, 8))
         nine("Modern.card", [round_png((420, 320), R, B, UI["line"], 1.1,
@@ -8609,13 +8655,14 @@ def build_theme(root):
                  tabmargins=(12, 8, 12, 2))
     st.configure("TNotebook.Tab", font=FONT_SB, foreground=UI["ink_soft"],
                  padding=0)
-    st.map("TNotebook.Tab", foreground=[("selected", UI["accent"]),
+    st.map("TNotebook.Tab", foreground=[("selected", "#ffffff"),
                                         ("active", UI["ink"])])
     st.configure("Light.TNotebook", background=UI["bg"], borderwidth=0,
                  tabmargins=(2, 6, 2, 0))
     st.configure("Light.TNotebook.Tab", font=FONT_SB, foreground=UI["ink_soft"],
                  padding=0)
-    st.map("Light.TNotebook.Tab", foreground=[("selected", UI["accent"])])
+    st.map("Light.TNotebook.Tab", foreground=[("selected", "#ffffff"),
+                                              ("active", UI["ink"])])
     st.configure("Head.TFrame", background=UI["head"])
     st.configure("Head.TLabel", background=UI["head"], foreground=UI["head_ink"])
     st.configure("HeadTitle.TLabel", background=UI["head"], foreground=UI["ink"],
@@ -8813,15 +8860,19 @@ class App(tk.Tk):
         mark = tk.Canvas(inner, width=32, height=32, highlightthickness=0,
                          bg=UI["head"])
         mark.pack(side="left")
-        canvas_card(mark, 1, 1, 31, 31, 9, fill=UI["accent"])
-        canvas_card(mark, 1, 1, 31, 17, 9, fill="#3b74f0")
-        mark.create_text(16, 17, text="PM", fill="#ffffff",
-                         font=("Segoe UI Semibold", 11))
+        draw_app_mark(mark, 32)
         tit = ttk.Frame(inner, style="Head.TFrame")
         tit.pack(side="left", padx=(12, 28))
-        ttk.Label(tit, text="PDF Műhely", style="HeadTitle.TLabel").pack(anchor="w")
+        # A jobb oldali ráhagyás NEM dísz. Az app DPI-UNAWARE, GDI-skálázással fut
+        # (lásd a __main__ SetProcessDpiAwarenessContext(-5) hívását): 125–150%-os
+        # Windows-nagyításnál a GDI szélesebben rajzolja a szöveget, mint ahogy a Tk
+        # a logikai pixeleken kimérte — a sor VÉGE csúszik le, vagyis épp a
+        # verzió utáni dátum. A ráhagyás ezt a különbséget nyeli el.
+        ttk.Label(tit, text="PDF Műhely", style="HeadTitle.TLabel",
+                  padding=(0, 0, DPI_SLACK, 0)).pack(anchor="w", fill="x")
         ttk.Label(tit, text=f"offline eszköztár · {app_version()}",
-                  style="HeadMuted.TLabel").pack(anchor="w")
+                  style="HeadMuted.TLabel",
+                  padding=(0, 0, DPI_SLACK, 0)).pack(anchor="w", fill="x")
         ttk.Button(inner, text="Frissítés", style="Head.TButton",
                    command=self.refresh_all).pack(side="right")
         ttk.Button(inner, text="Módosítás…", style="Head.TButton",

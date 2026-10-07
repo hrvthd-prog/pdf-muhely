@@ -14,6 +14,7 @@ A valódi beállításfájlokhoz nem nyúl: a script_dir-t ideiglenes mappára i
 import ctypes
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 
@@ -28,6 +29,12 @@ out = sys.argv[2] if len(sys.argv) > 2 else "ui.png"
 
 TMP = tempfile.mkdtemp(prefix="ui-demo-")
 pm.script_dir = lambda: TMP
+# A verzio.json átmásolódik: enélkül a fejléc „ismeretlen verzió”-t mutatna, és a
+# felületfotón épp a verzió-dátum sort nem lehetne megnézni.
+try:
+    shutil.copy2(os.path.join(GY, pm.VERZIO_FILE), os.path.join(TMP, pm.VERZIO_FILE))
+except OSError:
+    pass
 root = os.path.join(TMP, "gyujto")
 for who in ("Kiss Anna", "Nagy Béla", "Ökrös Zsófia", "Tran Van Minh",
             "Horváth Dániel", "Kovács Péter"):

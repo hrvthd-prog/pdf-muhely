@@ -464,11 +464,22 @@ try:
        v.item is kt.items[nb + 1] and v.zk == zk and kt.sel == {kt.items[nb + 1]})
     v.event_generate("<Left>")
     pump(0.2)
-    v.event_generate("<Key>", keysym="1")
+    # A számbillentyűs címkézés megszűnt (16+ típusnál csak az első kilencet érte
+    # el); a nagyítóban a Backspace viszont továbbra is leveszi a címkét.
+    kt.sel = {kt.items[nb]}
+    kt._label(kt.palette[0][0])
+    pump(0.2)
+    ck("a látott kép címkét kap a palettáról",
+       kt.items[nb].doc and kt.items[nb].doc.doc_type == kt.palette[0][0],
+       kt.items[nb].doc)
+    v.event_generate("<Left>")                 # a címkézés továbblapoztatta a nagyítót
+    pump(0.2)
+    v.focus_force()
+    pump(0.1)
+    v.event_generate("<Key>", keysym="BackSpace")
     pump(0.3)
-    ck("nagyítóban 1: a látott kép címkét kap, a nagyító továbblapoz",
-       kt.items[nb].doc and kt.items[nb].doc.doc_type == kt.palette[0][0] and
-       v.item is kt.items[nb + 1], (kt.items[nb].doc, v.title()))
+    ck("nagyítóban Backspace: a látott képről lekerül a címke",
+       kt.items[nb].doc is None, (kt.items[nb].doc, v.item is kt.items[nb]))
     v.event_generate("<Escape>")
     pump(0.2)
     ck("Esc: bezár", kt.viewer is None)
@@ -665,17 +676,25 @@ try:
         w.event_generate("<Key>", keysym=k)
         pump(0.1)
 
+    def pal_click(i):
+        """Címkézés úgy, ahogy a felhasználó: kattintás a Doktípus listában.
+        (A számbillentyűk megszűntek — 16+ típusnál csak az első kilencet érték el.)"""
+        kt.pal.focus_force()
+        y = kt.pal.bbox(i)[1] + 2 if kt.pal.bbox(i) else 2
+        kt.pal.event_generate("<ButtonRelease-1>", x=10, y=y)
+        pump(0.15)
+
     def labels():
         return [kt._look(it.doc.doc_type)[0] if it.doc else None for it in kt.items]
 
     at(0)
     at(1, "Shift-")
-    key("1")
-    ck("szám: a kijelöltek címkét kapnak, a kijelölés továbblép",
+    pal_click(0)
+    ck("palettakattintás: a kijelöltek címkét kapnak, a kijelölés továbblép",
        labels()[:2] == ["Forma", "Forma"] and kt.sel == {kt.items[2]}, (labels(), idx()))
-    for k in "226":
-        key(k)
-    ck("billentyűvel végig a kötegen: 2 2 6",
+    for i in (1, 1, 5):
+        pal_click(i)
+    ck("kattintással végig a kötegen: Előz, Előz, Útl",
        labels() == ["Forma", "Forma", "Előz", "Előz", "Útl", None], labels())
     ck("kimenet: 3 irat, a meglévő jelölve, 1 oldal címke nélkül",
        len(kt.tree.get_children()) == 3 and kt.tree.set("1", "note") == "⚠ létezik" and
@@ -773,7 +792,7 @@ try:
     wait(lambda: kt._thumb_job is None, 20)
     at(0)
     at(3, "Shift-")
-    key("8")                                               # Szálláshely-igazolás, utótag nélkül
+    pal_click(7)                                           # Szálláshely-igazolás, utótag nélkül
     kt._ask_batch = lambda jobs, free: "new"
     kt._iktat()
     wait(lambda: kt._b is None, 180)
@@ -1359,6 +1378,69 @@ try:
     att.parent_dir = root
     att.refresh()
     pump(0.3)
+
+    print("FELÜLET: SZÁMOZÁS, FÜLSTÍLUS, RASZTERIZÁLÁS, DIALÓGUSOK")
+    app.nb.select(kt)
+    pump(0.4)
+    palsorok = [kt.pal.get(i) for i in range(kt.pal.size())]
+    ck("a Doktípus lista feliratai elől eltűnt a sorszám",
+       palsorok and not any(x.strip()[:1].isdigit() for x in palsorok), palsorok[:3])
+    # A számbillentyű már nem címkéz (16+ típusnál csak az első kilencet érte el).
+    kt._clear()
+    kt._add([koteg])
+    wait(lambda: kt._thumb_job is None, 30)
+    at(0)
+    key("1")
+    ck("számbillentyű már nem címkéz", kt.items[0].doc is None, kt.items[0].doc)
+
+    st = pm.ttk.Style(app)
+    ck("a kiválasztott fül felirata fehér (telt háttéren olvasható)",
+       dict(st.map("TNotebook.Tab", "foreground")).get("selected") == "#ffffff",
+       st.map("TNotebook.Tab", "foreground"))
+
+    rt = app.tabs["Raszterizálás"]
+    ck("a Raszterizálás fájllistája képet is elfogad",
+       ".jpg" in rt.files.exts and ".pdf" in rt.files.exts, rt.files.exts)
+
+    ck("a fejléc verzió-dátum felirata ráhagyással rajzolódik (GDI-skálázás)",
+       pm.DPI_SLACK > 0)
+
+    # A párbeszédek egy 768 képpont magas képernyőn is kiférnek, a szabályok
+    # számától függetlenül (a listák belül görgetnek).
+    def dlg_magas(nyit):
+        volt = set()
+        stack = [app]
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if w is not app and w.winfo_class() == "Toplevel":
+                volt.add(str(w))
+        nyit()
+        pump(0.6)
+        uj, stack = [], [app]
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if w is not app and w.winfo_class() == "Toplevel" and str(w) not in volt:
+                uj.append(w)
+        if not uj:
+            return None
+        w = uj[-1]
+        w.update_idletasks()
+        h = w.winfo_reqheight()
+        w.destroy()
+        pump(0.3)
+        return h
+
+    sok = att.rules + [pm.Rule(f"z{i}", f"Saját {i}", f"Z{i}", [], [f"zz{i}"])
+                       for i in range(18)]
+    regi = att.rules
+    att.rules = sok
+    hb = dlg_magas(att._open_settings)
+    att.rules = regi
+    ck("a Beállítások 30 szabállyal is kifér 768 képpontra", hb and hb + 31 <= 768, hb)
+    ht = dlg_magas(att._open_audit)
+    ck("az Ellenőrzés párbeszéd kifér 768 képpontra", ht and ht + 31 <= 768, ht)
 
     print("MINDEN FÜL: A LEGKISEBB ABLAKBAN SEM LÓG LE GOMB")
     # Az Arckép fülön a Mentés és az Iktatás MINDEN ablakméretben levágódott (a bal
