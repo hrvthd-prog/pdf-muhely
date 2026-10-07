@@ -993,7 +993,9 @@ class PlacerTab(ttk.Frame):
             return
         r = doc_type_rule(dt, self._rules())
         folder = os.path.join(self.parent_dir, self.who, DIR_UP)
-        name = target_name(self.who, dt, SUFFIX if (r is None or r.generated) else "")
+        # A fotó épp most került rá: a fotóigényes nyomtatvány nevébe ez bekerül.
+        name = target_name(self.who, dt, SUFFIX if (r is None or r.generated) else "",
+                           photo=bool(r and r.arckep))
         dst = os.path.join(folder, name)
         backup = None
         try:
@@ -1003,7 +1005,7 @@ class PlacerTab(ttk.Frame):
                 if not messagebox.askyesno(
                         "A fájl már létezik",
                         f"{name}\n\nFelülírjuk? Az előző példány a dolgozó "
-                        f"{BACKUP_DIR}\\ mappájába kerül.\n\n"
+                        f"{DIR_PREP}\\ mappájába kerül.\n\n"
                         "Nem = új név (2), (3) …"):
                     name = unique_name(folder, name)[0]
                     dst = os.path.join(folder, name)
@@ -1026,7 +1028,7 @@ class PlacerTab(ttk.Frame):
             return
         note = size_note(dst)
         log_row(self.parent_dir, self.src_path or "", os.path.join(self.who, DIR_UP),
-                name, dt, "FELULIRVA (elozo: " + BACKUP_DIR + ")" if backup else "OK")
+                name, dt, "FELULIRVA (elozo: " + DIR_PREP + ")" if backup else "OK")
         self.app.status(f"Iktatva: {name} {note}")
         messagebox.showinfo("Iktatva", f"{self.who}\\{DIR_UP}\\{name}" +
                             (f"\n\n{note}" if note else "") +
@@ -1235,7 +1237,7 @@ class PlacerTab(ttk.Frame):
         stem = os.path.splitext(os.path.basename(self.src_path))[0]
         dst = filedialog.asksaveasfilename(title="Mentés másként",
                                            initialdir=os.path.dirname(self.src_path),
-                                           initialfile=f"{stem}_kesz.pdf",
+                                           initialfile=add_mark(stem, MARK_PHOTO) + ".pdf",
                                            defaultextension=".pdf",
                                            filetypes=[("PDF fájlok", "*.pdf")])
         if not dst:
@@ -2842,12 +2844,12 @@ class EditorTab(ttk.Frame):
             log_row(self.log_parent, self.path,
                     os.path.relpath(os.path.dirname(dst), self.log_parent),
                     os.path.basename(dst), "",
-                    "SZERKESZTVE" + (f" (elozo: {BACKUP_DIR})" if backup else ""))
+                    "SZERKESZTVE" + (f" (elozo: {DIR_PREP})" if backup else ""))
         self.path, self.dirty = dst, False
         note = size_note(dst)
         self.app.status(f"Mentve: {os.path.basename(dst)} {note}")
         self.app.refresh_all()
-        self._say("Mentve" + (f", az előző példány a {BACKUP_DIR} mappában" if backup else "") +
+        self._say("Mentve" + (f", az előző példány a {DIR_PREP} mappában" if backup else "") +
                   (f" · {note}" if note else ""))
 
 
@@ -2861,9 +2863,21 @@ DOC_TYPES_DEFAULT = [
     "Egyoldalú hozzájárulási nyilatkozat",
     "Belföldi meghatalmazás",
 ]
-SUFFIX = "aláírt"
+# ── egységes fájlnév-metodika ──────────────────────────────────────────────
+# A jelölők EGY zárójelben, vesszővel elválasztva, ékezettel és szóközzel:
+#   Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf
+# A régi forma („… aláírt.pdf”, „…_kesz.pdf”) ettől még felismerhető marad: a
+# norm() minden jelölőt kitöröl az illesztés előtt.
+MARK_SIGNED = "aláírt"
+MARK_PHOTO = "fotóval ellátva"
+SUFFIX = MARK_SIGNED                       # az Iktató „Utótag” mezőjének alapértéke
 LOG_NAME = "iktato-naplo.csv"
-BACKUP_DIR = ".eredeti"                    # felülírt példányok a dolgozó mappáján belül
+# Külön mentésmappa (korábban .eredeti) NINCS: a felülírt példány a dolgozó
+# 01_Elokeszitett mappájába kerül, „(előző példány <időbélyeg>)” jelölővel. Így a
+# felhasználó ott látja, ahol dolgozik. A jelölőt az is_noise() ismeri, ezért az
+# Áttekintő mátrixába nem számít bele — enélkül minden felülírás hamis
+# duplikátumot csinálna ugyanarra a doktípusra.
+MARK_BACKUP = "előző példány"
 TYPES_FILE = "iktato-doktipusok.json"      # a szkript mappájában
 MEMORY_FILE = "emlekezet.json"             # utoljára használt útvonalak, doktípus
 
@@ -3017,13 +3031,41 @@ def hu_sorted(names) -> list:
     return sorted(names, key=_sort_key)
 
 
-def target_name(dir_name: str, doc_type: str, suffix: str = SUFFIX) -> str:
-    """Horváth Dániel + Előzetes megállapodás -> teljes fájlnév."""
-    parts = [dir_name.strip(), doc_type.strip(), suffix.strip()]
-    stem = " ".join(p for p in parts if p)
+def target_name(dir_name: str, doc_type: str, suffix: str = SUFFIX,
+                photo: bool = False) -> str:
+    """Horváth Dániel + Előzetes megállapodás -> teljes fájlnév.
+
+    A jelölők egy zárójelbe kerülnek, vesszővel:
+        Kiss Anna Útlevél (aláírt).pdf
+        Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf
+    """
+    marks = [m.strip() for m in (suffix, MARK_PHOTO if photo else "") if m and m.strip()]
+    stem = " ".join(p for p in (dir_name.strip(), doc_type.strip()) if p)
+    if marks:
+        stem += " (" + ", ".join(marks) + ")"
     stem = re.sub(r"\s+", " ", stem)
     stem = unicodedata.normalize("NFC", stem)      # Windows NFC-t vár
     return safe_stem(stem) + ".pdf"
+
+
+def add_mark(stem: str, mark: str) -> str:
+    """Jelölő hozzáadása a név végi zárójelhez — ha nincs ilyen, újat nyit.
+
+        „Kiss Anna Útlevél (aláírt)” + „fotóval ellátva”
+            -> „Kiss Anna Útlevél (aláírt, fotóval ellátva)”
+        „Kiss Anna Útlevél”          -> „Kiss Anna Útlevél (fotóval ellátva)”
+
+    Idempotens: ami már rajta van (ékezettől függetlenül), nem kerül rá kétszer.
+    """
+    if strip_accents(mark) in strip_accents(stem):
+        return stem
+    m = re.search(r"\(([^()]*)\)\s*$", stem)
+    if m and m.group(1).strip().isdigit():
+        m = None                      # „… (2)” ütközés-sorszám: nem jelölőzárójel
+    if m:
+        belso = m.group(1).strip().rstrip(",")
+        return stem[:m.start()].rstrip() + " (" + (belso + ", " if belso else "") + mark + ")"
+    return stem.rstrip() + " (" + mark + ")"
 
 
 def unique_name(folder: str, name: str):
@@ -3052,13 +3094,14 @@ def worker_root(folder: str) -> str:
 
 
 def backup_existing(dst: str) -> str:
-    """Felülírás előtt az előző példány másolata a dolgozó mappájában a
-    .eredeti\\ almappába kerül — a ponttal kezdődő mappát az Áttekintő és az
-    Iktató is kihagyja. A mentés a dolgozó GYÖKERÉBEN közös, nem a 01/02 alatt:
-    egy helyen legyen minden visszaállítható példány. -> a másolat útja"""
-    d = os.path.join(worker_root(os.path.dirname(dst)), BACKUP_DIR)
+    """Felülírás előtt az előző példány másolata a dolgozó 01_Elokeszitett
+    mappájába kerül, „(előző példány <időbélyeg>)” jelölővel — külön .eredeti
+    mappa nincs. Az időbélyeg miatt több mentés sem ütközik. -> a másolat útja"""
+    d = os.path.join(worker_root(os.path.dirname(dst)), DIR_PREP)
     os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, unique_name(d, os.path.basename(dst))[0])
+    stem, ext = os.path.splitext(os.path.basename(dst))
+    mark = f"{MARK_BACKUP} {datetime.datetime.now():%Y-%m-%d %H-%M-%S}"
+    path = os.path.join(d, unique_name(d, add_mark(stem, mark) + ext)[0])
     shutil.copy2(dst, path)
     return path
 
@@ -3941,7 +3984,10 @@ class IktatoTab(ttk.Frame):
             return
         who = hover or "<mappanév>"
         sub = target_subdir(dt, self._rules(), self.arckep_kesz.get())
-        self.name_preview.set(sub + "\\" + target_name(who, dt, self.suffix.get()) +
+        r = doc_type_rule(dt, self._rules())
+        self.name_preview.set(sub + "\\" + target_name(
+            who, dt, self.suffix.get(),
+            photo=bool(r and r.arckep and self.arckep_kesz.get())) +
                               (f"   ⇠ {self.page_no + 1}. oldal"
                                if self._by_page() else ""))
 
@@ -3977,7 +4023,8 @@ class IktatoTab(ttk.Frame):
             return
         job = dict(src=src, dir_name=dir_name, sub=os.path.basename(folder),
                    doc_type=self.doc_type.get(),
-                   name=target_name(dir_name, self.doc_type.get(), self.suffix.get()),
+                   name=target_name(dir_name, self.doc_type.get(), self.suffix.get(),
+                                    photo=bool(r and r.arckep and self.arckep_kesz.get())),
                    size=os.path.getsize(src), collision=False, overwritten=False,
                    backup=None, shrunk=None, stamp=stamp, data=None, page=None,
                    pages=None)
@@ -4074,7 +4121,7 @@ class IktatoTab(ttk.Frame):
         result = "UTKOZES-UJ NEV" if job["collision"] else \
             ("FELULIRVA" if job["overwritten"] else "OK")
         if job["backup"]:
-            result += " (elozo: " + BACKUP_DIR + ")"
+            result += " (elozo: " + DIR_PREP + ")"
         if job["shrunk"]:
             new_size, step = job["shrunk"]
             result += f" TOMORITVE {mb(job['size'])}->{mb(new_size)}"
@@ -4119,7 +4166,7 @@ class IktatoTab(ttk.Frame):
                 "Az új példány neve:\n" + name)
         else:
             self._info(f"✔ {job['dir_name']}\\{job['sub']} → {name}" +
-                       (f" (felülírva, az előző: {BACKUP_DIR}\\)" if job["overwritten"] else "") +
+                       (f" (felülírva, az előző: {DIR_PREP}\\)" if job["overwritten"] else "") +
                        (f" · tömörítve: {mb(job['size'])} → {mb(job['shrunk'][0])}"
                         if job["shrunk"] else "") +
                        ("" if self.stamped else " · bélyeg nélkül") +
@@ -4492,7 +4539,9 @@ def norm(s: str) -> str:
     s = unicodedata.normalize("NFC", s)
     s = strip_accents(s)
     s = re.sub(r"\(\d+\)", " ", s)                  # (2), (3) ütközés-sorszám
-    s = re.sub(r"\b(alairt|signed)\b", " ", s)
+    # A jelölők nem részei az azonosításnak. A „kesz” a régi _kesz utótag.
+    s = re.sub(r"\b(alairt|signed|fotoval ellatva|kesz)\b", " ", s)
+    s = re.sub(r"\(\s*,?\s*\)", " ", s)             # a jelölőktől kiürült zárójel
     s = re.sub(r"[_\-.]+", " ", s)                  # elválasztók szóközzé
     return re.sub(r"\s+", " ", s).strip()
 
@@ -4588,6 +4637,8 @@ def is_noise(name: str) -> bool:
         return True
     if low.startswith("attekinto-"):
         return True
+    if strip_accents(MARK_BACKUP) in strip_accents(base):
+        return True            # „(előző példány …)”: felülírás mentése, nem irat
     return False
 
 
@@ -6459,7 +6510,7 @@ class AttekintoTab(ttk.Frame):
         ttk.Label(win, wraplength=620, justify="left",
                   text=f"{len(jobs)} PDF van a feltöltési korlát ({mb(UPLOAD_LIMIT)}) "
                        f"fölött. A tömörítés csak a beágyazott képeket kódolja újra, "
-                       f"lépcsőnként; az előző példány a dolgozó {BACKUP_DIR} "
+                       f"lépcsőnként; az előző példány a dolgozó {DIR_PREP} "
                        f"mappájába kerül.").pack(anchor="w", padx=14, pady=(14, 6))
         txt = tk.Text(win, width=80, height=14, wrap="none")
         txt.pack(fill="both", expand=True, padx=14)
@@ -7186,7 +7237,9 @@ class ComposerTab(ttk.Frame):
         return list(docs.items())
 
     def _doc_name(self, d):
-        return target_name(self.who or "Dolgozó", d.doc_type, d.suffix)
+        r = doc_type_rule(d.doc_type, self._rules())
+        return target_name(self.who or "Dolgozó", d.doc_type, d.suffix,
+                           photo=bool(r and r.arckep and d.arckep_kesz))
 
     def _doc_sub(self, d) -> str:
         """Ennek az iratnak az alkönyvtára a dolgozó mappáján belül."""
@@ -7663,7 +7716,7 @@ class ComposerTab(ttk.Frame):
             if os.path.exists(dst):
                 if b["mode"] == "overwrite":
                     backup = backup_existing(dst)
-                    result = f"FELULIRVA (elozo: {BACKUP_DIR})"
+                    result = f"FELULIRVA (elozo: {DIR_PREP})"
                 else:
                     name = unique_name(job["folder"], name)[0]
                     dst = os.path.join(job["folder"], name)
@@ -7689,7 +7742,7 @@ class ComposerTab(ttk.Frame):
                               items=job["items"]))
         self._write_log(f"  ✔ {name} — {pages} oldal, {mb(len(data))}{note}" +
                         (" · új néven (már volt ilyen)" if result == "UTKOZES-UJ NEV" else "") +
-                        (f" · felülírva, az előző: {BACKUP_DIR}\\" if backup else ""))
+                        (f" · felülírva, az előző: {DIR_PREP}\\" if backup else ""))
         self._next_doc()
 
     def _doc_failed(self, job, e):
@@ -8829,11 +8882,13 @@ def _selftest() -> int:
         ck("két útlevél-PDF -> „több PDF” jelzés",
            [n for n, _ in rd.duplicates] == ["Útlevél"], rd.duplicates)
 
-        os.makedirs(os.path.join(who, BACKUP_DIR))
-        open(os.path.join(who, BACKUP_DIR, "Teszt Elek Előzetes megállapodás aláírt.pdf"),
+        # A felülírás mentése a 01_Elokeszitett-be kerül, jelölt névvel. A mátrix
+        # NEM számolhatja iratnak: különben minden felülírás hamis duplikátum lenne.
+        open(os.path.join(prep, "Teszt Elek Előzetes megállapodás "
+                                "(aláírt, előző példány 2026-10-07 11-30-00).pdf"),
              "w").close()
         re_ = scan(td, RULES, 1)[0]
-        ck(f"a {BACKUP_DIR} mappát nem látja (se irat, se almappa)",
+        ck("a felülírás-mentést nem számolja iratnak",
            len(re_.docs["elozetes"].pdf) == 1 and re_.subdirs == 0,
            (re_.docs["elozetes"].pdf, re_.subdirs))
 
@@ -9400,9 +9455,12 @@ def _selftest() -> int:
         with open(dst, "w") as f:
             f.write("régi")
         bak = backup_existing(dst)
-        ck("felülírás előtt: másolat a .eredeti\\-ben",
-           bak == os.path.join(who, BACKUP_DIR, "Kiss Anna Útlevél.pdf") and
+        ck("felülírás előtt: jelölt másolat a 01_Elokeszitett-ben",
+           os.path.dirname(bak) == os.path.join(who, DIR_PREP) and
+           MARK_BACKUP in os.path.basename(bak) and
            open(bak).read() == "régi", bak)
+        ck("a mentést az is_noise kiszűri (nem kerül a mátrixba)",
+           is_noise(os.path.basename(bak)), os.path.basename(bak))
         with open(dst, "w") as f:
             f.write("új")
         undo_copy(dst, bak)

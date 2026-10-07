@@ -53,6 +53,27 @@ def find_btn(w, prefix):
     return None
 
 
+def mentes_ut(worker, stem):
+    """A jelölt felülírás-mentés teljes útja a dolgozó 01_Elokeszitett mappájában,
+    vagy None. Az időbélyeg miatt nem lehet a nevet előre kiszámolni."""
+    d = os.path.join(worker, pm.DIR_PREP)
+    if not os.path.isdir(d):
+        return None
+    stem = stem.split(" (")[0]      # a jelölők egy zárójelbe olvadnak össze
+    hit = [f for f in os.listdir(d) if f.startswith(stem) and pm.MARK_BACKUP in f]
+    return os.path.join(d, hit[0]) if hit else None
+
+
+def mentes_van(worker, stem):
+    """A felülírás mentése: a dolgozó 01_Elokeszitett mappájában, „(előző példány
+    <időbélyeg>)” jelölővel. Külön .eredeti mappa már nincs."""
+    d = os.path.join(worker, pm.DIR_PREP)
+    if not os.path.isdir(d):
+        return False
+    stem = stem.split(" (")[0]
+    return any(f.startswith(stem) and pm.MARK_BACKUP in f for f in os.listdir(d))
+
+
 def mkdir(*p):
     d = os.path.join(*p)
     os.makedirs(d, exist_ok=True)
@@ -317,19 +338,20 @@ try:
     ikt._undo()
     ck("foglalt állapotban a Visszavonás vár", "várd meg" in ikt.msg.get(), ikt.msg.get())
     wait(lambda: not ikt._busy)
-    bak = os.path.join(bela, pm.BACKUP_DIR, "Nagy Béla Útlevél.pdf")
     ck("helyben tömörítve 5 MB alá", os.path.getsize(big_pdf) <= pm.UPLOAD_LIMIT < size0,
        f"{pm.mb(size0)} -> {pm.mb(os.path.getsize(big_pdf))}")
     sb = pm.read_stamp(big_pdf)
     ck("a tömörített példány is bélyeget kap (dolgozó + típus)",
        (sb.get("dolgozo"), sb.get("tipus"), sb.get("hely")) ==
        ("Nagy Béla", "Útlevél", pm.DIR_UP), sb)
-    ck("az eredeti a .eredeti\\ mappában", os.path.exists(bak) and os.path.getsize(bak) == size0)
+    bak = mentes_ut(bela, "Nagy Béla Útlevél")
+    ck("az eredeti jelölt mentésként a 01_Elokeszitett-ben",
+       bak and os.path.getsize(bak) == size0, bak)
     app.nb.select(att)
     pump(0.4)
     rb = next(x for x in att.rows if x.name == "Nagy Béla")
-    ck("az Áttekintő nem látja a .eredeti mappát", len(rb.docs["utlevel"].pdf) == 1 and not rb.big,
-       rb.docs["utlevel"].pdf)
+    ck("az Áttekintő nem számolja iratnak a jelölt mentést",
+       len(rb.docs["utlevel"].pdf) == 1 and not rb.big, rb.docs["utlevel"].pdf)
     ikt._undo()
     ck("Visszavonás: az eredeti visszaállt", os.path.getsize(big_pdf) == size0 and
        not os.path.exists(bak), ikt.msg.get())
@@ -555,8 +577,11 @@ try:
     pl._render_photo()
     pl._iktat()
     pump(0.2)
-    kesz2 = os.path.join(anna_up, "Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf")
-    ck("az arcképes irat a feltölthető mappába került", os.path.isfile(kesz2), kesz2)
+    # A fotó épp most került rá: a jelölő a névben is ott van (egységes metodika).
+    kesz2 = os.path.join(
+        anna_up, "Kiss Anna Tart_eng_formanyomtatvány (aláírt, fotóval ellátva).pdf")
+    ck("az arcképes irat a feltölthetőbe került, „fotóval ellátva” jelölővel",
+       os.path.isfile(kesz2), (kesz2, os.listdir(anna_up)))
     sp = pm.read_stamp(kesz2)
     ck("az arcképes irat bélyeget kap",
        (sp.get("dolgozo"), sp.get("tipus")) == ("Kiss Anna", "Tart_eng_formanyomtatvány"),
@@ -598,7 +623,7 @@ try:
         d.new_page(width=595, height=842).insert_text((72, 100), f"oldal {k + 1}", fontsize=30)
     d.save(koteg)
     d.close()
-    elo = os.path.join(anna_up, "Kiss Anna Előzetes megállapodás aláírt.pdf")
+    elo = os.path.join(anna_up, "Kiss Anna Előzetes megállapodás (aláírt).pdf")
     empty_pdf(elo)                                        # ütközni fog
     kt._add([koteg])
     wait(lambda: kt._thumb_job is None, 20)
@@ -677,7 +702,7 @@ try:
     ck("iktatás közben a gomb tiltva", kt.btn_go.instate(["disabled"]))
     wait(lambda: kt._b is None, 60)
     ck("összegzés: az ütközés és a kimaradó oldal",
-       asked == [(["Kiss Anna Előzetes megállapodás aláírt.pdf"], 1)], asked)
+       asked == [(["Kiss Anna Előzetes megállapodás (aláírt).pdf"], 1)], asked)
 
     def pdf_info(fn, sub=None):
         d = P.open(os.path.join(anna, sub or pm.DIR_UP, fn))
@@ -685,8 +710,9 @@ try:
         d.close()
         return r
 
-    forma, elo2, utl = ("Kiss Anna Tart_eng_formanyomtatvány aláírt.pdf",
-                        "Kiss Anna Előzetes megállapodás aláírt (2).pdf", "Kiss Anna Útlevél másolat.pdf")
+    forma, elo2, utl = ("Kiss Anna Tart_eng_formanyomtatvány (aláírt).pdf",
+                        "Kiss Anna Előzetes megállapodás (aláírt) (2).pdf",
+                        "Kiss Anna Útlevél (másolat).pdf")
     # A formanyomtatványra arcképet is kell helyezni, a jelölő nincs bepipálva:
     # ezért NEM a feltölthetőbe, hanem az előkészítettbe kerül.
     ck("Forma (fotó nélkül) az előkészítettbe, a vonszolt sorrendben",
@@ -720,13 +746,13 @@ try:
     kt._ask_batch = lambda jobs, free: "overwrite"
     kt._iktat()
     wait(lambda: kt._b is None, 60)
-    ck("felülírás: az új példány a helyén, az előző a .eredeti\\-ben",
+    ck("felülírás: az új példány a helyén, az előző jelölt mentésként a 01-ben",
        pdf_info(os.path.basename(elo))[0] == ["oldal 3", "oldal 4"] and
-       os.path.exists(os.path.join(anna, pm.BACKUP_DIR, os.path.basename(elo))))
+       mentes_van(anna, os.path.splitext(os.path.basename(elo))[0]))
     kt._undo()
     ck("visszavonás felülírás után: az előző példány visszaállt",
        pdf_info(os.path.basename(elo))[0] == [""] and
-       not os.path.exists(os.path.join(anna, pm.BACKUP_DIR, os.path.basename(elo))))
+       not mentes_van(anna, os.path.splitext(os.path.basename(elo))[0]))
 
     print("ÖSSZEÁLLÍTÓ: TÖMÖRÍTÉS")
     kt._clear()
@@ -1002,8 +1028,8 @@ try:
     ck("kötegelt tömörítés: a fájl a korlát alá került",
        ok and os.path.getsize(big_pdf) < nagy0,
        f"{pm.mb(nagy0)} -> {pm.mb(os.path.getsize(big_pdf))}")
-    ck("az előző példány a .eredeti mappában van",
-       os.path.isfile(os.path.join(bela, pm.BACKUP_DIR, "Nagy Béla Útlevél.pdf")))
+    ck("az előző példány jelölt mentésként a 01_Elokeszitett-ben van",
+       mentes_van(bela, "Nagy Béla Útlevél"))
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
         last = list(csv.reader(f, delimiter=";"))[-1]
     ck("naplósor a kötegelt tömörítésről",
@@ -1230,8 +1256,8 @@ try:
     d.close()
     ck("mentés helyben: a szöveg, a mezők és a bélyeg is megvan", ok)
     ck("a sorkizárt bekezdés a mentett fájlban is sorkizárt", ok_par)
-    ck("az előző példány a dolgozó .eredeti\\ mappájában",
-       os.path.exists(os.path.join(anna, pm.BACKUP_DIR, "Kiss Anna TAJ-megrendelő.pdf")))
+    ck("az előző példány jelölt mentésként a dolgozó 01_Elokeszitett mappájában",
+       mentes_van(anna, "Kiss Anna TAJ-megrendelő"))
     with open(os.path.join(root, pm.LOG_NAME), encoding="utf-8-sig") as f:
         last = list(csv.reader(f, delimiter=";"))[-1]
     ck("naplósor a szerkesztésről", last[5].startswith("SZERKESZTVE") and

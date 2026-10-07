@@ -1052,3 +1052,54 @@ A másik nagy tétel nem PDF-munka volt, hanem a Tk. 150 dolgozónál az Átteki
 A folyamatos ablak-átméretezés (az egérrel húzva) továbbra is ~90–150 ms/lépés:
 ez a Tk teljes ablak-újrafestése, nem a mi kódunk. A fülváltás, a görgetés, a
 szűrés és az iktatás viszont mind 10–90 ms, a tömörítés pedig már nem fagyaszt.
+
+---
+
+## 14. Egységes névmetodika és a megszűnt `.eredeti` mappa (2026-10-07)
+
+### 14.1 A jelölők egy zárójelbe kerülnek
+
+Eddig háromféle jelölés élt egymás mellett: `… aláírt.pdf` (Iktató),
+`…_kesz.pdf` (Arckép → Mentés másként), és a `(2)` ütközés-sorszám. Mostantól a
+jelölők **egy zárójelben, vesszővel, ékezettel és szóközzel** állnak:
+
+```
+Kiss Anna Útlevél (aláírt).pdf
+Kiss Anna Tartózkodási engedély formanyomtatvány (aláírt, fotóval ellátva).pdf
+```
+
+- `MARK_SIGNED = "aláírt"`, `MARK_PHOTO = "fotóval ellátva"`.
+- `target_name(..., photo=True)` teszi be a fotójelölőt. Ott kapcsol be, ahol a
+  fotó ténylegesen felkerült: az Arckép fül iktatásánál mindig, az Iktatóban és az
+  Összeállítóban az „arckép rajta” jelölő szerint — és csak `rule.arckep` típusnál.
+- `add_mark(stem, mark)` a meglévő zárójelhez fűz, vagy újat nyit; idempotens, és
+  a `(2)` ütközés-sorszámot nem olvasztja magába (az nem jelölőzárójel).
+
+**Az illesztés nem romolhat el tőle.** A `norm()` a jelölőket az összehasonlítás
+előtt kitörli (`alairt|signed|fotoval ellatva|kesz`), majd a kiürült zárójelet is.
+Mérve: mind az 5 kötelező típus mind a 10 név-változatban (régi és új alak, fotóval
+és anélkül) a helyes szabályra illeszkedik.
+
+### 14.2 `.eredeti` mappa nincs többé
+
+A felülírt példány eddig a dolgozó `.eredeti\` almappájába került. Mostantól a
+**`01_Elokeszitett`** mappába megy, `(előző példány <időbélyeg>)` jelölővel:
+
+```
+Kiss Anna Előzetes megállapodás (aláírt, előző példány 2026-10-07 11-28-33).pdf
+```
+
+Így a felhasználó ott látja a mentést, ahol dolgozik, és nem kell rejtett mappát
+keresnie. Az időbélyeg miatt több mentés sem ütközik.
+
+**A buktató, amit ez okozna, és a védelem.** A 01-ben fekvő másolat ugyanarra a
+doktípusra illeszkedne, mint az élő irat — minden felülírás után hamis
+„több PDF ugyanahhoz” jelzést kapna az Áttekintő. Ezért a jelölőt az `is_noise()`
+ismeri: a mentés nem irat. Egy helyen kellett megfogni, mert a mátrix
+(`scan_person`), az ellenőrzés (`audit_folder`) és a Rendezés is ezen a szűrőn megy át.
+
+### 14.3 Ellenőrzés
+
+Önteszt 255/255 (új: „a mentést az is_noise kiszűri”), GUI 156/156. Valódi
+mappaszerkezeten mérve: az új nevek a helyes szabályra illeszkednek, a 01-ben
+fekvő mentés nem kap duplikátum-jelzést, és `.eredeti` mappa nem jön létre.
