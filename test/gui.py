@@ -1545,6 +1545,312 @@ try:
     ed._mode_changed()
     ed.dirty = False                           # a próbát nem mentjük
 
+    print("SZERKESZTŐ: ESZKÖZCSEMPÉK")
+    # Minta: 3 lap — szöveg személyes adatokkal és űrlapmezőkkel, egy szkennelt lap
+    # (kép, szöveg nélkül), és egy egyszerű harmadik.
+    os.environ["TESSDATA_PREFIX"] = os.path.join(GYOKER, pm.TESSDATA)
+    minta = os.path.join(TMP, "minta-eszkozok.pdf")
+    d = P.open()
+    g1 = d.new_page(width=595, height=842)
+    HF, HB = P.Font("helv"), P.Font("hebo")
+    pm.add_text(g1, (60, 90), "MEGHATALMAZÁS", HB, 14)
+    pm.add_text(g1, (60, 130), "Alulírott Kiss Anna (TAJ: 123 456 788, adóazonosító: 8123456786)", HF, 10)
+    pm.add_text(g1, (60, 144), "meghatalmazom a munkáltatómat. Útlevélszámom: BA1234567, telefon: +36 30", HF, 10)
+    pm.add_text(g1, (60, 158), "123 4567, e-mail: kiss.anna@example.com. Kiss Anna", HF, 10)
+    for i, (nm, typ, lab) in enumerate((("nev", P.PDF_WIDGET_TYPE_TEXT, "A meghatalmazó neve"),
+                                        ("szulhely", P.PDF_WIDGET_TYPE_TEXT, "Születési hely"))):
+        w = P.Widget()
+        w.field_name, w.field_type, w.field_label = nm, typ, lab
+        w.rect = P.Rect(200, 262 + 25 * i, 520, 283 + 25 * i)
+        g1.add_widget(w)
+    w = P.Widget()
+    w.field_name, w.field_type, w.field_label = "hozzajarul", P.PDF_WIDGET_TYPE_CHECKBOX, "Hozzájárulok"
+    w.rect = P.Rect(60, 350, 72, 362)
+    g1.add_widget(w)
+    src = P.open()
+    gs = src.new_page(width=595, height=842)
+    pm.add_text(gs, (60, 100), "NYILATKOZAT Kőműves Győző TAJ: 123 456 788", HF, 14)
+    pix = gs.get_pixmap(dpi=200, colorspace=P.csGRAY)
+    g2 = d.new_page(width=595, height=842)
+    g2.insert_image(g2.rect, pixmap=pix)
+    src.close()
+    pm.add_text(d.new_page(width=595, height=842), (60, 100), "Harmadik lap — Kiss Anna", HF, 11)
+    d.set_metadata({"title": "Kiss Anna", "keywords": "pdf-muhely=1;dolgozo=Kiss Anna;tipus=Meghatalmazás"})
+    d.save(minta)
+    d.close()
+    ed.open_file(minta)
+    pump(0.4)
+    ck("megnyitott iratnál a fájllista egy sorra csukódik, a fájl nevével",
+       not ed.files.winfo_ismapped() and ed.filebar.winfo_ismapped()
+       and "minta-eszkozok" in ed.file_lbl.cget("text"))
+    ed.file_btn.invoke()
+    pump(0.2)
+    ck("„Másik irat…”: a lista kinyílik", ed.files.winfo_ismapped())
+    ck("tíz eszközcsempe, két sorban", len(ed.tiles) == 10
+       and {int(t.grid_info()["row"]) for t in ed.tiles.values()} == {1, 3})
+    for mode in ("box", "search", "pii", "decor", "form", "ocr"):
+        ed.tiles[mode].invoke()
+        pump(0.15)
+        ok_ = (ed.panels[mode].winfo_ismapped() and ed.mode.get() == mode
+               and all(not b.winfo_ismapped() for m, b in ed.panels.items() if m != mode)
+               and ed.actionbar.winfo_ismapped() and ed._abars[mode].winfo_ismapped())
+        if not ok_:
+            break
+    ck("csempére kattintva a saját panelje és műveletsávja jön elő (a többié eltűnik)", ok_, mode)
+    ed.tiles["erase"].invoke()
+    pump(0.15)
+    ck("a Kitakarásnak nincs panelje: a műveletsáv is eltűnik",
+       not ed.actionbar.winfo_ismapped() and ed.hint.cget("text") == ed.HINTS["erase"])
+    tip = next(t for t in ed.tiles.values())
+    tip.event_generate("<Enter>")
+    pump(0.7)
+    tips = [w for w in tip.winfo_children() if w.winfo_class() == "Toplevel"]
+    ck("súgóbuborék: a csempe fölött megáll az egér → a teljes név és a magyarázat",
+       bool(tips) and "Szöveg és X" in tips[0].winfo_children()[0].cget("text"))
+    tip.event_generate("<Leave>")
+    pump(0.1)
+    ck("…és eltűnik, ha elmegy", not [w for w in tip.winfo_children() if w.winfo_class() == "Toplevel"])
+
+    print("SZERKESZTŐ: SZÖVEGDOBOZ")
+    ed.tiles["box"].invoke()
+    pump(0.2)
+    ed._view_zoom(0)
+    pump(0.2)
+    katt(300, 400, 520, 470)
+    b = ed._bsel()
+    ck("húzás: doboz a téglalapba, kijelölve, a beíró él", b is not None
+       and abs(b.rect[0] - 300) < 1 and abs(b.rect[3] - 470) < 1
+       and str(ed.b_text.cget("state")) == "normal")
+    ed.b_text.insert("end", "Kelt: Budapest, 2026. október 14. A meghatalmazást elfogadom és aláírom.")
+    ed.b_text.edit_modified(True)
+    ed.b_text.event_generate("<<Modified>>")
+    pump(0.5)
+    ck("gépelés: a szöveg élőben a dobozban", "elfogadom" in pm.box_plain(ed._bsel()))
+    ck("…és a vásznon (a doboz képe)", ed._bsel().uid in ed._bimgs)
+    i0 = ed.b_text.search("elfogadom", "1.0")
+    ed.b_text.tag_add("sel", i0, f"{i0}+9c")
+    ed.b_text.focus_force()
+    pump(0.1)
+    ed.b_text.event_generate("<Control-b>")
+    pump(0.5)
+    runs = [r for p_ in ed._bsel().paras for r in p_]
+    ck("Ctrl+B a kijelölésen: csak az a szó félkövér", [r[0] for r in runs if r[1]] == ["elfogadom"],
+       runs)
+    ck("az F gomb követi a kijelölés stílusát", ed.b_bold.get())
+    ed.b_align.set("justify")
+    pump(0.4)
+    ck("igazítás: sorkizárt, élőben", ed._bsel().align == "justify")
+    w0 = ed._bimgs[ed._bsel().uid].width()
+    z = ed.zoom
+    r = ed._bsel().rect
+    hx, hy = int(r[2] * z), int(r[3] * z)                 # a jobb alsó fogantyú
+    c.event_generate("<ButtonPress-1>", x=hx, y=hy)
+    c.event_generate("<B1-Motion>", x=hx + 30, y=hy + 20)
+    c.event_generate("<B1-Motion>", x=hx + 60, y=hy + 40)
+    c.event_generate("<ButtonRelease-1>", x=hx + 60, y=hy + 40)
+    pump(0.3)
+    r2 = ed._bsel().rect
+    ck("átméretezés a jobb alsó fogantyúval", abs(r2[2] - (r[2] + 60 / z)) < 0.6
+       and abs(r2[3] - (r[3] + 40 / z)) < 0.6 and r2[:2] == r[:2], (r, r2))
+    ck("…a szöveg újratördelődött (szélesebb kép)", ed._bimgs[ed._bsel().uid].width() > w0)
+    mx, my = int((r2[0] + 20) * z), int((r2[1] + 20) * z)
+    c.event_generate("<ButtonPress-1>", x=mx, y=my)
+    c.event_generate("<B1-Motion>", x=mx - 20, y=my + 10)
+    c.event_generate("<B1-Motion>", x=mx - 40, y=my + 20)
+    c.event_generate("<ButtonRelease-1>", x=mx - 40, y=my + 20)
+    pump(0.3)
+    r3 = ed._bsel().rect
+    ck("mozgatás húzással", abs(r3[0] - (r2[0] - 40 / z)) < 0.6 and abs(r3[1] - (r2[1] + 20 / z)) < 0.6)
+    c.focus_force()
+    for _ in range(2):
+        c.event_generate("<Right>")
+    pump(0.2)
+    ck("nyilak: a doboz 2 pt-tal jobbra", abs(ed._bsel().rect[0] - r3[0] - 2) < 1e-6)
+    c.event_generate("<Control-z>")
+    pump(0.3)
+    ck("Ctrl+Z: a nyilazás egy lépésben vissza", abs(ed._bsel().rect[0] - r3[0]) < 1e-6)
+    katt(100, 650)
+    ck("üres helyre kattintva a kijelölés megszűnik (új doboz nem jön)", ed.sel_box is None
+       and len(ed.boxes) == 1)
+    katt(100, 650)
+    b2 = ed._bsel()
+    ck("második kattintás: új doboz alapméretben, a beíróba lehet gépelni",
+       b2 is not None and len(ed.boxes) == 2 and str(ed.b_text.cget("state")) == "normal")
+    katt(100, 760)
+    ck("az üres, gépelés nélküli doboz nem marad a lapon", len(ed.boxes) == 1)
+    katt(400, 420)
+    ck("dobozra kattintva újra kijelölve, a beíróban a szövege", ed._bsel() is not None
+       and "elfogadom" in ed.b_text.get("1.0", "end"))
+
+    print("SZERKESZTŐ: KERESÉS ÉS CSERE")
+    root_tl = app.winfo_toplevel()
+    c.focus_force()
+    pump(0.1)
+    c.event_generate("<Control-f>")
+    pump(0.4)
+    ck("Ctrl+F: a Keresés eszköz, a keresőmezőben a kurzor", ed.mode.get() == "search")
+    ed.s_text.set("kiss anna")
+    pump(0.5)
+    ck("élő keresés: a találatok listája és kiemelése", len(ed.hits) == 3
+       and len(ed.s_list.tv.get_children()) == 3 and bool(c.find_withtag("hit")),
+       len(ed.hits))
+    ed.s_repl.set("Kovács Éva")
+    pump(0.4)
+    notes = [ed.s_list.tv.set(i, "c2") for i in ed.s_list.tv.get_children()]
+    ck("csere előtt soronként látszik, mi lesz", all(n for n in notes), notes)
+    ck("a gomb a kijelöltek számát mutatja", "(3)" in ed.s_go.cget("text"), ed.s_go.cget("text"))
+    ed.s_list._toggle(ed.s_list.tv.get_children()[1])
+    pump(0.2)
+    ck("egy sor kivéve: (2)", "(2)" in ed.s_go.cget("text"))
+    root_tl.event_generate("<F3>")
+    pump(0.2)
+    root_tl.event_generate("<F3>")
+    pump(0.2)
+    ck("F3: a következő találat (a lista és a lap is követi)", ed.hit_sel == 1
+       and ed.s_list.tv.selection() == ("1",), (ed.hit_sel, ed.s_list.tv.selection()))
+    ed.s_go.invoke()
+    pump(0.4)
+    t1 = " ".join(ed.doc[0].get_text("text", sort=True).split())
+    t3 = ed.doc[2].get_text()
+    ck("csere: a kijelölt két helyen kicserélve, a kivett maradt",
+       t1.count("Kovács Éva") + t3.count("Kovács Éva") == 2
+       and t1.count("Kiss Anna") + t3.count("Kiss Anna") == 1, t1)
+    ck("utóellenőrzés: kiírja, mennyi maradt", "még 1 helyen" in ed.s_info.cget("text"),
+       ed.s_info.cget("text"))
+    c.focus_force()
+    c.event_generate("<Control-z>")
+    pump(0.4)
+    ck("Ctrl+Z: a csere egy lépésben vissza", ed.doc[0].get_text().count("Kiss Anna") == 2)
+
+    print("SZERKESZTŐ: SZEMÉLYES ADAT")
+    ed.tiles["pii"].invoke()
+    pump(0.6)
+    kinds = sorted({h["kind"] for h in ed.pii_hits})
+    ck("a minták megtalálják az adatokat (a sortörésen átnyúló telefont is)",
+       {"TAJ-szám", "Adóazonosító", "Útlevélszám", "Telefonszám", "E-mail"} <= set(kinds)
+       and any(h["multi"] for h in ed.pii_hits), kinds)
+    ck("a szkennelt lapon (OCR előtt) nincs találat", not any(h["page"] == 1 for h in ed.pii_hits))
+    ed.p_keys["email"].set(False)
+    pump(0.5)
+    ck("a minta kikapcsolva: a listából is kiesik", not any(h["kind"] == "E-mail" for h in ed.pii_hits))
+    n = len(ed.pii_hits)
+    ck("a Kitakarás gomb a darabszámmal", f"({n})" in ed.p_go.cget("text"))
+    ed.p_go.invoke()
+    pump(0.5)
+    t1 = ed.doc[0].get_text()
+    ck("kitakarás: a TAJ, az adóazonosító és az útlevélszám végleg eltűnt",
+       "123 456 788" not in t1 and "8123456786" not in t1 and "BA1234567" not in t1)
+    ck("utóellenőrzés: egyik sem maradt", "egyik sem maradt" in ed.p_info.cget("text"),
+       ed.p_info.cget("text"))
+    ck("a metaadat cím törölve, a bélyeg megmaradt", not ed.doc.metadata.get("title")
+       and "dolgozo=Kiss Anna" in ed.doc.metadata.get("keywords", ""))
+    ck("az e-mail (kikapcsolt minta) a helyén", "kiss.anna@example.com" in t1)
+
+    print("SZERKESZTŐ: FEJLÉC, LÁBLÉC, BÉLYEG")
+    ed.tiles["decor"].invoke()
+    pump(0.3)
+    ed._preset_pageno()
+    pump(0.3)
+    ck("gyors oldalszám: a lapon élőben „1/3” (a lap valódi tartalma nem változik)",
+       "1/3" in ed._view_page().get_text() and "1/3" not in ed.doc[0].get_text())
+    ed.d_vars["header_on"].set(True)
+    ed.d_vars["header"].set("{dolgozó} — {doktípus}")
+    pump(0.5)
+    ck("fejléc a bélyeg változóival", "Kiss Anna — Meghatalmazás" in ed._view_page().get_text())
+    ed._preset_stamp()
+    pump(0.3)
+    sr = pm.stamp_rect(ed._page().rect, ed.decor, ed._decor_ctx(0))
+    z = ed.zoom
+    sx, sy = int((sr.x0 + 10) * z), int((sr.y0 + 5) * z)
+    c.yview_moveto(0)
+    pump(0.1)
+    sy -= int(c.canvasy(0))
+    c.event_generate("<ButtonPress-1>", x=sx, y=sy)
+    c.event_generate("<B1-Motion>", x=sx - 100, y=sy + 50)
+    c.event_generate("<B1-Motion>", x=sx - 200, y=sy + 100)
+    c.event_generate("<ButtonRelease-1>", x=sx - 200, y=sy + 100)
+    pump(0.4)
+    ck("a bélyeg húzással áthelyezhető", abs(ed.decor.stamp_xy[0] - (sr.x0 - 200 / z)) < 1,
+       (ed.decor.stamp_xy, sr))
+    mentve = os.path.join(TMP, "minta-diszitve.pdf")
+    ed._save_to(mentve)
+    pump(0.3)
+    d = P.open(mentve)
+    ck("mentés: minden lapon a saját oldalszáma", ["1/3" in d[0].get_text(), "2/3" in d[1].get_text(),
+                                                    "3/3" in d[2].get_text()] == [True] * 3)
+    ck("…a bélyeg csak az első lapon", "Iktatva" in d[0].get_text() and "Iktatva" not in d[2].get_text())
+    d.close()
+    ed._decor_off()
+    pump(0.3)
+    ck("„Mind kikapcsolása”: a lapon nincs díszítés", "1/3" not in ed._view_page().get_text()
+       and not ed.decor.any_on())
+
+    print("SZERKESZTŐ: ŰRLAP KITÖLTÉSE")
+    ed.tiles["form"].invoke()
+    pump(0.4)
+    ck("a mezők listája a panelen, a címkéjükkel", len(ed.fields) == 3
+       and "A meghatalmazó neve" in ed.f_info.master.winfo_children()[2].winfo_children()[0]
+       .winfo_children()[0].cget("text"), [f["label"] for f in ed.fields])
+    nev = next(f for f in ed.fields if f["name"] == "nev")
+    ed.f_vars[nev["xref"]].set("Kőműves Győző")
+    pump(0.6)
+    ck("kitöltés: az érték a mezőben", any(w.field_value == "Kőműves Győző"
+                                          for w in ed.doc[0].widgets()))
+    ck("a lapon a beégetett előnézet látszik (ő/ű helyesen)",
+       "Kőműves Győző" in ed._view_page().get_text())
+    ck("„1 üres” a számláló", "1 üres" in ed.f_info.cget("text"), ed.f_info.cget("text"))
+    z = ed.zoom
+    sz_ = next(f for f in ed.fields if f["name"] == "szulhely")["rect"]
+    c.yview_moveto(0)
+    pump(0.1)
+    c.event_generate("<ButtonPress-1>", x=int((sz_.x0 + 20) * z), y=int((sz_.y0 + 5) * z - c.canvasy(0)))
+    c.event_generate("<ButtonRelease-1>", x=int((sz_.x0 + 20) * z), y=int((sz_.y0 + 5) * z - c.canvasy(0)))
+    pump(0.3)
+    ck("mezőre kattintva a lapon: a panel beírója kap fókuszt",
+       ed.f_focus == next(f for f in ed.fields if f["name"] == "szulhely")["xref"]
+       and app.focus_get() is ed.f_rows[ed.f_focus][1])
+    ed.f_go.invoke()
+    pump(0.4)
+    ck("beégetés: nincs több mező, az érték a lap tartalma",
+       not list(ed.doc[0].widgets()) and "Kőműves Győző" in ed.doc[0].get_text())
+    ck("üres állapot: a panel szól, hogy nincs mező", ed.fields == []
+       and "Beégetve" in ed.f_info.cget("text"))
+    c.focus_force()
+    c.event_generate("<Control-z>")
+    pump(0.4)
+    ck("Ctrl+Z: a mezők visszajöttek, a lista is", len(list(ed.doc[0].widgets())) == 3
+       and len(ed.fields) == 3)
+
+    print("SZERKESZTŐ: SZÖVEGFELISMERÉS")
+    ed._goto_page(1)
+    ed.tiles["ocr"].invoke()
+    pump(0.4)
+    ck("a felismerő kész, a szkennelt lapot megszámolja",
+       "Kész a felismerésre" in ed.o_status.cget("text") and "(1)" in ed.o_r_all.cget("text"),
+       (ed.o_status.cget("text"), ed.o_r_all.cget("text")))
+    ed.o_go.invoke()
+    pump(0.3)
+    ck("futás közben: haladásjelző és Mégsem", ed.o_bar.winfo_ismapped()
+       and ed.o_go.cget("text") == "Mégsem")
+    ok_ = wait(lambda: ed.o_cancel is None, 90)
+    pump(0.3)
+    ck("felismerés kész: a szkennelt lap kereshető lett", ok_ and "Kőműves" in ed.doc[1].get_text(),
+       ed.doc[1].get_text()[:80])
+    ck("az eredmény a panelen marad, a haladásjelző eltűnik",
+       "Kész:" in ed.o_prog.cget("text") and not ed.o_bar.winfo_ismapped())
+    ck("a felismert szavak kerete a lapon", bool(c.find_withtag("ocrw")))
+    ed._goto_page(0)
+    pump(0.3)
+    ck("…a szöveges lap saját szavain nincs keret (azt nem a felismerés adta)",
+       not c.find_withtag("ocrw"))
+    ed.tiles["pii"].invoke()
+    pump(0.6)
+    ck("utána a szkennelt lapon is megvan a TAJ-szám", any(
+        h["page"] == 1 and h["kind"] == "TAJ-szám" for h in ed.pii_hits))
+    ed.dirty = False
+    ed.tiles["text"].invoke()
+    pump(0.2)
+
     print("ELLENŐRZŐ: ROSSZ HELY, JELÖLŐNÉGYZETEK, VISSZAMENŐLEGES ÁTNEVEZÉS")
     # A gyökérben hagyott, felismert nevű irat eddig az „unknown” kosárba esett, és
     # a párbeszéd azt írta rá, hogy a nevét sem ismerjük fel — ez volt az Áttekintő

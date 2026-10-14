@@ -6,3 +6,6 @@
 # A git hookok shell-szkriptek: CRLF sorvéggel a `#!/bin/sh` sor használhatatlan
 # lesz („bad interpreter"), és a hook némán nem fut le.
 tools/hooks/* text eol=lf
+
+# A Tesseract nyelvi adata bináris: a git ne próbálja szövegként kezelni.
+*.traineddata binary

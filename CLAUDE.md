@@ -9,7 +9,7 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
-és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. (a bővítési javaslatok: 22.), a
+és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. és 23. (a bővítési javaslatok: 22.), a
 közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
@@ -32,7 +32,13 @@ tesztből ne nyúlj.
 ```bash
 python tools/ui-kep.py 0 kep.png   # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
                                    # 5: Szerkesztés (mező) · 6: Bekezdés formázása
+python tools/ui-kep.py 7 kep.png search   # 7: Szerkesztés egy eszközzel: box, search,
+                                          #    pii, decor, form, ocr
 ```
+
+A szövegfelismerés nyelvi adata (`tessdata/hun.traineddata`) a repóban van: a
+PyMuPDF beépített motorja használja, Tesseractot nem telepítünk
+(`szerkeszto-terv.md` 23.7).
 
 A téma (gombok, mezők, fülek, ikonok) kódból rajzolt grafika — a döntés és a
 buktatók: `kepek-pdf-terv.md` 13.7.
