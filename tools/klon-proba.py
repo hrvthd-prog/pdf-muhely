@@ -25,7 +25,8 @@ GYOKER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KELL = ["pdf-muhely.py", "verzio.json", "attekinto-szabalyok.json", "README.md",
         "tools/verzio.py", "tools/kiadas.py", "tools/frissit.vbs",
         "tools/hooks/pre-commit", "tools/hooks/post-commit",
-        "test/run-all.py", "test/gui.py", "test/verzio.py", "test/frissit.py"]
+        "test/run-all.py", "test/gui.py", "test/verzio.py", "test/frissit.py",
+        "tessdata/hun.traineddata"]
 
 
 def git(*args, cwd=GYOKER):

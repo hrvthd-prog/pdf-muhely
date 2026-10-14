@@ -964,3 +964,234 @@ PyMuPDF-funkciókat ezen a gépen (1.28.2) kipróbáltam.
 
 Ezekhez a felhasználó döntése kell (melyik, milyen sorrendben); a kód ehhez a körhöz
 nem változott.
+
+---
+
+## 23. Hatodik kör (2026-10-14): szövegdoboz, keresés-csere, személyes adat, fejléc-bélyeg, űrlap, OCR
+
+A 22.5 sorrendje, egy körben. A kérés külön hangsúlya: **a felület legyen könnyen
+használható** — „hiába jók a fejlesztések, ha nehezen használható a UI”. Ezért a
+fejezet a felülettel kezdődik.
+
+### 23.1 A felület: tíz eszköz egy panelen
+
+Az eszközök száma ötről tízre nőtt. A régi rádiógomb-lista ezzel a bal panel felét
+vitte volna el, és alacsony ablakban az eszköz saját panelje a látható részen kívülre
+csúszott (felületfotón). A megoldás:
+
+- **Csempék, két sorban, öt oszlopban** (`EDIT_TOOLS`): fölül a **lapon** dolgozók
+  (Szöveg, Doboz, Bekezdés, Mező, Kitakarás — kattintás, húzás a lapon), alul az
+  **egész iratra** hatók (Keresés, Személyes, Fejléc, Űrlap, Felismerés — panel és
+  előnézet). Ikon fölül, rövid felirat alul; a teljes név és egy mondatos magyarázat a
+  **súgóbuborékban** (`Tip`) és a panel címében. A csempe nem kap fókuszt
+  (`takefocus=0`): a nyilak a vásznon maradnak.
+- **A fájllista egy sorra csukódik**, ha irat van nyitva: a fájl neve (félkövér, hosszú
+  névnél „…”-tal, a teljes út a buborékban) és egy **Másik irat…** gomb. Mentetlen
+  változásnál a név előtt ●, piros színnel.
+- **Fix alsó műveletsáv eszközönként** (`_abar`): a fő gomb (Csere a kijelöltekre,
+  Kitakarás, Beégetés, Felismerés indítása) a görgethető részen kívül van, mindig
+  látszik (a 20.3 elve, most minden eszközre).
+- **A súgó két sor** eszközönként; a részlet a buborékokban van.
+- **Az üzenetek az alkalmazás alsó állapotsorába** kerültek; a lapozósorban így elfér a
+  lapozás mellett a **nagyítás** (Illeszt, +, −) — 960 px-es ablakban az eszköztáron a
+  nagyítógombok összenyomódtak, és az állapotból csak töredék látszott.
+- **Gyorsbillentyűk:** Ctrl+F (Keresés), F3 / Shift+F3 (következő / előző találat),
+  Ctrl+S (mentés), Ctrl+Z; a szövegdobozban Ctrl+B / Ctrl+I / Ctrl+U. Csak akkor élnek,
+  ha a Szerkesztés fül látszik (`_guard`).
+- **Gyors második kattintás** a lapon nem lesz „dupla kattintás”, ha alatta nincs
+  objektum — különben a gyorsan egymás után letett két szövegből az egyik elveszett.
+
+A panel szélessége 370 px (eddig 340): a csempefeliratok és a gombsorok 150%-os
+skálán is elférnek (`PDF_MUHELY_SKALA=1.5`, GUI-teszt és felületfotó).
+
+**Közös elv az egész iratra ható eszközöknél:** semmi nem íródik a lapra jóváhagyás
+nélkül. A panel listában mutatja, mi fog történni (találatonként, jelölőnégyzettel),
+a lapon **kiemelve** látszik ugyanez, a listában kattintva a lap odaugrik; a művelet a
+műveletsáv gombjával indul, és **Ctrl+Z visszavonja** a mentésig.
+
+### 23.2 Szövegdoboz (Doboz)
+
+A 21-es élő szöveg többsoros párja: `PlacedBox` — lap, téglalap, bekezdések
+futamokra bontva (`(szöveg, félkövér, dőlt, aláhúzott)`), betű, méret, szín,
+igazítás (balra / középre / jobbra / **sorkizárt**), sortáv, „kicsinyít, ha nem fér”.
+
+- **A lapon:** téglalapot húzol — ott lesz a doboz; a doboz húzható, a sarkainál és
+  az oldalain átméretezhető, nyilakkal mozgatható (1 pt, Shift-tel 10 pt), Delete
+  törli. A szöveg a panel formázott beírójába
+  kerül (`tk.Text`): a kijelölt szavak **Ctrl+B / I / U**-val vagy a gombokkal
+  formázhatók, a lapon azonnal látszik (mint a 21.3-ban).
+- **Saját tördelő, nem az `insert_htmlbox`.** A 22.2 terve a HTML-motor volt, de a
+  megvalósításkor két hibát mért: (1) a betű **ligatúráit** („tt”, „ti”) alkalmazza, és a
+  szövegrétegből `\x82` jön vissza — a keresés, a csere és a „Címke a szövegből”
+  elromlana rajta, CSS-sel nem kapcsolható ki; (2) ha a szöveg nem fér a dobozba,
+  `scale_low=1` mellett **semmit nem ír**. A `TextWriter`-út (`wrap_words`,
+  `line_positions` — a bekezdés-formázásé) ligatúra nélkül ír, a túlcsordulás mérhető.
+- **Ha nem fér ki:** felezéses kereséssel a legnagyobb méret, amin kifér, legfeljebb a
+  fele (`BOX_FIT_MIN`), és a panel kiírja, mekkorára. Ha így sem fér, a túlcsorduló
+  sorok a dobozon túl is látszanak, a kijelölt doboz alsó éle piros, a panel szól — az
+  előnézet nem rejti el a hibát.
+- Hiányzó karakter (a választott betűben nincs meg) az állapotsorban.
+- A mentés égeti be (`_bytes`), a szerkesztett példány érintetlen; visszavonás mint
+  a 21.2-ben (élő réteg: PDF-másolat nélkül).
+
+### 23.3 Keresés és csere
+
+- **Élő keresés:** gépelés közben a találatok a lapon kiemelve (a kijelölt erősebben),
+  a listában oldal + szövegkörnyezet + „mi lesz belőle”. Kis-/nagybetű, egész szó,
+  minta (reguláris kifejezés; hibás mintánál a panel szól). Enter / F3: következő,
+  Shift+Enter / Shift+F3: előző találat; a lista „Mind” / „Egyiket se” gombokkal.
+- **A szövegréteg karakterenként** (`page_text_lines`, `rawdict`): a találat téglalapja
+  pontos, és a span-határon átnyúló szó (félkövér szótag) is megvan. A blokk sorait
+  szóközzel fűzzük össze: a **sortörésen átnyúló** adat (tördelt telefonszám, név a sor
+  végén) is megtalálható — ezt kitakarni lehet, cserélni nem (a sor vége nem csúszhat
+  át a következő sorba; a listában „sortörésen átnyúlik”, nincs kijelölve).
+- **A csere terve írás előtt** (`replace_plan`), és a lista ezt mutatja találatonként:
+  „rendben”, „jobbra csúszik”, „betű 85%”, „más betű”, „nem fér el” (`plan_short`: a
+  keskeny oszlopba rövid alak; a teljes megjegyzés a találatra lépve az állapotsorban).
+  A „nem fér el” alapból nincs kijelölve, és a találatszám sorában is ott van („· 2 nem
+  fér el”) — a lista alatti magyarázat alacsony ablakban görgetés mögé kerül.
+- **Ha az új szöveg más szélességű, a sor többi része a helyére csúszik** — mint egy
+  szövegszerkesztőben —, amíg a hasáb jobb szélén belül marad, és a sor betűi megvannak.
+  Mérve, miért kell: a „Kiss Anna” → „Kovács-Nagy Erzsébet” a puszta helyben cserével
+  „nem fér el” volt a mintairaton, pedig a sor végén bőven volt hely. Egy sor több
+  cseréjénél az eltolások összeadódnak. Ha csúsztatni nem lehet, a betű legfeljebb
+  60%-ig kicsinyül (`REPLACE_MIN`, a pdfedit ötlete).
+- **Utóellenőrzés:** a csere után újrakeres, és kiírja, hány helyen maradt a keresett
+  szöveg (a kivett találatok ott maradnak, ez így helyes — de látszik).
+- **Az írás** (`apply_replace`): a régi szöveg redakcióval ténylegesen törlődik (15%-kal
+  beljebb húzott téglalap, 16.4), az új ugyanarra az alapvonalra, a saját színével és —
+  ha a beágyazott betűben minden karakter megvan — a saját betűjével. Laponként egy
+  redakció; az egész csere egy visszavonási lépés.
+- Szkennelt iratnál a panel szól, és egy gombbal a Felismerésre visz (23.7).
+
+### 23.4 Személyes adatok kitakarása
+
+Ugyanaz a keresőmag (`find_hits`), előre megírt mintákkal (`PII_PATTERNS`):
+TAJ-szám, adóazonosító jel, útlevélszám, személyi igazolvány száma, bankszámla és
+IBAN, telefonszám, e-mail, dátum (alapból ki: a legtöbb irat tele van dátummal), és
+egy **saját szöveg** (név, cím).
+
+- **Ellenőrzőszám:** a TAJ (3-7 súly, mod 10), az adóazonosító (helyiérték-súly,
+  mod 11), a belföldi számlaszám (9-7-3-1) és az IBAN (mod 97) **csak hibátlanul**
+  kerül a listába — így a „kilenc jegyű szám” nem fut be minden iktatószámra (a
+  jelölőnégyzet buborékja ezt el is mondja).
+- A típusok jelölőnégyzetei mellett a találatok száma („TAJ-szám (2)”); a lista
+  „Mind” / „Egyiket se” gombokkal, a gombon a kijelöltek száma („Kitakarás (3)”).
+- Átfedő találatokból egy marad, a hosszabbik (a dátum és a telefonszám ugyanazt a
+  jegysort is megfoghatja). Az átfedést **soronkénti** téglalapokkal mérjük: a két sorra
+  törő találat befoglalója a köztes szöveget is lefedné, és jó találatot dobna el
+  (a GUI-teszt mérte).
+- **Kitakarás** (`redact_hits`): a terület szövege és a kép képpontjai **végleg**
+  törlődnek; a helye fekete vagy fehér sáv. A pdf-redactor tanulsága szerint a
+  **metaadat** is törlődik (cím, szerző, tárgy, XMP) — de a Műhely bélyege (/Keywords)
+  marad, abból ismeri fel az Áttekintő az iratot.
+- **Utána újrakeres**, és megmondja: „egyik sem maradt az iratban” — vagy hány maradt.
+- Szkennelt lapon (OCR után) ugyanígy működik: a felismert szó helyén a kép
+  képpontjai törlődnek.
+
+### 23.5 Fejléc, lábléc, oldalszám, bélyeg, vízjel
+
+A Stirling-PDF listájából ami a feltöltési munkafolyamatban kell. Élő beállítás
+(`Decor`), minden lapon azonnal látszik, a **Mentés égeti be**.
+
+- **Gyors beállítás, egy kattintással:** „Oldalszám” (1/3 alul középen), „Másolat”
+  (vízjel), „Iktatva” (bélyeg az első lapon) — a ritkán kellő részletek alatta.
+- **Fejléc, lábléc, oldalszám:** szöveg, igazítás (bal / közép / jobb); az oldalszám
+  kész formákból („1/3”, „1. oldal”, „– 1 –” …), „az első lapon nem”. Ha a lábléc és az
+  oldalszám ugyanabba a sarokba kerülne, az oldalszám fölé lép.
+- **Változók** (`{oldal}`, `{összes}`, `{dátum}`, `{dolgozó}`, `{doktípus}`,
+  `{fájlnév}`), egy „Változó beszúrása” menüből — a dolgozó és a doktípus a Műhely
+  bélyegéből, ha nincs, az alapértelmezett dolgozóból.
+- **Bélyeg:** keretes szöveg („Iktatva: {dátum}”), piros / kék / fekete, csak az első
+  lapon vagy mindegyiken; alapból a jobb felső sarokban, **a lapon húzással bárhová
+  tehető**, a „Sarokba” gomb visszateszi.
+- **Vízjel:** átlós, halvány szöveg („MÁSOLAT”), az átlátszóság csúszkával.
+- **Ütközés:** ha egy díszítés a lap meglévő szövegére esne, a panel szól
+  (`decor_overlaps`; a vízjel szándékosan átfed) — a margó állításával elkerülhető.
+- A műveletsávon „Mind kikapcsolása”.
+- **Előnézet:** a lap másolatára írjuk és azt rajzoljuk (`_vcache`, az irat
+  változat-számlálójával) — pontosan az látszik, ami a mentéskor a lapra kerül.
+
+### 23.6 Űrlap kitöltése és beégetése
+
+- A panel a mezőket **olvasási sorrendben** listázza (lap, majd fentről lefelé), a
+  típusuk szerint: beíró, legördülő, jelölőnégyzet. A lapon a mezőre kattintva a panel
+  odagörget és a beíróba ugrik; a panelen a mezőre lépve a lap odalapoz és kiemeli.
+  Hosszú űrlapnál szűrő (név vagy érték részlete, ékezetfüggetlenül); fölül „N mező ·
+  M üres”.
+- **Mérve: a PyMuPDF mező-megjelenítése (Helv, WinAnsi) az ő/ű-t tartalmazó értéket
+  egyáltalán nem rajzolja ki** — a „Kőműves Győző” üres mezőnek látszott, és így égett
+  volna be. Ezért:
+  - a **beégetés** a szöveges mezőt magunk írjuk a lapra (`draw_field_value`,
+    `TextWriter`, Unicode-betű, választható családdal): függőlegesen középen, a mező
+    igazítása (/Q) szerint, ha nem fér, kicsinyítve; többsoros mezőnél a szövegdoboz
+    tördelőjével, fésűs (comb) mezőnél betűnként a cellákba. A jelölőnégyzetet és a
+    rádiógombot a saját megjelenése égeti be (`doc.bake`).
+  - a **vásznon kitöltés közben is a beégetett kép** látszik (előnézeti másolat), nem a
+    mező saját — hibás — megjelenése: amit látsz, az kerül a feltöltött fájlba.
+  - a kitöltött, de be nem égetett mezőn a NeedAppearances jelző be: a külső olvasó
+    maga rajzolja újra.
+- A **Beégetés** egy visszavonható lépés; utána a mezők a lap tartalmai, nem
+  szerkeszthetők. A panel szövege elmondja, miért kell feltöltés előtt: a portál a
+  kitölthető mezőt gyakran üresnek látja.
+
+### 23.7 Szövegfelismerés (OCR) — telepítés nélkül
+
+**A döntés:** a Tesseract programot **nem** telepítjük a gépekre. A PyMuPDF
+(`get_textpage_ocr`) a MuPDF-be épített Tesseract-motort hívja; ehhez csak a
+**nyelvi adatfájl** kell, amit a programmal együtt szállítunk:
+`tessdata/hun.traineddata` (tessdata_fast, Apache-2.0, 5,3 MB; forrás és
+ellenőrzőösszeg: `tessdata/FORRAS.md`). A frissítő (`tools/frissit.vbs`) az
+almappát is másolja, így a használat helyére a következő frissítéssel kijut.
+Mérve ezen a gépen: a magyar szkennelt mintalap hibátlan („Kőműves Győző”,
+TAJ-szám), kb. 1,5 s/oldal 300 dpi-n.
+
+Miért nem az OCRmyPDF: Tesseract és Ghostscript telepítése kellene hozzá minden gépre,
+és a mi célunkhoz (a szkennelt iraton keresni, kitakarni, címkét venni) a láthatatlan
+szövegréteg elég; PDF/A, kiegyenesítés nem kell a feltöltéshez.
+
+- **Mit ír:** láthatatlan szövegréteget (`render_mode=3`) a lap képe fölé, a szó
+  szélességére méretezett betűvel — kereshető, kijelölhető, kitakarható; a kép
+  érintetlen, a fájl alig nő.
+- **Külön folyamatban fut** (`--ocr`, mint a tömörítés, 13.10): a felület közben él,
+  folyamatjelző laponként, **Mégsem** megszakítja (a lap nem változik). Ha közben másik
+  irat nyílt meg, az eredmény eldobódik.
+- **Mire:** „Minden szöveg nélküli oldal” (alapból) vagy „Csak ez az oldal”. A panel
+  előre megmondja, hány lap szkennelt; szöveges iratnál nincs mit tennie.
+- „Felismert szavak mutatása a lapon”: zöld keret minden felismert szón — ellenőrzéshez.
+  Csak a láthatatlan (`render_mode=3`) rétegen (`ocr_word_rects`, a `get_texttrace`
+  `type == 3` jelzéséből): felületfotón látszott, hogy előbb a szöveges lap minden
+  saját szavát is bekeretezte, mintha azt is a felismerés adta volna.
+- A Keresés és a Személyes adat panelje szkennelt iratnál szól, és egy gombbal ide
+  visz.
+- A nyelvi fájlt a program a saját `tessdata` mappájában, a `TESSDATA_PREFIX`-ben, vagy
+  egy telepített Tesseract mellett keresi; ha nincs, a panel megmondja, hová kell.
+  Angolhoz az `eng.traineddata` is betehető (`hun+eng`), a repóba nem tesszük.
+
+### 23.8 Szándékos egyszerűsítések
+
+- A csere **egy iratban** megy; a dolgozó összes iratára (22.2/2) nem — a lista ott
+  átláthatatlanul hosszú lenne, és az iratok külön mentése mást kíván.
+- A sortörésen átnyúló találatot nem cseréljük (a sor vége nem tördelődik át).
+- A szövegdoboz forgatott lapra nem ír (mint az élő szöveg).
+- Az OCR nem egyenesít ki és nem forgat; ferde szkennél rosszabb az eredmény — a
+  Rendezés forgatása előtte segít.
+- Megjegyzés (kiemelés, cetli, 22.2/6) nincs: a feltöltési munkafolyamatban kis érték.
+
+### 23.9 Ellenőrzés
+
+Önteszt: hat új szakasz, 50 ellenőrzés — SZÖVEGDOBOZ (9: tördelés, sorkizárás,
+szavankénti félkövér/dőlt, aláhúzás a szóközzel, üres bekezdés, illesztés, kiírás
+ligatúra nélkül), KERESÉS ÉS CSERE (14: kis-/nagybetű, egész szó, hibás minta,
+sortörésen átnyúló találat, gyorsítótár, rövidebb és hosszabb csere csúsztatással, a
+régi szöveg tényleg törlődik, a többi sor érintetlen, a lista rövid megjegyzése), SZEMÉLYES ADATOK (11:
+ellenőrzőszámok, minden mintatípus, az iktatószám kiszűrve, kitakarás után a
+szövegrétegben sincs, metaadat), FEJLÉC… (7: változók, helyek, első lap, ütközés),
+ŰRLAP (4: olvasási sorrend, ő/ű a beégetés után a lap tartalma, fésűs mező),
+SZÖVEGFELISMERÉS (5: a beépített motor magyarul, a réteg láthatatlan és kereshető, a
+keret csak a felismert szavakon).
+GUI: hét új szakasz, 60 ellenőrzés, valódi egér- és billentyűeseményekkel —
+ESZKÖZCSEMPÉK, SZÖVEGDOBOZ, KERESÉS ÉS CSERE, SZEMÉLYES ADAT, FEJLÉC/LÁBLÉC/BÉLYEG,
+ŰRLAP KITÖLTÉSE, SZÖVEGFELISMERÉS (a külön folyamatos futás a végéig). 100% és 150%
+skálán is. Felületfotók eszközönként (1280×740 és 960×650); az új `python
+tools/ui-kep.py 7 kep.png <eszköz>` ugyanezt a mintairatot fényképezi.

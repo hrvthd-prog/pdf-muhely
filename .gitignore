@@ -21,3 +21,7 @@
 !tools/hooks/*
 !test/
 !test/*.py
+# A szövegfelismerés magyar nyelvi adata (Tesseract tessdata_fast, Apache-2.0).
+!tessdata/
+!tessdata/hun.traineddata
+!tessdata/FORRAS.md

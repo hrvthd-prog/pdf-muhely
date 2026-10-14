@@ -16,7 +16,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva. **Oldalanként** módban egy többoldalas köteget oldalanként osztasz szét több dolgozó között |
 | **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
-| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, **húzható, élőben formázható új szöveg**, X, **bekezdés-formázás** (sorkizárás, sortávolság, betű, behúzás — azonnal látszik), **űrlapmezők** (DocGen-sablon), kitakarás |
+| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, **húzható, élőben formázható új szöveg**, **többsoros szövegdoboz**, X, **bekezdés-formázás**, **űrlapmezők** (DocGen-sablon), kitakarás — és az egész iratra: **keresés és csere** előnézettel, **személyes adatok kitakarása** (TAJ, adóazonosító, útlevél…), **fejléc, lábléc, oldalszám, bélyeg, vízjel**, **űrlap kitöltése és beégetése**, **szövegfelismerés** (OCR) a szkennelt iratokra |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
 
 A program **megjegyzi** az utoljára használt munkamappát, az alapértelmezett
@@ -52,7 +52,14 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
 ## Szerkesztés: kész PDF javítása, DocGen-sablon készítése
 
 *Eszközök → Szerkesztés*, vagy az Áttekintőben jobb klikk egy cellán →
-**✎ Szerkesztés: <fájl>**. Négy eszköz:
+**✎ Szerkesztés: <fájl>**. Megnyitott iratnál a fájllista egy sorra csukódik (a
+fájl nevével, mentetlen változásnál ● jellel); a **Másik irat…** kinyitja.
+
+Tíz eszköz, csempéken, két sorban. Az ikon fölött megállva a súgóbuborék elmondja,
+mire való; az eszköz fő gombja (Csere, Kitakarás, Beégetés…) mindig a panel alján
+van, nem kell érte görgetni. Az üzenetek az ablak alsó állapotsorában jelennek meg.
+
+**Fölső sor — a lapon dolgozók** (kattintás, húzás a lapon):
 
 - **Szöveg és X** — kattints egy szövegre: a beírómezőben átírhatod, a régi szöveg
   *ténylegesen* törlődik (nem csak letakarva), az új ugyanoda, ugyanakkora betűvel
@@ -65,6 +72,14 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
     szövegre szól);
   - a lapra a **Mentés** írja, pontosan úgy, ahogy a vásznon látszik; ugyanabban a
     futásban a mentés után is mozgatható marad.
+- **Szövegdoboz** — húzz egy téglalapot a lapon: abba kerül a **többsoros** szöveg. A
+  panel beírójában gépelsz; a kijelölt szavak **Ctrl+B / Ctrl+I / Ctrl+U**-val (vagy a
+  gombokkal) félkövérek, dőltek, aláhúzottak lesznek — szavanként is. Igazítás (balra /
+  középre / jobbra / **sorkizárt**), sortáv, betű, méret, szín; minden azonnal látszik.
+  Ha a szöveg nem fér a dobozba, a betű magától kisebb lesz (legfeljebb a felére), és a
+  panel szól. A doboz húzható, a sarkainál és oldalainál átméretezhető, nyilakkal
+  mozgatható; a mentésig élő, mint az új szöveg. Jó záradékra, „Kelt:” blokkra,
+  megjegyzésre.
 - **Bekezdés formázása** — vektoros (nem szkennelt) PDF-en. Kattints egy bekezdésre:
   szaggatott keret jelzi, mire fog hatni, a panel pedig a bekezdés mai értékeivel
   töltődik ki. Beállítható az **igazítás** (balra / középre / jobbra / **sorkizárt**),
@@ -93,6 +108,43 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
   A jelölők leírása: a DocGen README „Kitölthető PDF-sablon” szakasza.
 - **Kitakarás** — húzd körbe a területet: a tartalma végleg törlődik, a helye fehér.
 
+**Alsó sor — az egész iratra hatók.** Közös bennük: semmi nem kerül a lapra
+jóváhagyás nélkül. A panel listában mutatja, mi fog történni (soronként
+jelölőnégyzettel), a lapon ugyanez kiemelve látszik, a listában kattintva a lap
+odaugrik; a művelet a panel alján lévő gombbal indul, és Ctrl+Z visszavonja.
+
+- **Keresés és csere** (Ctrl+F) — gépelés közben keres; kis-/nagybetű, egész szó,
+  minta (reguláris kifejezés). Enter / F3 a következő, Shift+F3 az előző találat. A
+  listában minden találat mellett ott van, **mi lesz belőle**: „rendben”, „jobbra
+  csúszik” (a sor többi része a helyére csúszik, mint egy szövegszerkesztőben), „betű
+  85%” (kicsit kisebb betűvel fér csak el), „nem fér el” (ez nincs kijelölve — ott a
+  Bekezdés eszköz *Bekezdés szövege…* gombja segít). A régi szöveg ténylegesen
+  törlődik; utána a program újra keres, és kiírja, maradt-e még.
+- **Személyes adatok** — megkeresi a **TAJ-számot, adóazonosító jelet, útlevélszámot,
+  személyi igazolvány számát, bankszámlaszámot / IBAN-t, telefonszámot, e-mailt**
+  (és kérésre a dátumokat, meg egy saját szöveget, pl. nevet). Ahol van
+  ellenőrzőszám (TAJ, adóazonosító, számlaszám, IBAN), csak a hibátlan számot jelöli —
+  az iktatószámok nem kerülnek a listába. A **Kitakarás** végleg törli a szöveget és a
+  kép képpontjait (fekete vagy fehér sáv), és a metaadatot is (a Műhely bélyege
+  marad); utána ellenőrzi, hogy egyik sem maradt.
+- **Fejléc** — fejléc, lábléc, **oldalszám** („1/3”, „1. oldal” …), keretes **bélyeg**
+  („Iktatva: 2026. 10. 14.”, piros/kék/fekete, a lapon húzással áthelyezhető) és átlós
+  **vízjel** („MÁSOLAT”). Egy kattintásos gyors beállítás: *Oldalszám*, *Másolat*,
+  *Iktatva*. A szövegben változók: `{oldal}`, `{összes}`, `{dátum}`, `{dolgozó}`,
+  `{doktípus}`, `{fájlnév}`. Élőben látszik minden lapon, a **Mentés** égeti be; ha
+  valami a lap szövegére esne, a panel szól.
+- **Űrlap** — a kitölthető mezők listája a panelen (olvasási sorrendben, szűrővel);
+  a lapon a mezőre kattintva a beírójába ugrik. **Beégetés** feltöltés előtt: a
+  mezők a lap tartalmává válnak — a portál a kitölthető mezőt gyakran üresnek látja,
+  az ékezetes értéket (ő, ű) pedig sok olvasó nem is mutatja. Kitöltés közben is a
+  beégetett kép látszik: amit látsz, az kerül a fájlba.
+- **Felismerés** (OCR) — a szkennelt lapok szövegét ismeri fel, és láthatatlan
+  rétegként a lapra teszi: utána a lap **kereshető, kijelölhető és kitakarható** (a
+  Személyes adatok így a szkennelt iraton is működik), a kép nem változik. Külön
+  folyamatban fut, haladásjelzővel, megszakítható. **Telepíteni semmit nem kell:** a
+  program beépített motort használ, a magyar nyelvi fájl a `tessdata` mappában jön
+  vele (`tessdata/FORRAS.md`).
+
 **Lapozás és nagyítás:** a vászon fölött lapozógombok (első / előző / következő /
 utolsó, mellette „/ N”), PageUp/PageDown; nagyítva **görgetősávok**, Shift+görgővel
 vízszintes görgetés, középső gombbal húzva szabad mozgatás, Ctrl+görgővel nagyítás a
@@ -102,9 +154,12 @@ Minden lépés visszavonható (Ctrl+Z) a mentésig. A **Mentés** helyben ír; a
 példány a dolgozó `01_Elokeszitett` mappájába kerül „(előző példány …)” jelölővel, a
 bélyeg megmarad, és az Áttekintőből nyitott fájlnál naplósor is készül. Forgatott
 lapot a szerkesztő nem kezel.
+Gyorsbillentyűk: Ctrl+F keresés, F3 / Shift+F3 találatok, Ctrl+S mentés, Ctrl+Z
+visszavonás.
 Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet; a bekezdés-formázásé a 19.,
-az élő szövegé és a valós idejű formázásé a 21. További szöveges modulok terve (a
-pdfrw és más projektek áttekintése): 22.
+az élő szövegé és a valós idejű formázásé a 21., a pdfrw és más projektek áttekintése
+a 22., a szövegdoboz, a keresés-csere, a személyes adat, a fejléc-bélyeg, az űrlap és
+a szövegfelismerés a 23.
 
 ## A felület
 
@@ -120,6 +175,9 @@ a feliratok arányos ráhagyást kapnak, hogy a végük ne vágódjon le (`kepek
 
 ```bash
 python tools/ui-kep.py 0 kep.png      # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés
+                                      # 5–6: Szerkesztés (mező, bekezdés)
+python tools/ui-kep.py 7 k.png search # 7: Szerkesztés egy eszközzel (box, search,
+                                      #    pii, decor, form, ocr)
 ```
 
 ## A dolgozói mappa szerkezete
@@ -194,6 +252,9 @@ pip install pymupdf
 ```bash
 python pdf-muhely.py
 ```
+
+A szövegfelismeréshez külön program nem kell: a nyelvi adat a `tessdata` mappában
+van, a program mellett (a frissítő ezt is másolja).
 
 A címsorban látszik a verzió (pl. `v1.4 (2026-09-25)`). Ha a PyMuPDF túl régi a
 tömörítéshez vagy a JPEG-minőség állításához, az app induláskor szól

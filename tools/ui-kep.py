@@ -8,6 +8,8 @@ működést méri, a megjelenést nem.
     python tools/ui-kep.py 4 ellenorzes.png      # 4: az Ellenőrzés dialógus
     python tools/ui-kep.py 5 szerkesztes.png     # 5: Eszközök → Szerkesztés (mező mód)
     python tools/ui-kep.py 6 bekezdes.png        # 6: Szerkesztés → Bekezdés formázása
+    python tools/ui-kep.py 7 kereses.png search  # 7: Szerkesztés egy eszközzel, mintairaton:
+                                                 #    box, search, pii, decor, form, ocr
 
 A valódi beállításfájlokhoz nem nyúl: a script_dir-t ideiglenes mappára irányítja.
 """
@@ -26,6 +28,7 @@ P = pm.pymupdf
 
 tab_i = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 out = sys.argv[2] if len(sys.argv) > 2 else "ui.png"
+tool = sys.argv[3] if len(sys.argv) > 3 else "search"
 
 TMP = tempfile.mkdtemp(prefix="ui-demo-")
 pm.script_dir = lambda: TMP
@@ -35,6 +38,8 @@ try:
     shutil.copy2(os.path.join(GY, pm.VERZIO_FILE), os.path.join(TMP, pm.VERZIO_FILE))
 except OSError:
     pass
+if os.path.isdir(os.path.join(GY, pm.TESSDATA)):    # a Felismerés panelje „kész” legyen
+    shutil.copytree(os.path.join(GY, pm.TESSDATA), os.path.join(TMP, pm.TESSDATA))
 root = os.path.join(TMP, "gyujto")
 for who in ("Kiss Anna", "Nagy Béla", "Ökrös Zsófia", "Tran Van Minh",
             "Horváth Dániel", "Kovács Péter"):
@@ -132,6 +137,63 @@ if tab_i == 6:                                  # Szerkesztés: Bekezdés formá
     ed._mode_changed()
     app.update()
     ed._para_click(ed.doc[0], 200, 149)         # a bekezdés kijelölve, kerettel
+if tab_i == 7:                                  # Szerkesztés: egy eszköz a mintairaton
+    d = P.open()
+    pg = d.new_page(width=595, height=842)
+    FN, FB = pm.edit_font("Calibri"), pm.edit_font("Calibri", True)
+    pm.add_text(pg, (60, 90), "MEGHATALMAZÁS", FB, 14)
+    PAR = ("Alulírott Kiss Anna (TAJ: 123 456 788, adóazonosító jel: 8123456786) "
+           "meghatalmazom a munkáltatómat, hogy a tartózkodási engedélyem ügyében "
+           "eljárjon. Útlevélszámom: BA1234567. Kiss Anna telefonszáma: +36 30 123 "
+           "4567, e-mail: kiss.anna@example.com.").split()
+    wd = [FN.text_length(w, 10.5) for w in PAR]
+    spw = FN.text_length(" ", 10.5)
+    for r, row in enumerate(pm.wrap_words(wd, spw, 470.0)):
+        for i, x in zip(row, pm.line_positions([wd[i] for i in row], 60.0, 530.0,
+                                               spw, "left")):
+            pm.add_text(pg, (x, 130 + r * 15), PAR[i], FN, 10.5)
+    for i, (name, label) in enumerate((("nev", "A meghatalmazó neve"),
+                                       ("szulhely", "Születési hely"))):
+        pm.add_text(pg, (65, 277 + 25 * i), label, FN, 10)
+        w = P.Widget()
+        w.field_name, w.field_label = name, label
+        w.field_type = P.PDF_WIDGET_TYPE_TEXT
+        w.rect = P.Rect(202, 262 + 25 * i, 528, 283 + 25 * i)
+        pg.add_widget(w)
+    pm.add_text(pg, (60, 420), "Budapest, 2026. október 14.", FN, 10.5)
+    # második lap: „szkennelt” — egy szöveges lap képe, szövegréteg nélkül
+    t = P.open()
+    pm.add_text(t.new_page(width=595, height=842), (60, 100),
+                "NYILATKOZAT — Kiss Anna, TAJ: 123 456 788", FB, 14)
+    pix = t[0].get_pixmap(dpi=150)
+    t.close()
+    d.new_page(width=595, height=842).insert_image(P.Rect(0, 0, 595, 842), pixmap=pix)
+    d.set_metadata({"keywords": "pdf-muhely=1;dolgozo=Kiss Anna;tipus=Meghatalmazás"})
+    sp = os.path.join(TMP, "Meghatalmazás — Kiss Anna.pdf")
+    d.save(sp)
+    d.close()
+    ed = app.tabs["Szerkesztés"]
+    app.show(ed)
+    app.update()
+    ed.open_file(sp)
+    if tool == "ocr":
+        ed._goto_page(1)                        # a szkennelt lap
+    ed._switch_mode(tool)
+    app.update()
+    if tool == "box":
+        ed._new_box(P.Rect(60, 190, 330, 250))
+        ed.b_text.insert("1.0", "Kelt: Budapest, 2026. október 14.\nA meghatalmazást ")
+        ed.b_text.insert("end", "elfogadom", ("b",))
+        ed.b_text.insert("end", " és aláírom.")
+        ed._btext_changed()
+    if tool == "search":
+        ed.s_text.set("Kiss Anna")
+        ed.s_repl.set("Kovács Éva")
+    if tool == "decor":
+        ed._preset_pageno()
+        ed._preset_stamp()
+    if tool == "form":
+        ed.f_vars[ed.fields[0]["xref"]].set("Kőműves Győző")
 if tab_i == 4:                                  # dialógus: Ellenőrzés
     app.show(app.tabs["Áttekintő"])
     app.update()
