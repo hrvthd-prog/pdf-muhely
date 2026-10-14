@@ -3491,8 +3491,18 @@ def page_is_scan(page) -> bool:
 
 
 def ocr_words(page, tessdata: str, lang: str = "hun") -> list:
-    """Egy lap felismert szavai: [(x0, y0, x1, y1, szó)]."""
-    tp = page.get_textpage_ocr(language=lang, dpi=OCR_DPI, full=True, tessdata=tessdata)
+    """Egy lap felismert szavai: [(x0, y0, x1, y1, szó)].
+    A beépített Tesseract ANSI-fopen-nel nyit: ékezetes abszolút útvonalon
+    (…\\Dániel\\…) „Tesseract language initialisation failed”. A relatív utat a
+    Windows a munkakönyvtárhoz Unicode-ban oldja fel — ezért a tessdata mappából,
+    „.”-ként adjuk át (23.7). A munkakönyvtár folyamatszintű: csak a külön
+    folyamatból (`--ocr`) és az öntesztből hívjuk, felületi szál nem fut mellette."""
+    cwd = os.getcwd()
+    os.chdir(tessdata)
+    try:
+        tp = page.get_textpage_ocr(language=lang, dpi=OCR_DPI, full=True, tessdata=".")
+    finally:
+        os.chdir(cwd)
     return [tuple(w[:5]) for w in page.get_text("words", textpage=tp) if w[4].strip()]
 
 
@@ -14343,6 +14353,12 @@ def _selftest() -> int:
         ck("a beépített motor magyarul felismeri (tessdata, telepítés nélkül)",
            any(w[4] == "Kőműves" for w in words) and any(w[4] == "Győző" for w in words),
            [w[4] for w in words])
+        with tempfile.TemporaryDirectory() as td:    # ékezetes mappából is (23.7)
+            ek = os.path.join(td, "Dániel tessdata")
+            os.mkdir(ek)
+            shutil.copy(os.path.join(tess, "hun.traineddata"), ek)
+            ck("ékezetes útvonalú tessdata mappából is felismer",
+               any(w[4] == "Kőműves" for w in ocr_words(sp2, ek, "hun")))
         scan2.close()
     else:
         ck("a magyar nyelvi fájl megvan (tessdata\\hun.traineddata)", False, script_dir())

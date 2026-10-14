@@ -1167,6 +1167,15 @@ szövegréteg elég; PDF/A, kiegyenesítés nem kell a feltöltéshez.
 - A nyelvi fájlt a program a saját `tessdata` mappájában, a `TESSDATA_PREFIX`-ben, vagy
   egy telepített Tesseract mellett keresi; ha nincs, a panel megmondja, hová kell.
   Angolhoz az `eng.traineddata` is betehető (`hun+eng`), a repóba nem tesszük.
+- **Ékezetes útvonal (2026-10-14, mérve):** a beépített Tesseract ANSI-fopen-nel nyit,
+  így a `…\Dániel\…` alatti `tessdata` mappát nem találja („Tesseract language
+  initialisation failed”) — a fájl ép, ékezet nélküli helyről betölt. A felhőben
+  ezért nem bukott el a teszt. Javítás: az `ocr_words` a `tessdata` mappába lép, és
+  `"."`-ot ad át; a relatív utat a Windows Unicode-ban oldja fel. Elvetve: a
+  **8.3-as rövid név** (`GetShortPathNameW`) — kötetenként kikapcsolható, hálózati
+  és OneDrive-mappán nincs; **ékezet nélküli helyre másolás** — 5 MB másolat, és a
+  felhasználói mappa (`%LOCALAPPDATA%`) maga is lehet ékezetes. Az önteszt ékezetes
+  nevű ideiglenes mappából is felismertet, így ékezet nélküli gépen is méri.
 
 ### 23.8 Szándékos egyszerűsítések
 
