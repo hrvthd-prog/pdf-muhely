@@ -16,11 +16,27 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | **2 · Iktató** | a PDF-et ráejted a dolgozó nevére: szabványos nevet kap, a mappájába kerül, naplózva. **Oldalanként** módban egy többoldalas köteget oldalanként osztasz szét több dolgozó között |
 | **3 · Áttekintő** | mátrix: dolgozónként melyik irat van kész, ki adható be, mi hiányzik |
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
-| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, új szöveg és X, **bekezdés-formázás** (sorkizárás, sortávolság, betű, behúzás), **űrlapmezők** (DocGen-sablon), kitakarás |
+| Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, **húzható, élőben formázható új szöveg**, X, **bekezdés-formázás** (sorkizárás, sortávolság, betű, behúzás — azonnal látszik), **űrlapmezők** (DocGen-sablon), kitakarás |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
 
-A program **megjegyzi** az utoljára használt munkamappát, a mellékletek
-mappáját és az Iktatóban választott doktípust (`emlekezet.json`).
+A program **megjegyzi** az utoljára használt munkamappát, az alapértelmezett
+dolgozót, a mellékletek mappáját és az Iktatóban választott doktípust
+(`emlekezet.json`).
+
+## Alapértelmezett dolgozó
+
+A munkamappa sora alatt, a fülsor jobb végén: **ALAPÉRTELMEZETT DOLGOZÓ**. Ha itt
+kiválasztod (elég a név egy részlete), nem kell fülenként újra:
+
+- az **Összeállító** és az **Arckép** dolgozóválasztója ezt veszi át;
+- az **Arckép**, a **Szerkesztés**, az **Összefűzés** és a **Raszterizálás** fájllistája a
+  dolgozó mappáját mutatja, mindkét alkönyvtárával (`01_Elokeszitett\…`,
+  `02_Feltoltheto\…`);
+- az **Iktató nem** — annak épp az a dolga, hogy a köteget több dolgozó között ossza szét.
+
+Váltáskor minden fül követi; a fülön kézzel választott dolgozót a Frissítés nem írja
+felül. A „— nincs —” elem törli: a listák újra a munkamappát mutatják. Döntés:
+`kepek-pdf-terv.md` 19.3.
 
 ## Arckép: körülvágás, fényerő
 
@@ -40,14 +56,23 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
 
 - **Szöveg és X** — kattints egy szövegre: a beírómezőben átírhatod, a régi szöveg
   *ténylegesen* törlődik (nem csak letakarva), az új ugyanoda, ugyanakkora betűvel
-  kerül. Üres helyre kattintva új szöveg (a cellához igazítva); jelölőnégyzetbe: X be/ki.
+  kerül. Jelölőnégyzetbe: X be/ki. Üres helyre kattintva **új szöveg** (a cellához
+  igazítva), ami a mentésig **élő objektum**:
+  - egérrel **húzható**, a **nyilakkal** 1 pt-onként, **Shift+nyíllal** 10 pt-onként
+    mozgatható; **dupla kattintással** átírható, **Delete**-tel törölhető;
+  - a panelen a **betű, méret, félkövér, dőlt, aláhúzás, szín** — és maga a szöveg is —
+    **azonnal** látszik rajta, Alkalmaz nélkül (kijelölés nélkül a panel a következő új
+    szövegre szól);
+  - a lapra a **Mentés** írja, pontosan úgy, ahogy a vásznon látszik; ugyanabban a
+    futásban a mentés után is mozgatható marad.
 - **Bekezdés formázása** — vektoros (nem szkennelt) PDF-en. Kattints egy bekezdésre:
   szaggatott keret jelzi, mire fog hatni, a panel pedig a bekezdés mai értékeivel
   töltődik ki. Beállítható az **igazítás** (balra / középre / jobbra / **sorkizárt**),
   a **sortávolság** (kézzel vagy 1,15× / 1,5× / 2× gombbal), a **térköz előtte**, a
   **betű** (család, méret, félkövér, dőlt, aláhúzott, szín), a **behúzás**
   (bal / jobb / első sor), és a *Bekezdés szövege…* gombbal az egész bekezdés
-  szövege átírható. Végül **Alkalmaz**.
+  szövege átírható. Minden beállítás **azonnal** a lapra kerül (Alkalmaz gomb nincs);
+  az **Eredeti bekezdés** gomb visszaállítja a kijelöléskori állapotot.
 
   Alapból a **sortörések nem változnak** — a sorkizárás csak a szóközöket nyújtja, így
   a lap tördelése biztosan nem csúszik el, és a bekezdésen belüli félkövér/dőlt szavak
@@ -68,10 +93,18 @@ valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajt
   A jelölők leírása: a DocGen README „Kitölthető PDF-sablon” szakasza.
 - **Kitakarás** — húzd körbe a területet: a tartalma végleg törlődik, a helye fehér.
 
+**Lapozás és nagyítás:** a vászon fölött lapozógombok (első / előző / következő /
+utolsó, mellette „/ N”), PageUp/PageDown; nagyítva **görgetősávok**, Shift+görgővel
+vízszintes görgetés, középső gombbal húzva szabad mozgatás, Ctrl+görgővel nagyítás a
+kurzor körül.
+
 Minden lépés visszavonható (Ctrl+Z) a mentésig. A **Mentés** helyben ír; az előző
-példány a dolgozó `.eredeti\` mappájába kerül, a bélyeg megmarad, és az Áttekintőből
-nyitott fájlnál naplósor is készül. Forgatott lapot a szerkesztő nem kezel.
-Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet; a bekezdés-formázásé a 19.
+példány a dolgozó `01_Elokeszitett` mappájába kerül „(előző példány …)” jelölővel, a
+bélyeg megmarad, és az Áttekintőből nyitott fájlnál naplósor is készül. Forgatott
+lapot a szerkesztő nem kezel.
+Döntések és buktatók: `szerkeszto-terv.md`, 16. fejezet; a bekezdés-formázásé a 19.,
+az élő szövegé és a valós idejű formázásé a 21. További szöveges modulok terve (a
+pdfrw és más projektek áttekintése): 22.
 
 ## A felület
 
@@ -81,7 +114,9 @@ csúszkák grafikája **kódból készül** futásidőben (élsimított, lekerek
 lágy árnyékkal), az ikonokkal együtt — nincs hozzá képfájl és nincs új
 függőség. Részletek és indoklás: `kepek-pdf-terv.md` 13.7.
 
-Az ablak mérete a képernyőhöz igazodik. A megjelenés ellenőrzése fejlesztéskor:
+Az ablak mérete a képernyőhöz igazodik. **Nagyított kijelzőn** (Windows 125–200%)
+a feliratok arányos ráhagyást kapnak, hogy a végük ne vágódjon le (`kepek-pdf-terv.md`
+19.2). A megjelenés ellenőrzése fejlesztéskor:
 
 ```bash
 python tools/ui-kep.py 0 kep.png      # 0–2: fő fülek · 3: Eszközök · 4: Ellenőrzés

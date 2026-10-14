@@ -757,3 +757,210 @@ GOMB” — 940×620-ban mindkét záró gomb látszik; az Arckép panelja görg
 ablakban nem görget), verzió, frissítő zöld.
 
 Felületfotó: `python tools/ui-kep.py 3 arckep.png` és `... 0 osszeallito.png`.
+
+---
+
+## 21. Ötödik kör (2026-10-14): élő szöveg, valós idejű formázás, lapozás
+
+### 21.1 A kérés
+
+1. Nagyításkor nincs oldalsó csúszka: függőlegesen csak görgővel, vízszintesen sehogy.
+2. A lapozás csak a legördülőnek látszó beíróval megy — legyenek **lapozógombok**.
+3. A modullal elhelyezett szöveg (raszterizálás nélkül, ugyanabban a futásban) nem
+   mozgatható — kell **drag-and-drop** és **nyilas** mozgatás.
+4. A formázás (betű, méret, félkövér, dőlt, aláhúzás…) csak az **Alkalmaz** után látszik —
+   legyen **valós idejű**.
+5. Nagyított kijelzőn a bal panel feliratai levágódnak — ez közös felületi ügy,
+   `kepek-pdf-terv.md` 19.2.
+
+### 21.2 Élő szöveg: `PlacedText`
+
+Eddig az új szöveg a kattintás pillanatában a lap tartalomfolyamába került
+(`add_text`), onnan pedig csak redakcióval lehetett volna kivenni — ami a környező,
+eredeti betűket is vinné (16.4). Ezért az új szöveg most **a mentésig objektum marad**:
+
+```python
+@dataclass(eq=False)
+class PlacedText:            # lap, alapvonal (x, y), szöveg, betű, méret,
+    ...                      # félkövér, dőlt, aláhúzott, szín, uid
+```
+
+| függvény | mit tud |
+|---|---|
+| `placed_bbox` | a befoglaló a betű fel- és lenyúlásával, az aláhúzással; üres szövegnél is kijelölhető |
+| `write_placed` | kiírás a lapra — a **mentés és az előnézet ugyanezt hívja**, ezért az látszik, ami a lapra kerül |
+| `placed_pixmap` | átlátszó kép a vászon nagyításán, befoglaló méretű ideiglenes lapon (a MuPDF rajzolja, a valódi betűvel) |
+| `bake_placed` | mentéskor a dokumentum **másolatába** írja; a szerkesztett példány érintetlen, így a szöveg a mentés után is mozgatható |
+| `placed_missing` | a választott betűből hiányzó karakter (csendben eltűnne) — az állapotsor szól |
+
+**A vásznon** a szöveg külön képelem a lap fölött: húzáskor csak ezt mozgatjuk
+(`canvas.move`), a lapot nem kell újrarajzolni — ez teszi folyamatossá a húzást.
+
+**Mozdulatok** (Szöveg és X eszköz):
+
+- kattintás a szövegen: kijelölés (kék szaggatott keret) — **húzás**: mozgatás;
+- **nyilak**: 1 pt, **Shift+nyíl**: 10 pt; kijelölés nélkül a nyíl a nézetet görgeti;
+- **dupla kattintás**: átírás a helyén; **Delete**: törlés; **Esc**: kijelölés vége;
+- üres helyre kattintva, ha van kijelölés, az első kattintás csak feloldja (különben
+  minden „kattintsunk mellé” új beírómezőt nyitna);
+- a **Kitakarás** az élő szöveget is viszi, ha a területébe esik;
+- a Bekezdés eszközzel élő szövegre kattintva a Szöveg eszköz veszi át (az élő szöveg
+  nem a lap bekezdése, a formázását a szövegpanel végzi).
+
+**Visszavonás:** a verem eleme most `(PDF-bájtok | None, a szövegek másolata)`. Az élő
+szöveg lépései nem másolják a PDF-et (`None`) — egy nagy szkennelt iratnál a nyilazás
+különben minden lépésre megabájtokat másolna. Az **egymás utáni nyilazás egy lépés**, és
+**egy kijelölés formázása is egy lépés** (kulcs: `("move", uid)` / `("style", uid)`).
+
+### 21.3 Valós idejű formázás — Alkalmaz nélkül
+
+**Élő szöveg:** a Szöveg eszköz panelje (betű, méret, félkövér, dőlt, aláhúzott, szín,
+és maga a **szöveg**) kijelölt szövegnél azonnal arra hat; kijelölés nélkül a következő
+új szöveg stílusa. A panel változását 120 ms-mal késleltetve rajzoljuk (`LIVE_MS`): a
+méretmező gépelése közben ne minden billentyűre. A betűobjektumok gyorsítótárból jönnek
+(`edit_font`): egy TTF megnyitása önmagában érezhető késés volna.
+
+**Bekezdés:** a panel minden változása azonnal a lapra kerül; az **Alkalmaz gomb
+megszűnt**, a helyén az **Eredeti bekezdés** visszaállítja a kijelöléskori állapotot.
+A módszer: a kijelöléskor (az első változásnál) pillanatképet készítünk, és minden
+változáskor **a pillanatképből indulva** a panel *teljes* eltérését alkalmazzuk. Így az
+eredmény csak a panel mostani állapotától függ — a 10 → 8 → 10 pt ugyanazt a lapot
+adja vissza, nem egy kétszer újratördelt változatot (a GUI-teszt méri). Minden
+alkalmazás külön visszavonási lépés, mint eddig az Alkalmaz.
+
+- Hibás állapot (hiányzó betű, félkövér család nélkül) nem dob ablakot gépelés közben: az
+  állapotsor szól, a lap az utolsó jó állapotában marad.
+- Vegyes formázású bekezdés újratördelése előtt egyszer kérdez (bekezdésenként).
+- A „Bekezdés szövege…” párbeszéd ugyanebbe az élő menetbe ír.
+
+### 21.4 Lapozás, nagyítás, görgetés
+
+- **Görgetősáv:** a téma hibája volt (1×1 px, `kepek-pdf-terv.md` 19.1).
+- **Lapozógombok** (első / előző / következő / utolsó) a beíró két oldalán, mellette
+  „/ N”; a szélső lapon a gomb tiltott. **PageUp/PageDown** a vásznon. A lapozósor az
+  eszköztár alatti sorba került, az állapottal együtt: az első sorban a gombok
+  összenyomták a beírót, és az állapotból „nyi” maradt (felületfotón, 1280 px).
+- **Shift+görgő** vízszintesen, **középső gombbal húzva** szabadon; a **Ctrl+görgő a
+  kurzor alatti pontot** tartja helyben, a +/− gomb a nézet közepét.
+- **Csak a látható sáv rajzolódik**, ha a lap képe 6 megapixelnél nagyobb lenne
+  (`RENDER_MAX_PX`; 6× nagyításon egy A4 50 MP — másodpercekig tartott volna): fél
+  képernyőnyi ráhagyással, és görgetéskor, ha kiér belőle, késleltetve újrarajzol.
+
+### 21.5 A közben talált hiba: a saját mentett iratunk betűneve
+
+A mentés `subset_fonts()`-szal részhalmazol, és a PyMuPDF ezután a betűt **„Calibri
+Regular”**, „Calibri Bold Italic” néven adja vissza. A `span_style` ezt nem ismerte fel
+családnak, így egy **mentett és újranyitott** iratban a szerkesztő saját bekezdését sem
+lehetett újraformázni („A bekezdés betűje nincs meg a gépen: Calibri Regular”). A
+szóközzel írt stílusszó (`STYLE_WORDS`) most leválik a névről; a családnév része
+(„Times New *Roman*”) marad. Az új GUI-teszt épp a mentett iraton formáz.
+
+### 21.6 Szándékos egyszerűsítések
+
+- Az élő szöveg **egy sor** (mint eddig). A többsoros, tördelt szövegdoboz a 22.2 első
+  javaslata.
+- A **lap eredeti szövegének átírása** (kattintás meglévő szövegre) továbbra is azonnal a
+  lapra kerül, nem élő objektum: különben a bekezdés-formázás nem látná, és a bekezdés
+  közepéből „kilógna” egy mozgatható szó.
+- Az élő szöveg az újranyitás után a lap tartalma — mozgatni már nem lehet (a kérés is
+  ugyanabban a futásban kérte).
+- Forgatott lapra továbbra sem írunk.
+
+### 21.7 Ellenőrzés
+
+Önteszt: új „ÉLŐ SZÖVEG” szakasz (13 ellenőrzés: befoglaló, előnézet, kiírás helye,
+stílusa, színe, aláhúzás, hiányzó karakter, a mentés utáni betűnév, a betű-gyorsítótár).
+GUI: új „SZERKESZTŐ: GÖRGETŐSÁV, NAGYÍTÁS, LAPOZÁS” (13), „SZERKESZTŐ: ÉLŐ SZÖVEG —
+HÚZÁS, NYILAK, VALÓS IDEJŰ FORMÁZÁS” (25, köztük a gyors kijelölésváltás: a függő
+formázás nem vész el), „SZERKESZTŐ: VALÓS IDEJŰ BEKEZDÉS-FORMÁZÁS” (5) — valódi egér- és billentyűeseményekkel; a régi „üres cellába új szöveg” és
+„eszközváltás” ellenőrzés az új viselkedéshez igazítva. Felületfotó: `python
+tools/ui-kep.py 6 bekezdes.png`.
+
+---
+
+## 22. Bővítési lehetőségek (2026-10-14): pdfrw és más projektek áttekintése
+
+A kérés: tekintsük át a [pdfrw](https://github.com/pmaupin/pdfrw)-t és más repókat, hogy
+a Műhely **elsősorban szöveges** PDF-szerkesztési modulokkal bővülhessen.
+
+### 22.1 pdfrw — függőségnek nem, ötletnek igen
+
+| | |
+|---|---|
+| mi | tiszta Python PDF olvasó/író: összefűzés, részhalmaz, forgatás, metaadat, lap mint Form XObject (vízjel, 4-up, füzet, poszter), reportlab-híd |
+| állapot | utolsó kiadás **0.4, 2017. szeptember**; Python 2.6–3.6-ra tesztelve |
+| nem tud | **szöveget kinyerni vagy szerkeszteni** (a tartalomfolyamot nem értelmezi), renderelni, titkosítást; kevés tömörítő szűrőt ismer |
+
+**Döntés:** új függőségként **nem** javasolt. Amit tud, azt a már használt PyMuPDF is
+tudja (`show_pdf_page` = lap mint XObject, `insert_pdf` = összefűzés, `select` =
+részhalmaz, `set_metadata`), a szöveghez pedig épp az hiányzik belőle, amit a Műhely
+már ma is használ. Ami **átvehető**: a példaprogramjai mint funkciólista (vízjel minden
+lapra, N-up, füzetnyomtatás), és két rá épülő projekt ötlete (lent: pdf-redactor).
+
+### 22.2 Javasolt szöveges modulok — a már meglévő PyMuPDF-re építve
+
+Sorrend: érték a napi munkában / ráfordítás. Mind **új függőség nélkül** megy; a
+PyMuPDF-funkciókat ezen a gépen (1.28.2) kipróbáltam.
+
+1. **Többsoros szövegdoboz, gazdag szöveggel** — `Page.insert_htmlbox`: téglalapba
+   tördelt szöveg HTML/CSS-ből, félkövér/dőlt **szavanként**, sorkizárás, és ha nem fér
+   ki, arányos kicsinyítés (`scale_low`). Mérve: a magyar ékezetek (ő, ű, Ő, Ű) hibátlanok,
+   a sorkizárás működik. Az élő szöveg (21.2) természetes folytatása: a `PlacedText` kap
+   egy szélességet, a vásznon a doboz széle húzható. Ezzel jönne a hiányzó
+   **megjegyzés-, záradék-, „Kelt:” blokk** is.
+2. **Keresés és csere** (egy iratban, vagy a dolgozó összes iratában) — `search_for` +
+   a meglévő `rewrite_span` útja (redakció 15%-kal beljebb húzott téglalappal, a span
+   saját betűjével). **Előnézetes lista**, mint a Rendezésnél, és a csere csak
+   jóváhagyásra. Mérve, miért kell a mi utunk: a PyMuPDF beépített cserés redakciója
+   (`add_redact_annot(text=…)`) a szomszéd sor betűit is vitte. Ötlet a
+   [pdfedit](https://github.com/sachinpandey22/pdfedit)-ből (MIT): ha az új szöveg
+   szélesebb, a betű legfeljebb 60%-ig kicsinyül, utána figyelmeztet; kötegnél előbb
+   mindent ellenőriz, és csak hiba nélkül ír.
+3. **Mintás kitakarás (személyes adat)** — szabályos kifejezésekkel: TAJ (`\d{3} ?\d{3}
+   ?\d{3}`), útlevélszám, adóazonosító, születési dátum; találatonként jóváhagyás, majd a
+   meglévő `erase_area`. A [pdf-redactor](https://github.com/JoshData/pdf-redactor)
+   (CC0, pdfrw-alapú) tanulsága: a **metaadatot és az XMP-t is** tisztítani kell, és a
+   megjegyzések szövegét is — különben a kitakarás csak látszat.
+4. **Fejléc, lábléc, oldalszám, bélyegszöveg, vízjel** — „1/3. oldal”, „MÁSOLAT”,
+   „Iktatva: 2026-10-14 — Kiss Anna” minden lapra; `insert_htmlbox` elforgatással és
+   átlátszósággal, vagy egy egyszer megrajzolt lap `show_pdf_page`-dzsel (a pdfrw
+   `watermark.py` mintája). A [Stirling-PDF](https://github.com/Stirling-Tools/Stirling-PDF)
+   funkciólistája (oldalszám, bélyeg, vízjel, automatikus kitakarás, OCR, összevetés)
+   jó ellenőrzőlista ehhez a körhöz.
+5. **Űrlap kitöltése és lapítása** — a Műhely már készít mezőt (DocGen-sablon); egy
+   „Kitöltés” nézet a meglévő mezőkhöz, és a feltöltés előtti **lapítás**
+   (`Document.bake()`): a portálok egy része a kitölthető űrlapot nem fogadja. Minta: a
+   [PyPDFForm](https://github.com/chinapandaman/PyPDFForm) (MIT) kitöltő/mezőkészítő API-ja.
+6. **Megjegyzések belső egyeztetéshez** — kiemelés és cetli (`add_highlight_annot`,
+   `add_freetext_annot`), mentés előtt `bake()`-kel beégetve vagy törölve. Kisebb érték.
+
+### 22.3 Külső eszközt igénylő, nagyobb lépés
+
+- **OCR a szkennelt iratokra** — a Műhely iratainak nagy része szkennelt kép: ezeken ma
+  semmilyen szöveges művelet (címke a szövegből, keresés, csere, mintás kitakarás) nem
+  működik. Kétféle út: a PyMuPDF `get_textpage_ocr`-je, vagy az
+  [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) (MPL-2.0; Windowson is fut, PDF/A-t ír,
+  kiegyenesít, forgat). Mindkettőhöz **Tesseract** kell a magyar nyelvi csomaggal, az
+  OCRmyPDF-hez Ghostscript is — vagyis telepítés a céges gépeken. Ezért külön döntés:
+  opcionális modulként, ami csak akkor jelenik meg, ha a Tesseract megvan.
+
+### 22.4 Amit nem javaslok
+
+- **borb** — a funkciókészlete (elrendezés, bekezdés, táblázat) vonzó, de AGPL/kereskedelmi
+  kettős licenc, egyszemélyes projekt, és a PyMuPDF mellett második PDF-motor volna.
+- **pypdf / pikepdf** — jó, karbantartott könyvtárak, de a szöveghez (renderelés,
+  betűmetrika, redakció) nem adnak többet a PyMuPDF-nél; csak akkor, ha egyszer
+  alacsony szintű tartalomfolyam-szerkesztés (qpdf) kellene.
+- **N-up, füzet, poszter** (a pdfrw példái) — a feltöltési munkafolyamatban nincs rájuk
+  szükség.
+
+### 22.5 Javasolt sorrend
+
+1. Többsoros szövegdoboz (22.2/1) — a 21-es élő szöveg kiterjesztése, kis kockázat.
+2. Keresés és csere előnézettel (22.2/2), utána mintás kitakarás (22.2/3) — ugyanaz a
+   keresőmag, más művelet.
+3. Fejléc/lábléc/oldalszám/bélyeg (22.2/4).
+4. OCR (22.3) — külön döntés a telepítésről.
+
+Ezekhez a felhasználó döntése kell (melyik, milyen sorrendben); a kód ehhez a körhöz
+nem változott.
