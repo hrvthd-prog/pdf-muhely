@@ -1189,7 +1189,11 @@ try:
     ck("jelölőnégyzetbe kattintva X", "X" in ed.doc[0].get_text("text", clip=P.Rect(60, 200, 71, 211)))
     katt(300, 130)
     beir("Új sor")
-    ck("üres cellába új szöveg", "Új sor" in ed.doc[0].get_text())
+    # Az új szöveg a mentésig ÉLŐ objektum (húzható, élőben formázható): a lapra a
+    # mentés írja — a mentett fájlban lent ellenőrizzük.
+    ck("üres cellába új szöveg — élő objektumként, kijelölve",
+       [t.text for t in ed.texts] == ["Új sor"] and ed._sel() is not None
+       and "Új sor" not in ed.doc[0].get_text(), [t.text for t in ed.texts])
 
     ed.mode.set("field")
     ed._mode_changed()
@@ -1273,8 +1277,9 @@ try:
     ed.mode.set("text")
     ed._mode_changed()
     pump(0.2)
-    ck("eszközváltás: a mezőpanel visszajött, a keret eltűnt",
-       ed.fieldbox.winfo_ismapped() and not ed.parabox.winfo_ismapped()
+    ck("eszközváltás: a szövegpanel visszajött, a keret eltűnt",
+       ed.textbox.winfo_ismapped() and not ed.parabox.winfo_ismapped()
+       and not ed.fieldbox.winfo_ismapped()
        and not c.find_withtag("para") and ed.para is None)
 
     ed.upper.set(True)
@@ -1284,14 +1289,14 @@ try:
     ed._save()
     pump(0.3)
     d = P.open(szp)
-    ok = ("Kőműves Győző" in d[0].get_text() and
+    ok = ("Kőműves Győző" in d[0].get_text() and "Új sor" in d[0].get_text() and
           sum(1 for _ in d[0].widgets()) == 4 and
           "dolgozo=Kiss Anna" in (d.metadata.get("keywords") or "") and pm.get_upper(d))
     qs = pm.paragraph_at(d[0], 200, 399)
     ok_par = (qs is not None and len(qs["lines"]) == 4
               and all(abs(ln["bbox"][2] - R) < 0.6 for ln in qs["lines"][:-1]))
     d.close()
-    ck("mentés helyben: a szöveg, a mezők és a bélyeg is megvan", ok)
+    ck("mentés helyben: a szöveg (az élő is), a mezők és a bélyeg is megvan", ok)
     ck("a sorkizárt bekezdés a mentett fájlban is sorkizárt", ok_par)
     ck("az előző példány jelölt mentésként a dolgozó 01_Elokeszitett mappájában",
        mentes_van(anna, os.path.splitext(TAJ_NEV)[0]))
@@ -1300,6 +1305,245 @@ try:
     ck("naplósor a szerkesztésről", last[5].startswith("SZERKESZTVE") and
        last[3] == TAJ_NEV, last)
     ck("mentés után nincs „nincs mentve”", not ed.dirty)
+
+    print("SZERKESZTŐ: GÖRGETŐSÁV, NAGYÍTÁS, LAPOZÁS")
+    # Három lapos irat a munkamappán KÍVÜL (az Áttekintő ne lássa).
+    lapok = os.path.join(TMP, "haromlapos.pdf")
+    d = P.open()
+    for k in range(3):
+        pg = d.new_page(width=595, height=842)
+        pm.add_text(pg, (60, 100), f"Lap {k + 1}", P.Font("helv"), 14)
+        pm.add_text(pg, (60, 800), f"Lap {k + 1} alja", P.Font("helv"), 10)
+    d.save(lapok)
+    d.close()
+    ed.open_file(lapok)
+    pump(0.4)
+    ck("a vászon görgetősávjai látszanak (eddig 1×1 képpontot kértek)",
+       ed.vb.winfo_ismapped() and ed.vb.winfo_width() >= 8 and ed.hb.winfo_height() >= 8,
+       (ed.vb.winfo_width(), ed.hb.winfo_height()))
+    c.event_generate("<MouseWheel>", delta=-120, x=50, y=50)
+    pump(0.2)
+    ck("görgő: függőlegesen görget", c.yview()[0] > 0, c.yview())
+    ed._view_zoom(0)
+    pump(0.3)
+    ck("illesztve nincs vízszintes görgetés", c.xview() == (0.0, 1.0), c.xview())
+    for _ in range(3):
+        ed._view_zoom(1.25)
+    pump(0.3)
+    ck("nagyítva vízszintesen is görgethető (a csúszka arányos)",
+       c.xview()[1] - c.xview()[0] < 0.6, c.xview())
+    x0 = c.xview()[0]
+    c.event_generate("<Shift-MouseWheel>", delta=-120, x=50, y=50)
+    pump(0.2)
+    ck("Shift+görgő: vízszintes görgetés", c.xview()[0] > x0, (x0, c.xview()))
+    ax, ay = 200, 150
+    pt0 = (c.canvasx(ax) / ed.zoom, c.canvasy(ay) / ed.zoom)
+    c.event_generate("<Control-MouseWheel>", delta=120, x=ax, y=ay)
+    pump(0.3)
+    pt1 = (c.canvasx(ax) / ed.zoom, c.canvasy(ay) / ed.zoom)
+    ck("Ctrl+görgő: a kurzor alatti pont helyben marad",
+       abs(pt0[0] - pt1[0]) < 2 and abs(pt0[1] - pt1[1]) < 2, (pt0, pt1))
+    ed.view_zoom = 6.0
+    ed._render()
+    pump(0.3)
+    teljes = ed._page_px[0] * ed._page_px[1]
+    sav = ed._painted
+    ck("6× nagyításon csak a látható sáv rajzolódik (nem az egész lap)",
+       not ed._full and (sav[2] - sav[0]) * (sav[3] - sav[1]) < teljes / 3,
+       ((sav[2] - sav[0]) * (sav[3] - sav[1]), teljes))
+    c.yview_moveto(1.0)
+    pump(0.4)
+    sav = ed._painted
+    ck("a lap aljára görgetve az is kirajzolódik", sav[3] >= ed._page_px[1] - 2,
+       (sav, ed._page_px))
+    ed._view_zoom(0)
+    pump(0.3)
+    ck("az első lapon a ⏮ ◀ tiltva, a ▶ ⏭ él",
+       ed.btn_first.instate(["disabled"]) and ed.btn_prev.instate(["disabled"])
+       and ed.btn_next.instate(["!disabled"]) and ed.btn_last.instate(["!disabled"]))
+    ed.btn_next.invoke()
+    pump(0.2)
+    ck("▶: a következő lap, a beíró is követi", ed.page_no == 1 and ed.page_var.get() == "2",
+       (ed.page_no, ed.page_var.get()))
+    ed.btn_last.invoke()
+    pump(0.2)
+    ck("⏭: az utolsó lap, a ▶ tiltva", ed.page_no == 2 and ed.btn_next.instate(["disabled"])
+       and ed.page_total.cget("text") == "/ 3", (ed.page_no, ed.page_total.cget("text")))
+    c.focus_force()
+    pump(0.1)
+    c.event_generate("<Prior>")
+    pump(0.2)
+    ck("PageUp: az előző lap", ed.page_no == 1, ed.page_no)
+    ed.btn_first.invoke()
+    pump(0.2)
+    ck("⏮: az első lap", ed.page_no == 0 and "Lap 1" in ed._page().get_text())
+
+    print("SZERKESZTŐ: ÉLŐ SZÖVEG — HÚZÁS, NYILAK, VALÓS IDEJŰ FORMÁZÁS")
+    ed.mode.set("text")
+    ed._mode_changed()
+    katt(300, 300)
+    beir("Élő szöveg")
+    t = ed._sel()
+    ck("új szöveg: élő objektum, kijelölve, a lapon még nincs",
+       t is not None and t.text == "Élő szöveg" and "Élő" not in ed._page().get_text())
+    ck("a vásznon a képe és a kijelölés kerete", bool(c.find_withtag(f"pt{t.uid}"))
+       and bool(c.find_withtag("tsel")))
+    x_0, y_0 = t.x, t.y
+    r = pm.placed_bbox(t)
+    z = ed.zoom
+    gx, gy = int((r.x0 + 4) * z), int((r.y0 + r.y1) / 2 * z)
+    c.event_generate("<ButtonPress-1>", x=gx, y=gy)
+    c.event_generate("<B1-Motion>", x=gx + 30, y=gy + 10)
+    c.event_generate("<B1-Motion>", x=gx + 60, y=gy + 20)
+    c.event_generate("<ButtonRelease-1>", x=gx + 60, y=gy + 20)
+    pump(0.2)
+    t = ed._sel()
+    ck("húzás: a szöveg az egérrel együtt mozdult (drag-and-drop)",
+       abs(t.x - (x_0 + 60 / z)) < 0.6 and abs(t.y - (y_0 + 20 / z)) < 0.6,
+       (round(t.x - x_0, 1), round(t.y - y_0, 1), round(60 / z, 1)))
+    x_1, y_1, n_undo = t.x, t.y, len(ed.undo)
+    c.focus_force()
+    pump(0.1)
+    for _ in range(3):
+        c.event_generate("<Right>")
+    c.event_generate("<Shift-Down>")
+    pump(0.2)
+    t = ed._sel()
+    ck("nyilak: 3 × 1 pt jobbra, Shift+le: 10 pt", abs(t.x - x_1 - 3) < 1e-6
+       and abs(t.y - y_1 - 10) < 1e-6, (t.x - x_1, t.y - y_1))
+    ck("a nyilazás egy visszavonási lépés", len(ed.undo) == n_undo + 1, len(ed.undo) - n_undo)
+    w0 = ed._timgs[t.uid].width()
+    ed.t_bold.set(True)
+    ed.font_size.set(16)
+    ed.t_under.set(True)
+    pump(0.5)
+    t = ed._sel()
+    ck("valós idejű formázás: félkövér, 16 pt, aláhúzott — Alkalmaz nélkül",
+       t.bold and t.size == 16 and t.underline, (t.bold, t.size, t.underline))
+    ck("a vászon képe azonnal újrarajzolódott (nagyobb lett)",
+       ed._timgs[t.uid].width() > w0 * 1.3, (w0, ed._timgs[t.uid].width()))
+    ed.t_text.set("Élő szöveg, átírva")
+    pump(0.5)
+    ck("a panelen átírt szöveg is élőben megy át", ed._sel().text == "Élő szöveg, átírva")
+    c.focus_force()
+    c.event_generate("<Control-z>")
+    pump(0.3)
+    t = ed._sel()
+    ck("Ctrl+Z: a formázás egy lépésben visszavonva, a hely marad",
+       t is not None and not t.bold and t.size != 16 and t.text == "Élő szöveg"
+       and abs(t.x - x_1 - 3) < 1e-6, (t and (t.bold, t.size, t.text)))
+    c.event_generate("<Control-z>")
+    pump(0.3)
+    t = ed._sel()
+    ck("Ctrl+Z: a nyilazás előtti hely", t is not None and abs(t.x - x_1) < 1e-6
+       and abs(t.y - y_1) < 1e-6, t and (t.x, t.y))
+    ed.t_italic.set(True)
+    pump(0.4)
+    r = pm.placed_bbox(ed._sel())
+    z = ed.zoom
+    dbl(c, int((r.x0 + 4) * z), int((r.y0 + r.y1) / 2 * z))
+    ck("dupla kattintás: átírás a helyén, a régi szöveggel",
+       ed._entry is not None and ed._entry.get() == "Élő szöveg")
+    beir("Élő, dőlt")
+    ck("az átírt szöveg az objektumban", ed._sel() is not None and ed._sel().text == "Élő, dőlt")
+    c.focus_force()
+    c.event_generate("<Escape>")
+    pump(0.1)
+    ck("Esc: a kijelölés megszűnik", ed.sel_text is None and not c.find_withtag("tsel"))
+    katt(r.x0 + 4, (r.y0 + r.y1) / 2)
+    ck("kattintás a szövegen: újra kijelöli", ed._sel() is not None)
+    c.focus_force()
+    c.event_generate("<Delete>")
+    pump(0.2)
+    ck("Delete: az élő szöveg törlődik", not [t for t in ed.texts if t.text == "Élő, dőlt"])
+    c.event_generate("<Control-z>")
+    pump(0.2)
+    ck("Ctrl+Z: visszajön", [t.text for t in ed.texts if t.page == 0] == ["Élő, dőlt"])
+    ed.mode.set("para")
+    ed._mode_changed()
+    katt(r.x0 + 4, (r.y0 + r.y1) / 2)
+    ck("Bekezdés eszközzel az élő szövegre kattintva a Szöveg eszköz veszi át",
+       ed.mode.get() == "text" and ed._sel() is not None)
+    ed.mode.set("erase")
+    ed._mode_changed()
+    katt(r.x0 - 5, r.y0 - 5, r.x1 + 5, r.y1 + 5)
+    ck("kitakarás: az élő szöveg is eltűnik", not [t for t in ed.texts if t.page == 0])
+    c.focus_force()
+    c.event_generate("<Control-z>")
+    pump(0.2)
+    ck("Ctrl+Z: a kitakarás előtti állapot, az élő szöveggel", len(ed.texts) == 1)
+    ed.mode.set("text")
+    ed._mode_changed()
+    mentve = os.path.join(TMP, "haromlapos_szerk.pdf")
+    t = ed.texts[0]
+    ed._save_to(mentve)
+    pump(0.3)
+    d = P.open(mentve)
+    hit = d[0].search_for("Élő, dőlt")
+    fonts = [f[3] for f in d[0].get_fonts()]
+    d.close()
+    ck("mentés: az élő szöveg a lapon, a húzott helyén",
+       len(hit) == 1 and abs(hit[0].x0 - t.x) < 1.5, (hit, t.x))
+    ck("mentés: a választott (dőlt) betűvel", any("Italic" in f or "Oblique" in f or
+                                                   f.endswith("-It") for f in fonts), fonts)
+    ck("mentés után is élő: tovább mozgatható", len(ed.texts) == 1 and not ed.dirty)
+    ed.btn_next.invoke()
+    pump(0.2)
+    ed._new_text((100, 300), "Első")
+    ed._new_text((100, 340), "Második")
+    a_, b_ = ed.texts[-2], ed.texts[-1]
+    ed._select_text(a_)
+    ed.t_bold.set(True)                         # a késleltetés lejárta ELŐTT váltunk
+    ed._select_text(b_)
+    pump(0.4)
+    ck("gyors váltásnál a függő formázás az előző szövegen marad",
+       a_.bold and not ed._find(b_.uid).bold, (a_.bold, ed._find(b_.uid).bold))
+    ck("az élő szöveg a saját lapján: lapozva a másik lapé nem látszik",
+       len(c.find_withtag("ptext")) == 2 and a_.page == 1)
+    ed.btn_first.invoke()
+    pump(0.2)
+    ck("…és visszalapozva az első lapé igen", len(c.find_withtag("ptext")) == 1)
+
+    print("SZERKESZTŐ: VALÓS IDEJŰ BEKEZDÉS-FORMÁZÁS")
+    ed.open_file(szp)
+    pump(0.4)
+    ed.mode.set("para")
+    ed._mode_changed()
+    katt(200, 399)
+    pr = ed.para
+    ck("a bekezdés kijelölve", pr is not None and len(pr["lines"]) == 4)
+    elotte = pm.paragraph_at(ed.doc[0], 200, 399)
+    kozep = (pr["left"] + pr["right"]) / 2
+
+    def kozepen(q):
+        return q is not None and all(abs((ln["bbox"][0] + ln["bbox"][2]) / 2 - kozep) < 1
+                                     for ln in q["lines"])
+    ed.p_align.set("center")
+    pump(0.5)                                 # NINCS _apply_para: a panel maga alkalmaz
+    q = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("igazítás középre: Alkalmaz nélkül, azonnal a lapon (a mentett iraton is)",
+       kozepen(q), ed.info.get())
+    ed.p_size.set(9.5)
+    pump(0.5)
+    q = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("méret 9,5 pt: élőben (a középre zárás megmarad)",
+       q is not None and abs(q["size"] - 9.5) < 0.1 and kozepen(q),
+       q and round(q["size"], 1))
+    ed.p_size.set(pr["size"])
+    pump(0.5)
+    q = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("vissza az eredeti méretre: ugyanannyi sor, mint előtte (nem kétszer tördelt)",
+       q is not None and len(q["lines"]) == len(elotte["lines"]), q and len(q["lines"]))
+    ed._para_reset()
+    pump(0.3)
+    q = pm.paragraph_at(ed.doc[0], 200, 399)
+    ck("„Eredeti bekezdés”: a kijelöléskori állapot", q is not None and
+       pm.guess_align(q) == pm.guess_align(elotte) and
+       [round(ln["bbox"][2], 1) for ln in q["lines"]] ==
+       [round(ln["bbox"][2], 1) for ln in elotte["lines"]])
+    ed.mode.set("text")
+    ed._mode_changed()
+    ed.dirty = False                           # a próbát nem mentjük
 
     print("ELLENŐRZŐ: ROSSZ HELY, JELÖLŐNÉGYZETEK, VISSZAMENŐLEGES ÁTNEVEZÉS")
     # A gyökérben hagyott, felismert nevű irat eddig az „unknown” kosárba esett, és
@@ -1491,12 +1735,117 @@ try:
     ht = dlg_magas(att._open_audit)
     ck("az Ellenőrzés párbeszéd kifér 768 képpontra", ht and ht + 31 <= 768, ht)
 
+    print("ALAPÉRTELMEZETT DOLGOZÓ (A MUNKAMAPPA ALATT)")
+    pl = app.tabs["Arckép elhelyezés"]
+    app.folder.set(root)
+    app.refresh_all()
+    pump(0.3)
+    ikt_szuro = ikt.filter_text.get()
+    kt.who_text.set("")
+    pl.who_text.set("")
+    app.worker.set("kiss an")                 # részlet is elég, mint a fülek választóján
+    app._worker_commit()
+    pump(0.3)
+    ck("az alapértelmezett dolgozó feloldódik", app.worker_name() == "Kiss Anna"
+       and app.worker.get() == "Kiss Anna", (app.worker_name(), app.worker.get()))
+    ck("az Összeállító és az Arckép átveszi", kt.who == "Kiss Anna" and pl.who == "Kiss Anna",
+       (kt.who, pl.who))
+    nevek = ed.files.lb.get(0, "end")
+    ck("a Szerkesztés fájllistája a dolgozó két alkönyvtárát mutatja",
+       any(n.startswith(pm.DIR_UP) for n in nevek) and "Kiss Anna" in ed.files.box.cget("text"),
+       nevek)
+    ck("az Arckép listája is a dolgozóé", any(pm.DIR_UP in n for n in pl.pdfs.lb.get(0, "end")),
+       pl.pdfs.lb.get(0, "end"))
+    ck("az Összefűzés és a Raszterizálás listája is",
+       any(pm.DIR_UP in n for n in app.tabs["Összefűzés"].lb.get(0, "end"))
+       and any(pm.DIR_UP in n for n in app.tabs["Raszterizálás"].files.lb.get(0, "end")))
+    ck("az Iktató NEM veszi át (ott több dolgozó között osztunk szét)",
+       ikt.filter_text.get() == ikt_szuro, ikt.filter_text.get())
+    ck("a választás megmarad a következő indításra", pm.recall("dolgozo") == "Kiss Anna")
+    kt.who_text.set("Nagy Béla")              # a fülön kézzel felülírva
+    app.refresh_all()
+    pump(0.2)
+    ck("frissítéskor a fülön kézzel választott dolgozó marad", kt.who == "Nagy Béla", kt.who)
+    app.worker.set("Nagy Béla")
+    app._worker_commit()
+    pump(0.2)
+    ck("az alapértelmezettet váltva minden fül követi", kt.who == "Nagy Béla" and pl.who == "Nagy Béla"
+       and "Nagy Béla" in ed.files.box.cget("text"), (kt.who, pl.who))
+    app.worker.set("nincs ilyen")
+    app._worker_commit()
+    pump(0.1)
+    ck("ismeretlen név: marad az előző, és szól", app.worker_name() == "Nagy Béla"
+       and "Nincs ilyen" in app._status.get(), app._status.get())
+    app.worker.set(pm.NO_WORKER)
+    app._worker_commit()
+    pump(0.2)
+    ck("„— nincs —”: a listák újra a munkamappát mutatják", app.worker_name() == ""
+       and ed.files.box.cget("text") == "PDF-ek" and ed.files.folder == root)
+    kt.who_text.set("")
+    pl.who_text.set("")
+
+    print("NAGYÍTOTT KIJELZŐ: A FELIRATOK VÉGE NEM VÁGÓDIK LE")
+
+    def pad(w):
+        p = w.cget("padding")
+        return [int(float(str(x))) for x in (p if isinstance(p, (tuple, list)) else str(p).split())]
+
+    ts = pm.TextSlack(app, 1.0)
+    ck("100%-on nem kapcsol be (ott a mért és a rajzolt szélesség egyezik)", not ts.on)
+    win = pm.tk.Toplevel(app)
+    rb0 = pm.ttk.Radiobutton(win, text="Szöveg és X")      # nincs elhelyezve: a nyers mérete
+    rb = pm.ttk.Radiobutton(win, text="Szöveg és X")
+    rb.pack(anchor="w")
+    rf = pm.ttk.Radiobutton(win, text="Kitakarás")
+    rf.pack(fill="x")
+    fej = pm.ttk.Label(win, text="PDF Műhely", padding=(0, 0, pm.DPI_SLACK, 0))
+    fej.pack(anchor="w")
+    lv = pm.tk.StringVar(win, value="rövid")
+    lb_ = pm.ttk.Label(win, textvariable=lv)
+    lb_.pack(anchor="w")
+    pump(0.2)
+    w_fej = fej.winfo_reqwidth()
+    for w in (rb, rf, fej, lb_):
+        ts.apply(w)
+    pump(0.2)
+    szoveg = pm.tkfont.Font(font=pm.ttk.Style().lookup("TRadiobutton", "font") or
+                            pm.FONT_UI).measure("Szöveg és X")
+    ck("a ki nem feszített rádiógomb arányos ráhagyást kap",
+       rb.winfo_reqwidth() - rb0.winfo_reqwidth() >= szoveg * pm.TEXT_SLACK,
+       (rb0.winfo_reqwidth(), rb.winfo_reqwidth(), szoveg))
+    ck("a stílus saját paddingje megmarad (bal 2, fent 3)", pad(rb)[:2] == [2, 3], pad(rb))
+    ck("a kifeszített (fill=x) nem kap — annak van helye", pad(rf) == [], pad(rf))
+    ck("a kódban párnázott fejléc-felirat érintetlen", fej.winfo_reqwidth() == w_fej)
+    r1 = pad(lb_)[2] if pad(lb_) else 0
+    lv.set("egy jóval hosszabb állapotszöveg, ami változik")
+    pump(0.1)
+    ts.apply(lb_)
+    pump(0.1)
+    ck("textvariable-ös címkénél az új szövegre számol újra", pad(lb_)[2] > r1,
+       (r1, pad(lb_)))
+    win.destroy()
+    regi = os.environ.get("PDF_MUHELY_SKALA")
+    os.environ["PDF_MUHELY_SKALA"] = "1,5"
+    ck("PDF_MUHELY_SKALA felülírja a mért nagyítást (próbához)", pm.screen_scale() == 1.5)
+    if regi is None:
+        os.environ.pop("PDF_MUHELY_SKALA")
+    else:
+        os.environ["PDF_MUHELY_SKALA"] = regi
+
     print("MINDEN FÜL: A LEGKISEBB ABLAKBAN SEM LÓG LE GOMB")
     # Az Arckép fülön a Mentés és az Iktatás MINDEN ablakméretben levágódott (a bal
     # panel 990 px-et kért, a legnagyobb ablakban is 658 jutott). A görgethető
     # panel + fix alsó gombsáv ezt oldja meg; ez a teszt a visszaesést fogja meg.
     app.geometry("940x620")               # az app minsize-ja
     pump(0.8)
+    wb = app.worker_bar
+    bal = wb.winfo_rootx() - app.nb.winfo_rootx()
+    ck("a dolgozóválasztó a fülsor jobb végén, nem takar fület (940 px)",
+       wb.winfo_ismapped() and bal > 0 and
+       all(app.nb.identify(x, wb.winfo_rooty() - app.nb.winfo_rooty() + 12) == ""
+           for x in range(bal, bal + wb.winfo_width(), 8))
+       and wb.winfo_rootx() + wb.winfo_width() <= app.winfo_rootx() + app.winfo_width(),
+       (bal, wb.winfo_width(), app.winfo_width()))
 
     def latszik(w, tab):
         return (w.winfo_ismapped() and

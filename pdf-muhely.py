@@ -24,6 +24,7 @@ import threading
 import subprocess
 import locale
 import inspect
+import copy
 import datetime
 import traceback
 import subprocess
@@ -75,6 +76,15 @@ def list_files(folder: str, exts) -> list:
         return []
 
 
+def list_files_in(folder: str, exts, subdirs=()) -> list:
+    """A mappa fájljai, utánuk az almappáié relatív úttal (01_Elokeszitett\\x.pdf) —
+    a dolgozó mappájában az iratok a két alkönyvtárban élnek, nem a gyökerében."""
+    out = list_files(folder, exts)
+    for sd in subdirs:
+        out += [os.path.join(sd, f) for f in list_files(os.path.join(folder, sd), exts)]
+    return out
+
+
 def open_checked(path: str):
     """PDF megnyitása jelszó-ellenőrzéssel."""
     doc = pymupdf.open(path)
@@ -116,6 +126,7 @@ UI = {
 # feleannyival szélesebb glifákat rajzol, mint amennyit a Tk logikai pixelben
 # kimért — a fix méretű feliratok vége enélkül levágódik.
 DPI_SLACK = 14
+SB_THICK = 12             # a görgetősáv vastagsága (képpont) — a téma ennyit kér
 FONT_UI = ("Segoe UI", 10)
 FONT_SB = ("Segoe UI Semibold", 10)
 FONT_SM = ("Segoe UI", 9)
@@ -511,6 +522,147 @@ def open_image_pdf(path, crop=None, levels=None):
 # panelgörgetés nem lép közbe.
 _NO_WHEEL = ("Listbox", "Treeview", "Text", "Canvas", "TCombobox", "Spinbox", "TSpinbox")
 
+# ── nagyított kijelző: a feliratok vége ne vágódjon le (kepek-pdf-terv.md 19.2) ──
+# Az app GDI-skálázással fut (DPI-unaware, lásd a __main__-t): a Tk a szöveget a
+# logikai (96 DPI-s) betűvel MÉRI, a Windows viszont a valódi felbontás betűjével
+# RAJZOLJA, ami 125–200%-on néhány százalékkal szélesebb. A rádiógomb, a jelölő és a
+# címke pontosan a kimért szélességet kapja, ezért a felirat vége lecsúszik
+# (bejelentve: „Szöveg és X” — az X fele, „Kitakarás” — az s fele látszott).
+TEXT_SLACK = 0.08         # ennyivel szélesebb lehet a rajzolt szöveg a kimértnél
+# A nagyítás az App indulásakor kerül ide (screen_scale), a fülek építése ELŐTT: a
+# fix szélességű oldalpanelek ennyivel szélesebbek, különben a ráhagyással
+# megnőtt sorok (pl. a négy igazítás-rádiógomb) a panel szélén csúsznának le.
+_SCALE = [1.0]
+
+
+def screen_scale() -> float:
+    """A Windows-nagyítás (1.0 = 100%). A folyamat DPI-unaware, ezért a saját DPI-je
+    mindig 96: a valódit a szálat egy pillanatra DPI-tudatosra állítva kérdezzük le.
+    Próbához és teszthez felülírható: PDF_MUHELY_SKALA=1.5."""
+    env = os.environ.get("PDF_MUHELY_SKALA", "").replace(",", ".").strip()
+    if env:
+        try:
+            return max(1.0, float(env))
+        except ValueError:
+            pass
+    try:
+        u = ctypes.windll.user32
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        old = u.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))   # per-monitor v2
+        try:
+            dpi = u.GetDpiForSystem()
+        finally:
+            if old:
+                u.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
+        return max(1.0, dpi / 96.0)
+    except Exception:
+        return 1.0
+
+
+class TextSlack:
+    """Arányos jobb oldali ráhagyás a feliratoknak nagyított kijelzőn. Csak azok a
+    címkék, jelölők és rádiógombok kapják, amelyeket a geometriakezelő NEM feszít
+    ki — a kifeszítettnek van helye, ott a ráhagyás csak a sort szélesítené.
+    Osztályszintű <Configure>-kötés: a később (dialógusban, frissítéskor) készülő
+    widgetekre is hat, és a textvariable-ös címke új szövegére is újraszámol.
+    100%-on ki sem kapcsol be — ott a mért és a rajzolt szélesség egyezik."""
+
+    CLASSES = ("TLabel", "TCheckbutton", "TRadiobutton")
+
+    def __init__(self, root, scale: float):
+        self.root, self.on = root, scale > 1.0
+        self.st = ttk.Style(root)
+        self.fonts = {}
+        self.mine = {}                    # widget -> az általunk adott padding
+        if self.on:
+            for cls in self.CLASSES:
+                root.bind_class(cls, "<Configure>", self._fix, add="+")
+            # A keretek címe (LabelFrame) külön elem, widgetenként nem párnázható:
+            # a stílusa kap egy padding-elemet és fix ráhagyást.
+            self.st.layout("TLabelframe.Label", [("Label.padding", {
+                "sticky": "nswe", "children": [("Label.text", {"sticky": "nswe"})]})])
+            self.st.configure("TLabelframe.Label", padding=(0, 0, 16, 0))
+
+    def _fix(self, e):
+        try:
+            self.apply(e.widget)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def apply(self, w):
+        key = str(w)
+        if str(w.cget("padding")) and key not in self.mine:
+            return                        # a kód adott neki paddinget (fejléc)
+        want = None
+        if not self._stretched(w):
+            text = self._text(w)
+            if text.strip():
+                l, t, r, b = self._style_pad(w)
+                want = (l, t, r + math.ceil(self._measure(w, text) * TEXT_SLACK) + 2, b)
+        if want is None:
+            if key in self.mine:
+                del self.mine[key]
+                w.configure(padding="")   # vissza a stílus paddingjére
+        elif self.mine.get(key) != want:
+            self.mine[key] = want
+            w.configure(padding=want)
+
+    @staticmethod
+    def _stretched(w) -> bool:
+        mgr = w.winfo_manager()
+        if mgr == "pack":
+            return str(w.pack_info().get("fill")) in ("x", "both")
+        if mgr == "grid":
+            s = str(w.grid_info().get("sticky", ""))
+            return "e" in s and "w" in s
+        return False
+
+    @staticmethod
+    def _text(w) -> str:
+        tv = str(w.cget("textvariable"))
+        if tv:
+            try:
+                return str(w.getvar(tv))
+            except tk.TclError:
+                return ""
+        return str(w.cget("text"))
+
+    def _measure(self, w, text) -> int:
+        try:
+            spec = str(w.cget("font"))    # a jelölőnek és a rádiógombnak nincs ilyen
+        except tk.TclError:
+            spec = ""
+        spec = (spec or self.st.lookup(str(w.cget("style")) or w.winfo_class(), "font")
+                or self.st.lookup(".", "font") or "TkDefaultFont")
+        f = self.fonts.get(spec)
+        if f is None:
+            f = self.fonts[spec] = tkfont.Font(root=self.root, font=spec)
+        width = max(f.measure(ln) for ln in text.split("\n"))
+        try:
+            wl = int(float(str(w.cget("wraplength")) or 0))
+        except (tk.TclError, ValueError):
+            wl = 0
+        return min(width, wl) if wl > 0 else width
+
+    def _style_pad(self, w) -> tuple:
+        """A stílus paddingje négy elemre bontva (a Tk szabálya szerint: a hiányzó
+        alsó = felső, jobb = bal, felső = bal)."""
+        p = self.st.lookup(str(w.cget("style")) or w.winfo_class(), "padding")
+        try:
+            v = [int(float(str(x))) for x in
+                 (p if isinstance(p, (tuple, list)) else str(p).split())]
+        except ValueError:
+            v = []
+        v = v[:4] or [0]
+        if len(v) == 1:
+            v = v * 4
+        elif len(v) == 2:
+            v = [v[0], v[1], v[0], v[1]]
+        elif len(v) == 3:
+            v = [v[0], v[1], v[2], v[1]]
+        return tuple(v)
+
 
 def scroll_panel(parent, width: int = 340, side: str = "left", padx=(8, 0)):
     """Fix szélességű oldalpanel, amely SZÜKSÉG ESETÉN görget.
@@ -521,6 +673,8 @@ def scroll_panel(parent, width: int = 340, side: str = "left", padx=(8, 0)):
     Mentés és az Iktatás gomb MINDEN ablakméretben kint volt (990 px kellett,
     658 jutott; mérve). A görgetősáv csak akkor jelenik meg, ha tényleg kell.
     """
+    if _SCALE[0] > 1.0:                       # nagyított kijelzőn: TextSlack
+        width = round(width * (1 + TEXT_SLACK))
     shell = ttk.Frame(parent, width=width + 22)
     shell.pack(side=side, fill="y", padx=padx, pady=8)
     shell.pack_propagate(False)
@@ -859,10 +1013,12 @@ class FileList(ttk.Frame):
     def __init__(self, master, title, exts, on_pick, height=7, memory_key=""):
         super().__init__(master)
         self.exts, self.on_pick, self.folder = exts, on_pick, script_dir()
+        self.subdirs = ()                     # dolgozói mappánál: 01_…, 02_…
+        self.title = title
         self.memory_key = memory_key          # a Tallózás megjegyzett mappája
         self._ok = False
 
-        box = ttk.LabelFrame(self, text=title)
+        self.box = box = ttk.LabelFrame(self, text=title)
         box.pack(fill="both", expand=True)
         inner = ttk.Frame(box)
         inner.pack(fill="both", expand=True, padx=6, pady=6)
@@ -878,13 +1034,17 @@ class FileList(ttk.Frame):
         ttk.Button(row, text="Frissítés", command=self.refresh).pack(side="left")
         ttk.Button(row, text="Tallózás…", command=self._browse).pack(side="left", padx=6)
 
-    def set_folder(self, folder):
-        self.folder = folder
+    def set_folder(self, folder, subdirs=()):
+        """`subdirs`: ezek tartalma is a listába kerül (a dolgozó két alkönyvtára);
+        ilyenkor a keret címe a dolgozó nevét is mutatja."""
+        self.folder, self.subdirs = folder, tuple(subdirs)
+        self.box.configure(text=f"{self.title} — {os.path.basename(os.path.normpath(folder))}"
+                           if self.subdirs else self.title)
         self.refresh()
 
     def refresh(self):
         keep = self.selected_names()
-        files = list_files(self.folder, self.exts)
+        files = list_files_in(self.folder, self.exts, self.subdirs)
         self._ok = bool(files)
         self.lb.delete(0, tk.END)
         for f in files or ["(nincs megfelelő fájl a mappában)"]:
@@ -1080,8 +1240,7 @@ class PlacerTab(ttk.Frame):
         return "break"
 
     def set_folder(self, folder):
-        self.pdfs.set_folder(folder)
-        self.imgs.set_folder(folder)
+        self._lists_at = None                 # a listák mindenképp frissüljenek
         # Honnan tudjuk, hogy a kapott mappa a MUNKAMAPPA vagy egy DOLGOZÓÉ? A
         # felső sáv munkamappája az egyetlen biztos jel: a refresh_all azt adja
         # át, az Áttekintő „Arckép elhelyezése” menüje pedig a dolgozó mappáját.
@@ -1100,6 +1259,25 @@ class PlacerTab(ttk.Frame):
             return
         self.parent_dir = folder
         self.refresh()
+
+    def set_worker(self, name, force=False):
+        """Az alapértelmezett dolgozó (a fülsor választója): váltáskor átvesszük,
+        frissítéskor csak az üres mezőbe — a fülön kézzel választott megmarad."""
+        if name and (force or not self.who_text.get().strip()):
+            self.who_text.set(name)
+        self._point_lists()
+
+    def _point_lists(self):
+        """A két fájllista a kiválasztott dolgozó mappáját mutatja (a nyomtatvány és
+        az arckép a 01_Elokeszitett-ben él), dolgozó nélkül a munkamappát."""
+        if self.who and os.path.isdir(os.path.join(self.parent_dir, self.who)):
+            at = (os.path.join(self.parent_dir, self.who), WORK_DIRS)
+        else:
+            at = (self.parent_dir, ())
+        if at != getattr(self, "_lists_at", None):
+            self._lists_at = at
+            self.pdfs.set_folder(*at)
+            self.imgs.set_folder(*at)
 
     # -- iktatás --
     def refresh(self):
@@ -1125,6 +1303,8 @@ class PlacerTab(ttk.Frame):
 
     def _who_changed(self):
         self.who = self.picker.who
+        if hasattr(self, "pdfs"):
+            self._point_lists()
 
     def _iktat(self):
         """A fotóval ellátott irat a dolgozó 02_Feltoltheto mappájába, az Iktató
@@ -1477,13 +1657,16 @@ class MergeTab(ttk.Frame):
         self.log = tk.Text(top, height=12, wrap="none", state="disabled", bg="#f7f7f7")
         self.log.pack(fill="both", expand=True)
 
-    def set_folder(self, folder):
-        self.folder = folder
+    def set_folder(self, folder, subdirs=()):
+        self.folder, self.subdirs = folder, tuple(subdirs)
         self.refresh()
+
+    def set_worker(self, name, force=False):
+        self.set_folder(*self.app.list_target())
 
     def refresh(self):
         self.lb.delete(0, tk.END)
-        for f in list_files(self.folder, (".pdf",)):
+        for f in list_files_in(self.folder, (".pdf",), getattr(self, "subdirs", ())):
             self.lb.insert(tk.END, f)
 
     def _move(self, d):
@@ -1531,7 +1714,7 @@ class MergeTab(ttk.Frame):
                 src = open_checked(path)
                 start = out.page_count
                 out.insert_pdf(src)
-                toc.append([1, os.path.splitext(n)[0], start + 1])
+                toc.append([1, os.path.splitext(os.path.basename(n))[0], start + 1])
                 expected += src.page_count
                 self._write_log(f"  + {n}: {src.page_count} oldal")
                 src.close()
@@ -1586,6 +1769,9 @@ class RasterTab(ttk.Frame):
 
     def set_folder(self, folder):
         self.files.set_folder(folder)
+
+    def set_worker(self, name, force=False):
+        self.files.set_folder(*self.app.list_target())
 
     def _pick(self, path):
         self.path = path
@@ -1665,6 +1851,8 @@ HELV14 = ("helv", "hebo", "heit", "hebi")
 # hogy rossz szélességgel írjon (szerkeszto-terv.md 19.2).
 FONT_ALIAS = {"arialmt": "Arial", "timesnewromanpsmt": "Times New Roman",
               "timesnewromanps": "Times New Roman", "nimbussans": "Helvetica"}
+STYLE_WORDS = {"regular", "normal", "bold", "italic", "oblique", "bolditalic",
+               "boldoblique"}
 LINE_MAX = 1.6            # ennél vékonyabb kitöltött téglalap vonalnak számít (pt)
 SNAP_MAX = 60             # a kattintástól legfeljebb ennyire keresünk vonalat (pt)
 BOX_MIN, BOX_MAX = 6, 16  # a jelölőnégyzet oldala (pt)
@@ -1706,11 +1894,19 @@ def edit_fonts() -> list:
     return [n for n in EDIT_FONTS if not EDIT_FONTS[n] or os.path.exists(_font_path(n))]
 
 
+_FONT_CACHE = {}
+
+
 def edit_font(name: str, bold: bool = False, italic: bool = False) -> "pymupdf.Font":
+    """A betű objektuma, gyorsítótárból: a valós idejű formázás minden
+    billentyűre újrarajzol, és egy TTF megnyitása (a Calibri 1,5 MB) önmagában
+    érezhető késés lenne. A Font objektum bármelyik dokumentumhoz használható."""
     p = _font_path(name, bold, italic)
-    if p and os.path.exists(p):
-        return pymupdf.Font(fontfile=p)
-    return pymupdf.Font(HELV14[_font_idx(bold, italic)])
+    key = (p if p and os.path.exists(p) else "", _font_idx(bold, italic))
+    if key not in _FONT_CACHE:
+        _FONT_CACHE[key] = (pymupdf.Font(fontfile=key[0]) if key[0]
+                            else pymupdf.Font(HELV14[key[1]]))
+    return _FONT_CACHE[key]
 
 
 def page_lines(drawings) -> tuple:
@@ -1943,7 +2139,13 @@ def span_style(span) -> tuple:
     vastagságot és a dőlést a MuPDF már kiszámolt flagjeiből. A család None, ha
     nincs hozzá rendszerbetűnk."""
     name = span["font"].split("+")[-1].split(",")[0].split("-")[0]
-    key = name.lower().replace(" ", "")
+    # A mentés (subset_fonts) után a PyMuPDF a betűt „Calibri Regular”, „Calibri
+    # Bold Italic” néven teszi vissza: a szóközzel írt stílusszó nem a család része.
+    # Enélkül a saját mentett iratunk bekezdését sem lehetett újra formázni.
+    words = name.split()
+    while len(words) > 1 and words[-1].lower() in STYLE_WORDS:
+        words.pop()
+    key = "".join(words).lower()
     fam = FONT_ALIAS.get(key) or next(
         (f for f in EDIT_FONTS if f.lower().replace(" ", "") == key), None)
     return fam, bool(span["flags"] & 16), bool(span["flags"] & 2)
@@ -2279,23 +2481,114 @@ def para_format(doc, page, para, fmt: dict) -> str:
     return "; ".join(msg)
 
 
+# ── elhelyezett szöveg: élő objektum a mentésig (szerkeszto-terv.md 21.) ────
+# Az új szöveg NEM íródik azonnal a PDF-be: a futás alatt objektum marad, ezért
+# húzható, nyilakkal mozgatható, és a betűje, mérete, stílusa, színe, sőt a
+# szövege is élőben állítható. A PDF-be a mentés írja (`write_placed`), ugyanazzal
+# a TextWriter-úttal, amivel a vászon előnézete is készül — amit látsz, az kerül
+# a lapra. A mentés után is élő marad (ugyanabban a futásban), csak a fájl
+# újranyitásakor válik a lap tartalmává.
+@dataclass(eq=False)             # azonosság szerint: a visszavonás másolatokat tart
+class PlacedText:
+    page: int
+    x: float                  # az alapvonal kezdőpontja (pt)
+    y: float
+    text: str
+    family: str = "Helvetica"
+    size: float = 10.5
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    color: tuple = (0.0, 0.0, 0.0)
+    uid: int = 0
+
+
+def placed_font(t: PlacedText):
+    return edit_font(t.family, t.bold, t.italic)
+
+
+def placed_bbox(t: PlacedText) -> "pymupdf.Rect":
+    """A szöveg befoglaló téglalapja a lapon: a betű felső és alsó kiterjedése, az
+    aláhúzás vonalával. Üres szövegnél is van szélessége — kijelölhető maradjon."""
+    f = placed_font(t)
+    w = max(f.text_length(t.text, t.size), t.size * 0.6)
+    top = t.y - f.ascender * t.size
+    bot = t.y - f.descender * t.size
+    if t.underline:
+        bot = max(bot, t.y + t.size * 0.12 + max(0.4, t.size * 0.05))
+    return pymupdf.Rect(t.x, top, t.x + w, bot)
+
+
+def placed_missing(t: PlacedText) -> str:
+    """A választott betűből hiányzó karakterek — csendben eltűnnének a lapról."""
+    f = placed_font(t)
+    return "".join(sorted({c for c in t.text if not c.isspace()
+                           and not f.has_glyph(ord(c))}))
+
+
+def write_placed(page, t: PlacedText, dx: float = 0.0, dy: float = 0.0):
+    """Az elhelyezett szöveg kiírása a lapra (mentéskor; dx/dy-nal az előnézethez).
+    Az aláhúzás rajzolt vonal, ugyanúgy, mint a bekezdés-formázásnál (19.9)."""
+    if not t.text.strip():
+        return
+    f = placed_font(t)
+    x, y = t.x + dx, t.y + dy
+    add_text(page, (x, y), t.text, f, t.size, color=t.color)
+    if t.underline:
+        uy = y + t.size * 0.12
+        page.draw_line((x, uy), (x + f.text_length(t.text, t.size), uy),
+                       width=max(0.4, t.size * 0.05), color=t.color)
+
+
+def placed_pixmap(t: PlacedText, zoom: float):
+    """Az elhelyezett szöveg képe átlátszó háttérrel, a vászon nagyításán: egy
+    befoglaló méretű ideiglenes lapon rajzolja a MuPDF, a valódi betűvel. ->
+    (pixmap, a kép bal felső sarka a lapon pt-ban)."""
+    r = placed_bbox(t)
+    r = pymupdf.Rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1)
+    d = pymupdf.open()
+    try:
+        pg = d.new_page(width=r.width, height=r.height)
+        write_placed(pg, t, -r.x0, -r.y0)
+        pix = pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=True)
+    finally:
+        d.close()
+    return pix, (r.x0, r.y0)
+
+
+def bake_placed(doc, texts):
+    """Az élő szövegek kiírása a dokumentumba (a mentés másolatába)."""
+    for t in texts:
+        if 0 <= t.page < doc.page_count:
+            write_placed(doc[t.page], t)
+
+
 class EditorTab(ttk.Frame):
-    """Eszközök → Szerkesztés: kész PDF általános szerkesztése. Három eszköz:
-    szöveg (átírás, új szöveg, X), űrlapmező (DocGen-sablon), kitakarás. Minden
-    lépés visszavonható a mentésig; a mentés helyben megy, az előző példány a
-    dolgozó .eredeti\\ mappájába kerül (szerkeszto-terv.md 16.)."""
+    """Eszközök → Szerkesztés: kész PDF általános szerkesztése. Négy eszköz:
+    szöveg (átírás, új szöveg, X), bekezdés-formázás, űrlapmező (DocGen-sablon),
+    kitakarás. Minden lépés visszavonható a mentésig; a mentés helyben megy, az
+    előző példány a dolgozó 01_Elokeszitett mappájába kerül (szerkeszto-terv.md
+    16.). Az új szöveg a mentésig élő objektum (húzható, nyilakkal mozgatható), és
+    minden formázás azonnal látszik — Alkalmaz gomb nélkül (21.)."""
 
     HINTS = {
         "text":  "Kattints egy szövegre: átírod. Üres helyre: új szöveg (cellába "
-                 "illesztve). Jelölőnégyzetbe: X be / ki.",
+                 "illesztve) — húzd vagy nyilazd (Shift: 10 pt), dupla kattintás: "
+                 "átírás. Jelölőnégyzetbe: X be / ki.",
         "field": "Kattintás: mező a cellába (a négyzetbe jelölőnégyzet). Húzás több "
                  "kis cellán át: betűnkénti mezők (név#1, #2 …). Mezőre kattintás: "
                  "kijelölés — átnevezés, törlés (Delete).",
         "erase": "Húzd körbe a területet: a tartalma végleg törlődik (szöveg, kép, "
-                 "vonal), a helye fehér lesz.",
-        "para":  "Kattints egy bekezdésre — szaggatott keret jelzi, mire fog hatni.",
+                 "vonal, az új szöveg is), a helye fehér lesz.",
+        "para":  "Kattints egy bekezdésre — szaggatott keret jelzi, mire hat. A "
+                 "beállítás azonnal látszik a lapon; Ctrl+Z visszavonja.",
     }
     UNDO_MAX = 30
+    LIVE_MS = 120             # a panel változása után ennyi idővel rajzolunk (gépelés)
+    NUDGE, NUDGE_BIG = 1.0, 10.0       # nyíl / Shift+nyíl lépése (pt)
+    # E fölött csak a látható sáv (és ráhagyás) rajzolódik: 6× nagyításon egy A4-es
+    # lap 50 megapixel lenne — másodpercekig tartana, és százmegás képet tartana.
+    RENDER_MAX_PX = 6_000_000
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -2304,16 +2597,33 @@ class EditorTab(ttk.Frame):
         self.log_parent = None           # az Áttekintőből nyitva: ide naplózunk
         self.page_no = 0
         self.view_zoom, self.zoom = 1.0, 1.0
-        self.undo = []
+        self.undo = []                   # [(PDF-bájtok | None, szövegek másolata)]
+        self._undo_key = None            # az utolsó lépés kulcsa: az összevonáshoz
         self.dirty = False
         self.page_tk = None
+        self._full = True                # az egész lap kirajzolva (nem csak a látható sáv)
+        self._rendering = False
+        self._painted = (0, 0, 0, 0)     # a kirajzolt sáv a vásznon (px)
+        self._page_px = (0, 0)
         self._dr, self._lines = [], ([], [])
         self._press = self._entry = None
         self.sel_xref = None              # a kijelölt mező
+        # -- elhelyezett szövegek (élő objektumok a mentésig) --
+        self.texts = []
+        self.sel_text = None              # a kijelölt szöveg uid-je
+        self._uid = 0
+        self._timgs, self._tbox = {}, {}  # uid -> PhotoImage / befoglaló (pt)
+        self._tdrag = None                # [uid, x, y, eltolás x, eltolás y, mozdult-e]
+        self._quiet = False               # a panel programból íródik: ne alkalmazzuk
         self.mode = tk.StringVar(value="text")
         fonts = edit_fonts()
         self.font_name = tk.StringVar(value="Calibri" if "Calibri" in fonts else fonts[0])
         self.font_size = tk.DoubleVar(value=10.5)
+        self.t_bold = tk.BooleanVar(value=False)
+        self.t_italic = tk.BooleanVar(value=False)
+        self.t_under = tk.BooleanVar(value=False)
+        self.t_color = (0.0, 0.0, 0.0)
+        self.t_text = tk.StringVar(value="")
         self.field_name = tk.StringVar(value="")
         self.upper = tk.BooleanVar(value=False)
         self.info = tk.StringVar(value="Válassz egy PDF-et.")
@@ -2321,6 +2631,8 @@ class EditorTab(ttk.Frame):
         self.para = None                  # a kijelölt bekezdés (paragraph_at szótára)
         self.para_pt = None               # a kattintás pontja: ide ismerjük fel újra
         self._base = {}                   # a bekezdés értékei kijelöléskor
+        self._live = None                 # a futó élő formázás (lásd _live_apply)
+        self._p_text = None               # a „Bekezdés szövege…” átírása
         self.p_align = tk.StringVar(value="left")
         self.p_reflow = tk.BooleanVar(value=False)
         self.p_gap = tk.DoubleVar(value=0)
@@ -2335,6 +2647,14 @@ class EditorTab(ttk.Frame):
         self.p_if = tk.DoubleVar(value=0)
         self.p_color = None               # None: a bekezdés mai színe marad
         self._build(fonts)
+        # Valós idejű formázás: a panel minden változása azonnal a lapra kerül.
+        for v in (self.font_name, self.font_size, self.t_bold, self.t_italic,
+                  self.t_under, self.t_text):
+            v.trace_add("write", lambda *a: self._tstyle_changed())
+        for v in (self.p_align, self.p_reflow, self.p_gap, self.p_dy, self.p_family,
+                  self.p_size, self.p_bold, self.p_italic, self.p_under, self.p_il,
+                  self.p_ir, self.p_if):
+            v.trace_add("write", lambda *a: self._para_changed())
 
     def _build(self, fonts):
         # A bal panel görgethető: a bekezdéspanellel együtt 740 px-es ablakban nem
@@ -2342,8 +2662,7 @@ class EditorTab(ttk.Frame):
         # A görgetősáv csak akkor jelenik meg, ha tényleg kell — mint az Összeállító
         # típuspalettájánál (szerkeszto-terv.md 17.2, 19.7).
         shell, left = scroll_panel(self, 340, padx=(8, 0))
-        # A bekezdés gombsora a görgethető részen KÍVÜL, fix alsó sávban: az Alkalmaz
-        # mindig elérhető legyen, ne kelljen érte görgetni.
+        # A bekezdés gombsora a görgethető részen KÍVÜL, fix alsó sávban.
         self.actionbar = ttk.Frame(shell)
         self.actionbar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.files = FileList(left, "PDF-ek", (".pdf",), self._pick, height=3,
@@ -2354,22 +2673,18 @@ class EditorTab(ttk.Frame):
         m.pack(fill="x", pady=8)
         for txt, val in (("Szöveg és X", "text"), ("Bekezdés formázása", "para"),
                          ("Űrlapmező (DocGen-sablon)", "field"), ("Kitakarás", "erase")):
+            # fill="x": a felirat a panel teljes szélességét kapja, ne csak a Tk
+            # által kimért szélességet — nagyított kijelzőn ez vágta le a végét.
             ttk.Radiobutton(m, text=txt, value=val, variable=self.mode,
-                            command=self._mode_changed).pack(anchor="w", padx=6, pady=1)
+                            command=self._mode_changed).pack(anchor="w", fill="x",
+                                                             padx=6, pady=1)
         self.hint = ttk.Label(m, text=self.HINTS["text"], wraplength=310, foreground="#555")
         self.hint.pack(anchor="w", padx=6, pady=(2, 4))
-        self.textrow = t = ttk.Frame(m)
-        t.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(t, text="Új szöveg:").pack(side="left")
-        ttk.Combobox(t, textvariable=self.font_name, values=fonts, state="readonly",
-                     width=14).pack(side="left", padx=4)
-        ttk.Spinbox(t, from_=5, to=40, increment=0.5, textvariable=self.font_size,
-                    width=5).pack(side="left")
 
-        # A mező- és a bekezdéspanel EGYMÁS HELYÉN jelenik meg (nem egymás alatt):
-        # 740 px-es ablakban a kettő együtt levágódna (szerkeszto-terv.md 18., 19.7).
+        # Az eszközök paneljei EGYMÁS HELYÉN jelennek meg (nem egymás alatt):
+        # 740 px-es ablakban együtt levágódnának (szerkeszto-terv.md 18., 19.7).
+        self.textbox = self._build_text(left, fonts)
         self.fieldbox = f = ttk.LabelFrame(left, text="Kijelölt mező — a neve a DocGen-jelölő")
-        f.pack(fill="x")
         ttk.Entry(f, textvariable=self.field_name).pack(fill="x", padx=6, pady=(6, 2))
         fr = ttk.Frame(f)
         fr.pack(fill="x", padx=6, pady=(0, 6))
@@ -2378,6 +2693,7 @@ class EditorTab(ttk.Frame):
         ttk.Checkbutton(f, text="A DocGen nagybetűvel töltse ki (az egész sablont)",
                         variable=self.upper, command=self._upper_changed).pack(anchor="w", padx=6, pady=(0, 6))
         self.parabox = self._build_para(left, fonts)
+        self.textbox.pack(fill="x")
         self.actionbar.grid_remove()
 
         # A dokumentum műveletei a vászon fölött: a bal panel így alacsony
@@ -2385,44 +2701,111 @@ class EditorTab(ttk.Frame):
         right = ttk.Frame(self)
         right.pack(side="right", fill="both", expand=True, padx=(0, 8), pady=8)
         bar = ttk.Frame(right)
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
         ttk.Button(bar, text="Visszavonás", command=self._undo).pack(side="left")
         ttk.Button(bar, text="Mentés", command=self._save).pack(side="left", padx=6)
         ttk.Button(bar, text="Mentés másként…", command=self._save_as).pack(side="left")
-        self.page_var = tk.StringVar(value="1")
         ttk.Button(bar, text="Illeszt", command=lambda: self._view_zoom(0)).pack(side="right")
         ttk.Button(bar, text="+", width=3, command=lambda: self._view_zoom(1.25)).pack(side="right", padx=2)
         ttk.Button(bar, text="−", width=3, command=lambda: self._view_zoom(1 / 1.25)).pack(side="right", padx=(12, 2))
-        self.page_spin = ttk.Spinbox(bar, from_=1, to=1, textvariable=self.page_var, width=5,
+        # Második sor: lapozás és az állapot. Lapozógombok a beíró két oldalán — a
+        # beíró apró nyilairól nem látszott, hogy lapoznak (a felhasználó legördülő
+        # listának nézte). Az első sorban nem fértek el: ott a gombok összenyomták a
+        # beírót, és az állapotból „nyi” maradt (ui-kep.py 6, 1280 px).
+        nav = ttk.Frame(right)
+        nav.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 6))
+        self.btn_first = ttk.Button(nav, image=ui_icon("first"),
+                                    command=lambda: self._goto_page(0))
+        self.btn_prev = ttk.Button(nav, image=ui_icon("prev"),
+                                   command=lambda: self._step_page(-1))
+        self.btn_first.pack(side="left")
+        self.btn_prev.pack(side="left", padx=(2, 6))
+        ttk.Label(nav, text="Oldal").pack(side="left")
+        self.page_var = tk.StringVar(value="1")
+        self.page_spin = ttk.Spinbox(nav, from_=1, to=1, textvariable=self.page_var, width=4,
                                      command=self._change_page)
-        self.page_spin.pack(side="right")
-        ttk.Label(bar, text="Oldal:").pack(side="right", padx=4)
-        # Az állapot az eszköztárban, egy sorban: a bal panel alján alacsony ablakban
-        # levágódott (ui-kep.py 5).
-        ttk.Label(bar, textvariable=self.info, foreground="#333").pack(
-            side="left", padx=12, fill="x", expand=True)
+        self.page_spin.pack(side="left", padx=4)
+        self.page_spin.bind("<Return>", lambda e: self._change_page())
+        self.page_total = ttk.Label(nav, text="/ 1")
+        self.page_total.pack(side="left")
+        self.btn_next = ttk.Button(nav, image=ui_icon("next"),
+                                   command=lambda: self._step_page(1))
+        self.btn_last = ttk.Button(nav, image=ui_icon("last"),
+                                   command=lambda: self._goto_page(-1))
+        self.btn_next.pack(side="left", padx=(6, 2))
+        self.btn_last.pack(side="left")
+        # width=1: a hosszú üzenet ne kérjen helyet (a sor végén levágódik), a
+        # maradék szélességet az expand adja.
+        ttk.Label(nav, textvariable=self.info, foreground="#333", width=1).pack(
+            side="left", fill="x", expand=True, padx=(14, 0))
         self.canvas = tk.Canvas(right, bg=COL_CANVAS, highlightthickness=0, takefocus=1,
                                 cursor="crosshair", height=180)
-        hb = ttk.Scrollbar(right, orient="horizontal", command=self.canvas.xview)
-        vb = ttk.Scrollbar(right, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(xscrollcommand=hb.set, yscrollcommand=vb.set)
-        self.canvas.grid(row=1, column=0, sticky="nsew")
-        vb.grid(row=1, column=1, sticky="ns")
-        hb.grid(row=2, column=0, sticky="ew")
-        right.rowconfigure(1, weight=1)
+        self.hb = ttk.Scrollbar(right, orient="horizontal", command=self.canvas.xview)
+        self.vb = ttk.Scrollbar(right, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=self._xset, yscrollcommand=self._yset)
+        self.canvas.grid(row=2, column=0, sticky="nsew")
+        self.vb.grid(row=2, column=1, sticky="ns")
+        self.hb.grid(row=3, column=0, sticky="ew")
+        right.rowconfigure(2, weight=1)
         right.columnconfigure(0, weight=1)
         c = self.canvas
         c.bind("<ButtonPress-1>", self._down)
         c.bind("<B1-Motion>", self._drag)
         c.bind("<ButtonRelease-1>", self._up)
+        c.bind("<Double-Button-1>", self._dclick)
+        c.bind("<Motion>", self._hover)
         c.bind("<Configure>", lambda e: debounce(self, "_cfg_job", self._render, 60))
-        c.bind("<Control-MouseWheel>", lambda e: self._view_zoom(1.25 if e.delta > 0 else 1 / 1.25))
-        c.bind("<MouseWheel>", lambda e: c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-        c.bind("<Delete>", lambda e: self._delete_field())
+        # Görgő: függőleges, Shift+görgő: vízszintes, Ctrl+görgő: nagyítás a kurzor
+        # körül. Középső gombbal húzva a lap szabadon mozgatható.
+        c.bind("<MouseWheel>", lambda e: self._wheel(e, "y"))
+        c.bind("<Shift-MouseWheel>", lambda e: self._wheel(e, "x"))
+        c.bind("<Control-MouseWheel>", lambda e: self._view_zoom(
+            1.25 if e.delta > 0 else 1 / 1.25, anchor=(e.x, e.y)))
+        c.bind("<ButtonPress-2>", lambda e: c.scan_mark(e.x, e.y))
+        c.bind("<B2-Motion>", lambda e: c.scan_dragto(e.x, e.y, gain=1))
+        c.bind("<Delete>", lambda e: self._delete_key())
+        c.bind("<Escape>", lambda e: self._deselect_text())
+        for key, dx, dy in (("Left", -1, 0), ("Right", 1, 0), ("Up", 0, -1), ("Down", 0, 1)):
+            c.bind(f"<{key}>", lambda e, dx=dx, dy=dy: self._nudge(dx, dy, False))
+            c.bind(f"<Shift-{key}>", lambda e, dx=dx, dy=dy: self._nudge(dx, dy, True))
+        c.bind("<Prior>", lambda e: (self._step_page(-1), "break")[1])     # PageUp
+        c.bind("<Next>", lambda e: (self._step_page(1), "break")[1])       # PageDown
         # A vásznon, nem bind_all-lal: a globális Ctrl+Z kötés a nagyító (PageViewer)
         # billentyűit is elrontotta (a GUI-teszt mérte). A vászon kattintásra
         # amúgy is megkapja a fókuszt.
         c.bind("<Control-z>", lambda e: (self._undo(), "break")[1])
+
+    def _build_text(self, left, fonts):
+        """Az új szöveg panelje. Kijelölt szövegnél minden beállítás AZONNAL arra hat
+        (a szövege is innen írható át); kijelölés nélkül a következő új szövegre."""
+        p = ttk.LabelFrame(left, text="Szöveg — betű és stílus")
+        r = ttk.Frame(p)
+        r.pack(fill="x", padx=6, pady=(6, 0))
+        ttk.Label(r, text="Betű:").pack(side="left")
+        ttk.Combobox(r, textvariable=self.font_name, values=fonts, state="readonly",
+                     width=14).pack(side="left", padx=4)
+        ttk.Spinbox(r, from_=4, to=72, increment=0.5, textvariable=self.font_size,
+                    width=5).pack(side="left")
+        ttk.Label(r, text="pt", foreground="#555").pack(side="left", padx=1)
+        s = ttk.Frame(p)
+        s.pack(fill="x", padx=6, pady=(2, 0))
+        ttk.Checkbutton(s, text="Félkövér", variable=self.t_bold).pack(side="left")
+        ttk.Checkbutton(s, text="Dőlt", variable=self.t_italic).pack(side="left", padx=4)
+        ttk.Checkbutton(s, text="Aláhúzott", variable=self.t_under).pack(side="left")
+        self.t_swatch = ttk.Button(s, text="Szín…", command=self._pick_tcolor)
+        self.t_swatch.pack(side="right")
+        self._swatch(self.t_swatch, self.t_color)
+        ttk.Label(p, text="A kijelölt szöveg:").pack(anchor="w", padx=6, pady=(6, 0))
+        e = ttk.Frame(p)
+        e.pack(fill="x", padx=6)
+        self.t_entry = ttk.Entry(e, textvariable=self.t_text)
+        self.t_entry.pack(side="left", fill="x", expand=True)
+        self.t_del = ttk.Button(e, text="Törlés", command=self._delete_text)
+        self.t_del.pack(side="left", padx=(6, 0))
+        self.t_note = ttk.Label(p, foreground="#555", wraplength=310)
+        self.t_note.pack(anchor="w", fill="x", padx=6, pady=(2, 6))
+        self._tpanel_state()
+        return p
 
     def _build_para(self, left, fonts):
         """A bekezdéspanel. A „Kijelölt mező” panel HELYÉN jelenik meg, nem alatta:
@@ -2470,21 +2853,28 @@ class EditorTab(ttk.Frame):
         ttk.Label(b, text="pt", foreground="#555").pack(side="left", padx=1)
 
         s = ttk.Frame(p)
-        s.pack(fill="x", padx=6, pady=(2, 0))
+        s.pack(fill="x", padx=6, pady=(2, 6))
         ttk.Checkbutton(s, text="Félkövér", variable=self.p_bold).pack(side="left")
         ttk.Checkbutton(s, text="Dőlt", variable=self.p_italic).pack(side="left", padx=4)
         ttk.Checkbutton(s, text="Aláhúzott", variable=self.p_under).pack(side="left")
         self.p_swatch = ttk.Button(s, text="Szín…", width=7, command=self._pick_color)
         self.p_swatch.pack(side="right")
 
+        # Alkalmaz gomb NINCS: minden változás azonnal a lapra kerül (21.). Helyette
+        # az „Eredeti bekezdés” visszaállítja a kijelöléskori állapotot.
         a = self.actionbar
         ttk.Button(a, text="Bekezdés szövege…", command=self._edit_para_text).pack(side="left")
-        ttk.Button(a, text="Alkalmaz", command=self._apply_para).pack(side="right")
+        ttk.Button(a, text="Eredeti bekezdés", command=self._para_reset).pack(side="right")
         return p
 
     # -- fájl --
     def set_folder(self, folder):
         self.files.set_folder(folder)
+
+    def set_worker(self, name, force=False):
+        """A fájllista az alapértelmezett dolgozó mappáját mutatja (mindkét
+        alkönyvtárával), dolgozó nélkül a munkamappát."""
+        self.files.set_folder(*self.app.list_target())
 
     def _pick(self, path):
         self.open_file(path)
@@ -2509,11 +2899,17 @@ class EditorTab(ttk.Frame):
             self.doc.close()
         self.doc, self.path, self.log_parent = doc, path, log_parent
         self.page_no, self.view_zoom, self.undo, self.dirty = 0, 1.0, [], False
+        self._undo_key = self._live = None
+        self.texts = []                    # előbb: a függő formázás ne az új iratra fusson
+        self._deselect_text()
         self.sel_xref = None
         self.para = self.para_pt = None
         self.field_name.set("")
         self.page_spin.configure(to=doc.page_count)
         self.page_var.set("1")
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
+        self._tpanel_state()
         self._render()
         return True
 
@@ -2521,51 +2917,142 @@ class EditorTab(ttk.Frame):
         name = os.path.basename(self.path) if self.path else ""
         self.info.set(f"{name}{' — módosítva' if self.dirty else ''}" + (f" · {txt}" if txt else ""))
 
-    # -- rajzolás --
+    # -- lapozás, nagyítás, görgetés --
     def _page(self):
         return self.doc[self.page_no] if self.doc else None
+
+    def _goto_page(self, n):
+        """Lapra ugrás; -1: az utolsó lap."""
+        if not self.doc:
+            return
+        self.page_var.set(str((self.doc.page_count - 1 if n < 0 else n) + 1))
+        self._change_page()
+
+    def _step_page(self, d):
+        if self.doc:
+            self._goto_page(max(0, min(self.doc.page_count - 1, self.page_no + d)))
 
     def _change_page(self):
         if not self.doc:
             return
         try:
-            self.page_no = max(1, min(self.doc.page_count, int(self.page_var.get()))) - 1
+            n = max(1, min(self.doc.page_count, int(self.page_var.get()))) - 1
         except ValueError:
             return
+        self.page_var.set(str(n + 1))
+        self._end_live()
+        self._deselect_text()
+        self.page_no = n
         self.sel_xref = None
         self.para = self.para_pt = None
+        self._tpanel_state()
+        self.canvas.yview_moveto(0)       # az új lap a tetejéről
         self._render()
 
-    def _view_zoom(self, k):
+    def _update_nav(self):
+        n = self.doc.page_count if self.doc else 1
+        self.page_total.configure(text=f"/ {n}")
+        for b, ok in ((self.btn_first, self.page_no > 0), (self.btn_prev, self.page_no > 0),
+                      (self.btn_next, self.page_no < n - 1),
+                      (self.btn_last, self.page_no < n - 1)):
+            b.state(["!disabled"] if ok else ["disabled"])
+
+    def _view_zoom(self, k, anchor=None):
+        """Nagyítás (k=0: illesztés). A kurzor (vagy a nézet közepe) alatti pont
+        helyben marad — eddig a nézet minden nagyításkor a lap tetejére ugrott."""
+        c = self.canvas
+        keep = None
+        if self._page() is not None:
+            ax, ay = anchor or (c.winfo_width() / 2, c.winfo_height() / 2)
+            keep = (c.canvasx(ax) / self.zoom, c.canvasy(ay) / self.zoom, ax, ay)
         self.view_zoom = 1.0 if not k else max(0.3, min(6.0, self.view_zoom * k))
-        self._render()
+        self._render(keep)
 
-    def _render(self):
+    def _wheel(self, e, axis):
+        step = -1 if e.delta > 0 else 1
+        (self.canvas.xview_scroll if axis == "x" else self.canvas.yview_scroll)(step, "units")
+        return "break"
+
+    def _xset(self, *a):
+        self.hb.set(*a)
+        self._check_cover()
+
+    def _yset(self, *a):
+        self.vb.set(*a)
+        self._check_cover()
+
+    def _check_cover(self):
+        """Nagy nagyításon csak a látható sáv van kirajzolva: ha a görgetés kiért
+        belőle, újrarajzoljuk (késleltetve — görgetés közben ne minden lépésre)."""
+        if self._full or self.doc is None or self._rendering:
+            return
+        c = self.canvas
+        x0, y0 = max(0, c.canvasx(0)), max(0, c.canvasy(0))
+        x1 = min(self._page_px[0], x0 + c.winfo_width())
+        y1 = min(self._page_px[1], y0 + c.winfo_height())
+        a = self._painted
+        if x0 < a[0] - 1 or y0 < a[1] - 1 or x1 > a[2] + 1 or y1 > a[3] + 1:
+            debounce(self, "_cover_job", self._paint_page, 20)
+
+    # -- rajzolás --
+    def _render(self, keep=None):
         self._cancel_entry()
         page = self._page()
         if not page:
             return
         # Szélességre illesztünk: egy űrlapon a betű mérete számít, nem az, hogy
         # az egész lap látsszon (függőlegesen görgethető).
-        cw = max(50, self.canvas.winfo_width())
-        self.zoom = cw / page.rect.width * self.view_zoom
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(self.zoom, self.zoom), annots=True)
-        self.page_tk = tkimg(pix, "ppm")
         c = self.canvas
+        cw = max(50, c.winfo_width())
+        self.zoom = cw / page.rect.width * self.view_zoom
+        w, h = page.rect.width * self.zoom, page.rect.height * self.zoom
+        self._page_px = (w, h)
         c.delete("all")
-        c.create_image(0, 0, anchor="nw", image=self.page_tk, tags="page")
-        c.configure(scrollregion=(0, 0, pix.width, pix.height))
+        self._rendering = True         # a görgetés-visszajelzés most ne rajzoljon
+        try:
+            c.configure(scrollregion=(0, 0, w, h))
+            if keep:                   # a megfogott pont maradjon a helyén
+                px, py, ax, ay = keep
+                c.xview_moveto(max(0.0, (px * self.zoom - ax) / w))
+                c.yview_moveto(max(0.0, (py * self.zoom - ay) / h))
+            self._full = w * h <= self.RENDER_MAX_PX
+            self._paint_page()
+        finally:
+            self._rendering = False
         self._dr = page.get_drawings()
         self._lines = page_lines(self._dr)
         # A bekezdést a kattintás pontjából ismerjük fel újra: formázás és visszavonás
         # után is a mostani laphoz tartozó szótár kell (a régi sorai már nem élnek).
         if self.mode.get() == "para" and self.para_pt:
             self.para = self._repara(page)
+        self._draw_texts()
         self._draw_fields()
         self._draw_para()
         n = sum(1 for _ in page.widgets())
         self.upper.set(get_upper(self.doc))          # visszavonás után is a dokumentumé
+        self._update_nav()
         self._say(f"{self.page_no + 1}/{self.doc.page_count}. oldal · {n} űrlapmező")
+
+    def _paint_page(self):
+        """A lap képe: kis nagyításon az egész lap, nagyon csak a látható sáv
+        fél képernyőnyi ráhagyással."""
+        page = self._page()
+        if page is None:
+            return
+        c, z = self.canvas, self.zoom
+        clip = None
+        if not self._full:
+            vx, vy = c.canvasx(0), c.canvasy(0)
+            vw, vh = c.winfo_width(), c.winfo_height()
+            m = max(vw, vh) // 2
+            clip = pymupdf.Rect((vx - m) / z, (vy - m) / z, (vx + vw + m) / z,
+                                (vy + vh + m) / z) & page.rect
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(z, z), clip=clip, annots=True)
+        self.page_tk = tkimg(pix, "ppm")
+        c.delete("page")
+        c.create_image(pix.x, pix.y, anchor="nw", image=self.page_tk, tags="page")
+        c.tag_lower("page")
+        self._painted = (pix.x, pix.y, pix.x + pix.width, pix.y + pix.height)
 
     def _draw_fields(self):
         """Mező módban a mezők kerete és neve — a PDF-ben láthatatlanok."""
@@ -2586,20 +3073,24 @@ class EditorTab(ttk.Frame):
         mode = self.mode.get()
         self.hint.configure(text=self.HINTS[mode])
         self._cancel_entry()
-        self.fieldbox.pack_forget()
-        self.parabox.pack_forget()
-        (self.parabox if mode == "para" else self.fieldbox).pack(fill="x")
+        self._end_live()
+        for box in (self.textbox, self.fieldbox, self.parabox):
+            box.pack_forget()
+        box = {"text": self.textbox, "field": self.fieldbox, "para": self.parabox}.get(mode)
+        if box is not None:
+            box.pack(fill="x")
         self.actionbar.grid() if mode == "para" else self.actionbar.grid_remove()
-        # Az „Új szöveg” betűválasztó csak a Szöveg eszközé — máshol csak helyet foglal.
-        self.textrow.pack(fill="x", padx=6, pady=(0, 6)) if mode == "text"             else self.textrow.pack_forget()
         if mode != "para":
             self.para = self.para_pt = None
+        if mode != "text":
+            self._deselect_text()
+        self.canvas.configure(cursor="crosshair")
         self._draw_fields()
         self._draw_para()
 
     def _draw_para(self):
-        """A kijelölt bekezdés szaggatott kerete és a jobb széle: az Alkalmaz előtt
-        látszik, mire fog hatni a formázás."""
+        """A kijelölt bekezdés szaggatott kerete és a jobb széle: látszik, mire hat
+        a formázás."""
         c, z = self.canvas, self.zoom
         c.delete("para")
         if self.mode.get() != "para" or not self.para:
@@ -2611,16 +3102,91 @@ class EditorTab(ttk.Frame):
         c.create_line(x, r.y0 * z - 10, x, r.y1 * z + 10, fill=UI["accent"],
                       dash=(2, 2), tags="para")
 
+    # -- elhelyezett szövegek a vásznon --
+    def _draw_texts(self):
+        self.canvas.delete("ptext")
+        self._timgs, self._tbox = {}, {}
+        for t in self.texts:
+            if t.page == self.page_no:
+                self._draw_text(t)
+        self._draw_tsel()
+
+    def _draw_text(self, t):
+        """Egy élő szöveg képe a lap fölött: a MuPDF rajzolja a valódi betűvel, ezért
+        pontosan az látszik, ami mentéskor a lapra kerül."""
+        c, z = self.canvas, self.zoom
+        tag = f"pt{t.uid}"
+        c.delete(tag)
+        self._tbox[t.uid] = placed_bbox(t)
+        if not t.text.strip():
+            self._timgs.pop(t.uid, None)
+            return
+        pix, (x0, y0) = placed_pixmap(t, z)
+        self._timgs[t.uid] = img = tkimg(pix, "png")
+        c.create_image(round(x0 * z), round(y0 * z), anchor="nw", image=img,
+                       tags=("ptext", tag))
+
+    def _draw_tsel(self):
+        c, z = self.canvas, self.zoom
+        c.delete("tsel")
+        t = self._sel()
+        if t is None or t.page != self.page_no:
+            return
+        r = self._tbox.get(t.uid) or placed_bbox(t)
+        c.create_rectangle(r.x0 * z - 3, r.y0 * z - 3, r.x1 * z + 3, r.y1 * z + 3,
+                           outline=UI["accent"], dash=(4, 2), width=1.5, tags="tsel")
+
+    def _find(self, uid):
+        return next((t for t in self.texts if t.uid == uid), None)
+
+    def _sel(self):
+        return self._find(self.sel_text) if self.sel_text is not None else None
+
+    def _text_at(self, x, y):
+        """A pont alatti élő szöveg (a legfelső), vagy None."""
+        for t in reversed(self.texts):
+            if t.page == self.page_no:
+                r = self._tbox.get(t.uid) or placed_bbox(t)
+                if r.x0 - 2 <= x <= r.x1 + 2 and r.y0 - 2 <= y <= r.y1 + 2:
+                    return t
+        return None
+
     # -- egér --
     def _pt(self, e):
         return (self.canvas.canvasx(e.x) / self.zoom, self.canvas.canvasy(e.y) / self.zoom)
 
+    def _hover(self, e):
+        if self.mode.get() not in ("text", "para") or not self.doc or self._tdrag:
+            return
+        cur = "fleur" if self._text_at(*self._pt(e)) is not None else "crosshair"
+        if str(self.canvas.cget("cursor")) != cur:
+            self.canvas.configure(cursor=cur)
+
     def _down(self, e):
         self.canvas.focus_set()
         self._press = self._pt(e) if self.doc else None
+        self._tdrag = None
         self.canvas.delete("band")
+        if self._press and self.mode.get() in ("text", "para"):
+            t = self._text_at(*self._press)
+            if t is not None:
+                if self.mode.get() == "para":
+                    # Az élő szöveg nem a lap bekezdése: a Szöveg eszköz formázza.
+                    self.mode.set("text")
+                    self._mode_changed()
+                self._select_text(t)
+                self._tdrag = [t.uid, e.x, e.y, 0, 0, False]
 
     def _drag(self, e):
+        if self._tdrag:
+            uid, x0, y0, adx, ady, moved = self._tdrag
+            dx, dy = e.x - x0, e.y - y0
+            if not moved and abs(dx) + abs(dy) < 3:
+                return                 # remegés: még kattintás, nem húzás
+            self.canvas.move(f"pt{uid}", dx - adx, dy - ady)
+            self.canvas.move("tsel", dx - adx, dy - ady)
+            self._tdrag[3:] = [dx, dy, True]
+            return
         if not self._press or self.mode.get() in ("text", "para"):
             return
         (x0, y0), (x1, y1), z = self._press, self._pt(e), self.zoom
@@ -2629,6 +3195,15 @@ class EditorTab(ttk.Frame):
                                      outline=UI["warn"], dash=(4, 2))
 
     def _up(self, e):
+        if self._tdrag:
+            uid, _x, _y, adx, ady, moved = self._tdrag
+            self._tdrag = self._press = None
+            t = self._find(uid)
+            if moved and t is not None and (adx or ady):
+                z = self.zoom
+                self._tchange(lambda: self._move_text(t, adx / z, ady / z),
+                              "Áthelyezve — a nyilakkal finomíthatsz (Shift: 10 pt).")
+            return
         if not self._press:
             return
         (x0, y0), (x1, y1) = self._press, self._pt(e)
@@ -2643,13 +3218,32 @@ class EditorTab(ttk.Frame):
         mode = self.mode.get()
         if mode == "erase":
             if drag:
-                self._change(lambda: erase_area(page, rect), "Kitakarva.")
+                gone = {t.uid for t in self.texts
+                        if t.page == self.page_no and placed_bbox(t).intersects(rect)}
+
+                def go():
+                    erase_area(page, rect)
+                    self.texts = [t for t in self.texts if t.uid not in gone]
+                self._change(go, "Kitakarva.")
         elif mode == "field":
             self._field_drag(page, rect) if drag else self._field_click(page, x1, y1)
         elif mode == "para":
             self._para_click(page, x1, y1)
+        elif self.sel_text is not None:
+            self._deselect_text()      # az első kattintás csak a kijelölést oldja fel
         else:
             self._text_click(page, x1, y1)
+
+    def _dclick(self, e):
+        """Dupla kattintás egy élő szövegen: átírás a helyén."""
+        if not self.doc or self.mode.get() != "text":
+            return
+        t = self._text_at(*self._pt(e))
+        if t is not None:
+            self._select_text(t)
+            r = placed_bbox(t)
+            self._ask(r.x0, r.y1 + 2, t.text, max(r.width, 80),
+                      lambda s, uid=t.uid: self._set_text(uid, s))
 
     # -- szöveg --
     def _text_click(self, page, x, y):
@@ -2664,14 +3258,12 @@ class EditorTab(ttk.Frame):
             self._ask(b.x0, b.y1, span["text"], max(b.width, 80),
                       lambda t: self._rewrite(page, span, t))
             return
-        size = float(self.font_size.get())
+        size = self._tstyle()["size"]
         cell = snap_cell(self._lines, x, y)
         origin = ((cell.x0 + 3, (cell.y0 + cell.y1) / 2 + size * 0.35) if cell else (x, y))
         width = cell.width if cell else 160
         self._ask(origin[0], origin[1] + 3, "", width,
-                  lambda t: t.strip() and self._change(
-                      lambda: add_text(page, origin, t, edit_font(self.font_name.get()), size),
-                      "Szöveg hozzáadva."))
+                  lambda t: t.strip() and self._new_text(origin, t))
 
     def _rewrite(self, page, span, text):
         if text == span["text"]:
@@ -2681,6 +3273,170 @@ class EditorTab(ttk.Frame):
         self._change(lambda: own.append(rewrite_span(self.doc, page, span, text, fb)), "Átírva.")
         if own and not own[0] and text.strip():
             self._say(f"Az eredeti betűben nincs meg minden betű — {self.font_name.get()} betűvel írtam.")
+
+    def _tstyle(self, t=None) -> dict:
+        """A panel stílusa. Gépelés közben a méretmező átmenetileg érvénytelen lehet
+        (üres, „1”): olyankor a régi méret marad."""
+        try:
+            size = float(self.font_size.get())
+        except (tk.TclError, ValueError):
+            size = 0
+        if not 3 <= size <= 300:
+            size = t.size if t else 10.5
+        return {"family": self.font_name.get(), "size": size, "bold": self.t_bold.get(),
+                "italic": self.t_italic.get(), "underline": self.t_under.get(),
+                "color": tuple(self.t_color)}
+
+    def _new_text(self, origin, text):
+        self._uid += 1
+        t = PlacedText(self.page_no, origin[0], origin[1], text, uid=self._uid,
+                       **self._tstyle())
+        self._tchange(lambda: self.texts.append(t),
+                      "Szöveg elhelyezve — húzd, vagy a nyilakkal mozgasd; a panelen élőben formázható.")
+        self._select_text(t, say=False)
+        miss = placed_missing(t)
+        if miss:
+            self._say(f"A választott betűben nincs meg: {' '.join(miss)} — válassz másik betűt.")
+
+    def _move_text(self, t, dx, dy):
+        t.x += dx
+        t.y += dy
+
+    def _set_text(self, uid, s):
+        t = self._find(uid)
+        if t is None or s == t.text:
+            return
+        if not s.strip():
+            self._delete_text()
+            return
+        self._tchange(lambda: setattr(t, "text", s), "Szöveg átírva.")
+        self._load_tpanel(t)
+
+    def _flush_tstyle(self):
+        """A még függő (késleltetett) formázás most fut le — kijelölésváltás, mentés
+        és visszavonás előtt, különben az előző szöveg utolsó változása elveszne."""
+        job = getattr(self, "_tstyle_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._tstyle_job = None
+            self._tstyle_apply()
+
+    def _select_text(self, t, say=True):
+        self._flush_tstyle()
+        self.sel_text = t.uid if t is not None else None
+        self._undo_key = None          # új kijelölés: a formázás új visszavonási lépés
+        if t is not None:
+            self._load_tpanel(t)
+        self._draw_tsel()
+        self._tpanel_state()
+        if t is not None and say:
+            self._say(f"Kijelölve: „{t.text}” — húzd vagy nyilazd (Shift: 10 pt) · "
+                      "Delete: törlés · dupla kattintás: átírás")
+
+    def _deselect_text(self):
+        if self.sel_text is None:
+            return
+        self._flush_tstyle()
+        self.sel_text = None
+        self._quiet = True
+        try:
+            self.t_text.set("")
+        finally:
+            self._quiet = False
+        self._draw_tsel()
+        self._tpanel_state()
+
+    def _load_tpanel(self, t):
+        """A panel a kijelölt szöveg értékeivel — a trace-ek ne alkalmazzák vissza."""
+        self._quiet = True
+        try:
+            self.font_name.set(t.family)
+            self.font_size.set(t.size)
+            self.t_bold.set(t.bold)
+            self.t_italic.set(t.italic)
+            self.t_under.set(t.underline)
+            self.t_text.set(t.text)
+            self.t_color = t.color
+            self._swatch(self.t_swatch, t.color)
+        finally:
+            self._quiet = False
+
+    def _tpanel_state(self):
+        on = self._sel() is not None
+        for w in (self.t_entry, self.t_del):
+            w.state(["!disabled"] if on else ["disabled"])
+        self.t_note.configure(
+            text="A változás azonnal látszik a lapon (Ctrl+Z visszavonja)." if on else
+            "Nincs kijelölt szöveg: a beállítás a következő új szövegre szól. "
+            "Kijelöléshez kattints egy most elhelyezett szövegre.")
+
+    def _swatch(self, btn, rgb):
+        """Kis színminta a gombon — látszik, milyen színnel ír."""
+        img = tk.PhotoImage(width=12, height=12)
+        img.put("#%02x%02x%02x" % tuple(int(round(v * 255)) for v in rgb), to=(0, 0, 12, 12))
+        btn.configure(image=img, compound="left")
+        btn._swatch_img = img
+
+    def _pick_tcolor(self):
+        rgb = colorchooser.askcolor(title="A szöveg színe", parent=self)[0]
+        if rgb:
+            self.t_color = tuple(v / 255 for v in rgb)
+            self._swatch(self.t_swatch, self.t_color)
+            self._tstyle_changed()
+
+    def _tstyle_changed(self):
+        if self._quiet or self._sel() is None:
+            return                     # kijelölés nélkül: a következő új szöveg stílusa
+        debounce(self, "_tstyle_job", self._tstyle_apply, self.LIVE_MS)
+
+    def _tstyle_apply(self):
+        """A panel értékei a kijelölt szövegre — valós időben, Alkalmaz nélkül. Egy
+        kijelölésen belül a formázás EGY visszavonási lépés."""
+        t = self._sel()
+        if t is None:
+            return
+        new = dict(self._tstyle(t), text=self.t_text.get())
+        if all(getattr(t, k) == v for k, v in new.items()):
+            return
+        self._tchange(lambda: [setattr(t, k, v) for k, v in new.items()],
+                      key=("style", t.uid))
+        miss = placed_missing(t)
+        self._say(f"A választott betűben nincs meg: {' '.join(miss)} — mentéskor kimaradna, "
+                  "válassz másik betűt." if miss else
+                  "Formázva — élőben; Ctrl+Z visszavonja.")
+
+    def _nudge(self, dx, dy, big):
+        """Nyíl: a kijelölt szöveg 1 pt-tal (Shift: 10 pt) arrébb; kijelölés nélkül a
+        nézet görget. Az egymás utáni nyomások egy visszavonási lépés."""
+        t = self._sel()
+        if t is None or t.page != self.page_no or self._entry is not None:
+            if dx:
+                self.canvas.xview_scroll(dx, "units")
+            else:
+                self.canvas.yview_scroll(dy, "units")
+            return "break"
+        k = self.NUDGE_BIG if big else self.NUDGE
+        self._tchange(lambda: self._move_text(t, dx * k, dy * k),
+                      f"Áthelyezve: x {t.x + dx * k:.1f} · y {t.y + dy * k:.1f} pt",
+                      key=("move", t.uid))
+        return "break"
+
+    def _delete_text(self):
+        uid = self.sel_text
+        if uid is None:
+            return
+        self._tchange(lambda: setattr(self, "texts", [t for t in self.texts if t.uid != uid]),
+                      "Szöveg törölve.")
+        self._deselect_text()
+
+    def _delete_key(self):
+        if self.mode.get() == "text" and self.sel_text is not None:
+            self._delete_text()
+        else:
+            self._delete_field()
 
     # -- bekezdés --
     def _repara(self, page):
@@ -2700,6 +3456,7 @@ class EditorTab(ttk.Frame):
         return None
 
     def _para_click(self, page, x, y):
+        self._end_live()
         p = paragraph_at(page, x, y)
         if p is None:
             self.para = self.para_pt = None
@@ -2723,18 +3480,23 @@ class EditorTab(ttk.Frame):
                       "size": round(p["size"], 2), "family": fam or UNCHANGED,
                       "bold": bold, "italic": ital,
                       "il": 0.0, "ir": 0.0, "if": round(p["indent"], 1)}
-        self.p_align.set(self._base["align"])
-        self.p_gap.set(self._base["gap"])
-        self.p_size.set(self._base["size"])
-        self.p_family.set(self._base["family"])
-        self.p_bold.set(bold)
-        self.p_italic.set(ital)
-        self.p_under.set(False)
-        self.p_reflow.set(False)
-        self.p_dy.set(0)
-        self.p_il.set(0)
-        self.p_ir.set(0)
-        self.p_if.set(self._base["if"])
+        self._quiet = True             # a panel programból íródik: ne formázzon
+        try:
+            self.p_align.set(self._base["align"])
+            self.p_gap.set(self._base["gap"])
+            self.p_size.set(self._base["size"])
+            self.p_family.set(self._base["family"])
+            self.p_bold.set(bold)
+            self.p_italic.set(ital)
+            self.p_under.set(False)
+            self.p_reflow.set(False)
+            self.p_dy.set(0)
+            self.p_il.set(0)
+            self.p_ir.set(0)
+            self.p_if.set(self._base["if"])
+        finally:
+            self._quiet = False
+        self._p_text = None
         self.p_color = None
         self.p_swatch.configure(text="Szín…")
 
@@ -2743,22 +3505,29 @@ class EditorTab(ttk.Frame):
         if rgb:
             self.p_color = tuple(v / 255 for v in rgb)
             self.p_swatch.configure(text="Szín ✓")
+            self._para_changed()
 
-    def _para_fmt(self) -> dict:
-        """A panelon megváltoztatott értékek — ennyit adunk a para_format-nak."""
+    def _para_fmt(self):
+        """A panelon megváltoztatott értékek — ennyit adunk a para_format-nak.
+        None: egy számmező épp érvénytelen (gépelés közben)."""
         b, fmt = self._base, {}
         if self.p_align.get() != b["align"]:
             fmt["align"] = self.p_align.get()
         if self.p_reflow.get():
             fmt["reflow"] = True
-        for key, var, base in (("gap", self.p_gap, b["gap"]),
-                               ("indent_left", self.p_il, b["il"]),
-                               ("indent_right", self.p_ir, b["ir"]),
-                               ("indent_first", self.p_if, b["if"]),
-                               ("dy", self.p_dy, 0.0),
-                               ("size", self.p_size, b["size"])):
-            if abs(float(var.get()) - base) > 0.01:
-                fmt[key] = float(var.get())
+        try:
+            for key, var, base in (("gap", self.p_gap, b["gap"]),
+                                   ("indent_left", self.p_il, b["il"]),
+                                   ("indent_right", self.p_ir, b["ir"]),
+                                   ("indent_first", self.p_if, b["if"]),
+                                   ("dy", self.p_dy, 0.0),
+                                   ("size", self.p_size, b["size"])):
+                if abs(float(var.get()) - base) > 0.01:
+                    fmt[key] = float(var.get())
+        except (tk.TclError, ValueError):
+            return None
+        if fmt.get("size", 1) <= 0 or fmt.get("gap", 1) <= 0:
+            return None
         if self.p_under.get():
             fmt["underline"] = True
         if self.p_color is not None:
@@ -2771,38 +3540,116 @@ class EditorTab(ttk.Frame):
             if fam == UNCHANGED:
                 return {"__err": "A félkövérhez és a dőlthöz válassz betűcsaládot."}
             fmt.update(family=fam, bold=self.p_bold.get(), italic=self.p_italic.get())
+        if self._p_text is not None:
+            fmt["text"] = self._p_text
         return fmt
 
+    def _para_changed(self):
+        if self._quiet or not self.para or self.mode.get() != "para":
+            return
+        debounce(self, "_para_job", self._live_apply, self.LIVE_MS)
+
+    def _cancel_para_job(self) -> bool:
+        job = getattr(self, "_para_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._para_job = None
+        return bool(job)
+
+    def _live_apply(self):
+        """Valós idejű formázás. A kijelöléskori állapotból (pillanatkép) indulunk, és
+        a panel TELJES eltérését alkalmazzuk rá — így az eredmény csak a panel mostani
+        állapotától függ: a 10 → 8 → 10 pt ugyanazt a lapot adja vissza, nem egy kétszer
+        újratördelt változatot. Minden alkalmazás külön visszavonási lépés."""
+        self._para_job = None
+        if not self.para or not self.doc:
+            return
+        fmt = self._para_fmt()
+        if fmt is None:
+            return
+        if "__err" in fmt:
+            self._say(fmt["__err"])
+            return
+        live = self._live
+        if live is None:
+            if not fmt:
+                return
+            live = self._live = {"snap": self.doc.tobytes(), "para": self.para,
+                                 "pt": self.para_pt, "asked": None}
+        err = para_font_error(live["para"], fmt) if fmt else ""
+        if not err and para_reflows(fmt) and live["para"]["mixed"]:
+            if live["asked"] is None:
+                live["asked"] = messagebox.askyesno(
+                    "Vegyes formázás",
+                    "A bekezdésben többféle betű vagy méret van (például félkövér szavak).\n\n"
+                    "Ez a beállítás újratördeli a bekezdést, ezért a formázása EGYSÉGES "
+                    "lesz — a kiemelések elvesznek. A lépés visszavonható (Ctrl+Z).\n\n"
+                    "Folytassuk?")
+            if not live["asked"]:
+                err = ("A vegyes formázású bekezdést nem tördelem újra — ezt a beállítást "
+                       "állítsd vissza, vagy válaszd az „Eredeti bekezdés” gombot.")
+        if err:
+            self._say(err)             # a lap az utolsó jó állapotában marad
+            return
+        self._push(doc=True)
+        old, self.doc = self.doc, pymupdf.open("pdf", live["snap"])
+        old.close()
+        # a bekezdés eltolódik: a felismerés pontja is vele megy
+        self.para_pt = (live["pt"][0], live["pt"][1] + float(fmt.get("dy", 0)))
+        out = ""
+        try:
+            if fmt:
+                out = para_format(self.doc, self.doc[self.page_no], live["para"], fmt)
+        except Exception as e:
+            traceback.print_exc()
+            self._restore(self.undo.pop())
+            self._live = None
+            messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
+            return
+        self.dirty = True
+        self._render()
+        self._say(("Bekezdés formázva" + (f" — {out}" if out else "") +
+                   " · élőben, Ctrl+Z visszavonja") if fmt else "A bekezdés az eredeti formájában.")
+
     def _apply_para(self, text=None):
+        """Azonnali alkalmazás, a késleltetés kivárása nélkül (a „Bekezdés szövege…”
+        párbeszéd hívja). A panel változásai maguktól is a lapra kerülnek."""
         if not self.para:
             messagebox.showinfo("Bekezdés", "Előbb kattints egy bekezdésre.")
             return
-        fmt = self._para_fmt()
-        if "__err" in fmt:
-            messagebox.showwarning("Betű", fmt["__err"])
-            return
+        self._cancel_para_job()
         if text is not None:
-            fmt["text"] = text
-        if not fmt:
-            self._say("A bekezdésen nincs mit megváltoztatni.")
+            self._p_text = text
+        self._live_apply()
+
+    def _end_live(self):
+        """Az élő formázás vége (másik bekezdés, lap, eszköz, mentés): a függő
+        változás még a lapra kerül, és a panel a mostani állapotot veszi alapnak."""
+        if self._cancel_para_job():
+            self._live_apply()
+        if self._live is not None:
+            self._live = None
+            if self.para:
+                self._fill_para()
+
+    def _para_reset(self):
+        """„Eredeti bekezdés”: vissza a kijelöléskori állapotra (visszavonható)."""
+        self._cancel_para_job()
+        live = self._live
+        if live is None:
+            self._say("Ezen a bekezdésen nincs mit visszaállítani.")
             return
-        err = para_font_error(self.para, fmt)
-        if err:
-            messagebox.showwarning("A bekezdést nem formázom át", err)
-            return
-        if para_reflows(fmt) and self.para["mixed"] and not messagebox.askyesno(
-                "Vegyes formázás",
-                "A bekezdésben többféle betű vagy méret van (például félkövér szavak).\n\n"
-                "Ez a művelet újratördeli a bekezdést, ezért a formázása EGYSÉGES lesz — "
-                "a kiemelések elvesznek. A lépés visszavonható (Ctrl+Z).\n\nFolytassuk?"):
-            return
-        para, page, out = self.para, self._page(), []
-        if fmt.get("dy"):              # a bekezdés eltolódik: a horgony is vele megy
-            self.para_pt = (self.para_pt[0], self.para_pt[1] + fmt["dy"])
-        self._change(lambda: out.append(para_format(self.doc, page, para, fmt)),
-                     "Bekezdés formázva.")
-        if out and out[0]:
-            self._say(f"Bekezdés formázva — {out[0]}.")
+        self._push(doc=True)
+        old, self.doc = self.doc, pymupdf.open("pdf", live["snap"])
+        old.close()
+        self.para_pt, self._live = live["pt"], None
+        self._render()
+        if self.para:
+            self._fill_para()
+        self._say("A bekezdés az eredeti formájában.")
 
     def _edit_para_text(self):
         """A bekezdés szövegének átírása: a program a hasáb szélességére tördeli újra."""
@@ -2817,7 +3664,7 @@ class EditorTab(ttk.Frame):
                   wraplength=470, foreground="#555").pack(anchor="w", padx=10, pady=(10, 6))
         t = tk.Text(win, width=64, height=10, wrap="word", font=("Segoe UI", 10))
         t.pack(fill="both", expand=True, padx=10)
-        t.insert("1.0", para_text(self.para))
+        t.insert("1.0", self._p_text if self._p_text is not None else para_text(self.para))
         t.focus_set()
         bar = ttk.Frame(win)
         bar.pack(fill="x", padx=10, pady=8)
@@ -2917,12 +3764,23 @@ class EditorTab(ttk.Frame):
             self._entry = None
 
     # -- módosítás, visszavonás, mentés --
+    def _push(self, doc=True, key=None):
+        """Visszavonási pont. `doc=False`: csak az élő szövegek változnak — a PDF
+        bájtjait nem kell lemásolni. Az azonos kulcsú egymás utáni lépések (nyíllal
+        léptetés, egy kijelölés formázása) egy lépésnek számítanak."""
+        if key is not None and key == self._undo_key and self.undo:
+            return
+        self.undo.append((self.doc.tobytes() if doc else None,
+                          [copy.copy(t) for t in self.texts]))
+        del self.undo[:-self.UNDO_MAX]
+        self._undo_key = key
+
     def _change(self, fn, msg=""):
-        """Egy lépés: előtte a dokumentum bájtjai a visszavonási verembe."""
+        """Egy lépés a PDF-en: előtte a dokumentum bájtjai a visszavonási verembe."""
         if not self.doc:
             return None
-        self.undo.append(self.doc.tobytes())
-        del self.undo[:-self.UNDO_MAX]
+        self._end_live()
+        self._push(doc=True)
         try:
             out = fn()
         except Exception as e:
@@ -2937,25 +3795,60 @@ class EditorTab(ttk.Frame):
         self._say(msg)
         return out
 
-    def _restore(self, data):
-        self.doc.close()
-        self.doc = pymupdf.open("pdf", data)
+    def _tchange(self, fn, msg="", key=None):
+        """Egy lépés az élő szövegeken: a lapot nem kell újrarajzolni, csak őket."""
+        if not self.doc:
+            return
+        self._push(doc=False, key=key)
+        fn()
+        self.dirty = True
+        if self._sel() is None:
+            self.sel_text = None
+        self._draw_texts()
+        if msg:
+            self._say(msg)
+
+    def _restore(self, entry):
+        data, texts = entry
+        if data is not None:
+            self.doc.close()
+            self.doc = pymupdf.open("pdf", data)
+        self.texts = texts
 
     def _undo(self):
+        self._flush_tstyle()             # a függő változás is visszavonható legyen
+        if self._cancel_para_job():
+            self._live_apply()
         if not self.undo:
             self._say("Nincs mit visszavonni.")
             return
-        self._restore(self.undo.pop())
+        self._live = None
+        entry = self.undo.pop()
+        self._restore(entry)
+        self._undo_key = None
         self.dirty = bool(self.undo)
         self.sel_xref = None
-        self._render()
-        if self.para:
-            self._fill_para()
+        t = self._sel()
+        if t is None:
+            self.sel_text = None
+        if entry[0] is not None:
+            self._render()
+            if self.para:
+                self._fill_para()
+        else:
+            self._draw_texts()
+            self._say("Visszavonva.")
+        if t is not None:
+            self._load_tpanel(t)
+        self._tpanel_state()
 
     def _bytes(self) -> bytes:
-        """Mentendő bájtok: a használt betűk részhalmaza, tömörítve."""
+        """Mentendő bájtok: az élő szövegek a lapra írva, a használt betűk
+        részhalmaza, tömörítve. A szerkesztett dokumentum NEM változik: a szövegek
+        a mentés után is mozgathatók maradnak."""
         d = pymupdf.open("pdf", self.doc.tobytes())
         try:
+            bake_placed(d, self.texts)
             try:
                 d.subset_fonts()
             except Exception:
@@ -2972,11 +3865,15 @@ class EditorTab(ttk.Frame):
 
     def _save(self):
         if self.doc:
+            self._flush_tstyle()
+            self._end_live()
             self._save_to(self.path)
 
     def _save_as(self):
         if not self.doc:
             return
+        self._flush_tstyle()
+        self._end_live()
         stem = os.path.splitext(os.path.basename(self.path))[0]
         dst = filedialog.asksaveasfilename(title="Mentés másként",
                                            initialdir=os.path.dirname(self.path),
@@ -3041,6 +3938,7 @@ LOG_NAME = "iktato-naplo.csv"
 # Áttekintő mátrixába nem számít bele — enélkül minden felülírás hamis
 # duplikátumot csinálna ugyanarra a doktípusra.
 MARK_BACKUP = "előző példány"
+NO_WORKER = "— nincs —"                    # az alapértelmezett-dolgozó választó üres eleme
 TYPES_FILE = "iktato-doktipusok.json"      # a szkript mappájában
 MEMORY_FILE = "emlekezet.json"             # utoljára használt útvonalak, doktípus
 
@@ -7452,6 +8350,12 @@ class ComposerTab(ttk.Frame):
         self.folder = folder         # a források külön mappából jönnek — a lista marad
         self.refresh()
 
+    def set_worker(self, name, force=False):
+        """Az alapértelmezett dolgozó (a fülsor választója): váltáskor átvesszük,
+        frissítéskor csak az üres mezőbe — a fülön kézzel választott megmarad."""
+        if name and (force or not self.who_text.get().strip()):
+            self.who_text.set(name)
+
     def refresh(self):
         """Dolgozói mappák és típuspaletta újra — mappaváltáskor és fülváltáskor
         (közben új dolgozói mappa vagy doktípus jöhetett)."""
@@ -8394,6 +9298,11 @@ ICON_PATHS = {
                _arc(6.5, 18.5, 2.6, 0, 360), _arc(17.5, 18.5, 2.6, 0, 360)], False),
     "check": ([[(5, 13), (10, 18), (19, 6)]], False),
     "close": ([[(6, 6), (18, 18)], [(18, 6), (6, 18)]], False),
+    # Lapozás: chevron, a szélső lapra vonallal (Szerkesztés eszköztára).
+    "first": ([[(6, 5), (6, 19)], [(17, 5), (10, 12), (17, 19)]], False),
+    "prev": ([[(15, 5), (8, 12), (15, 19)]], False),
+    "next": ([[(9, 5), (16, 12), (9, 19)]], False),
+    "last": ([[(18, 5), (18, 19)], [(7, 5), (14, 12), (7, 19)]], False),
 }
 
 
@@ -8557,14 +9466,15 @@ def build_theme(root):
         _UI_KEEP.append((None, i))
         return i
 
-    def nine(name, specs, border, padding, sticky="nsew"):
+    def nine(name, specs, border, padding, sticky="nsew", width=1, height=1):
         """9-slice képelem: az első kép az alap, a többi állapotonként.
         `width/height=1`: a kép SZÉLES (a csempézés miatt, 13.8), de a widget
-        mérete a tartalmához igazodjon, ne a képhez."""
+        mérete a tartalmához igazodjon, ne a képhez. Kivétel a görgetősáv: annak
+        nincs tartalma, a vastagságát nekünk kell kérnünk (lásd SB_THICK)."""
         base, rest = specs[0], specs[1:]
         spec = [(*states, img(data)) for states, data in rest]
         st.element_create(name, "image", img(base), *spec, border=border,
-                          sticky=sticky, padding=padding, width=1, height=1)
+                          sticky=sticky, padding=padding, width=width, height=height)
 
     if not _UI_READY:                       # elemet csak egyszer lehet létrehozni
         # Minden kép a SAJÁT felületére égetve (B: lap, W: fehér kártya) —
@@ -8628,8 +9538,13 @@ def build_theme(root):
                               ("pressed", img(_dot_png(17, UI["accent_lo"], bg=B))),
                               ("active", img(_dot_png(17, UI["accent_hi"], bg=B))))
             SB = (16, 240) if vert else (240, 16)
+            # A sáv a VASTAGSÁGÁT kérje: width/height=1-gyel minden görgetősáv 1×1
+            # képpontot kért, és ahol a geometriakezelő nem feszítette ki (grid
+            # sticky="ns", pack fill="y"), ott láthatatlan maradt — a Szerkesztés
+            # és az Arckép vásznán nagyítva sem volt csúszka (mérve: 1×1 px; 19.1).
             nine(f"{o}.Scrollbar.trough", [round_png(SB, 0, B, None, 0, bg=B)],
-                 2, (0, 0))
+                 2, (0, 0), width=SB_THICK if vert else 1,
+                 height=1 if vert else SB_THICK)
             nine(f"{o}.Scrollbar.thumb", [
                 round_png(SB, 5, "#c6cfdf", None, 0, pad=2.5, bg=B),
                 (("pressed",), round_png(SB, 5, UI["accent"], None, 0, pad=2.5,
@@ -8896,6 +9811,9 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+24")
         self.minsize(940, 620)
         build_theme(self)
+        # Nagyított kijelzőn a feliratok vége ne vágódjon le (TextSlack).
+        self.scale_factor = _SCALE[0] = screen_scale()
+        self.slack = TextSlack(self, self.scale_factor)
         self.folder = tk.StringVar(value=recall("munkamappa", script_dir()))
         self._status = tk.StringVar(value="Kész.")
 
@@ -8926,9 +9844,15 @@ class App(tk.Tk):
                    command=self.refresh_all).pack(side="right")
         ttk.Button(inner, text="Módosítás…", style="Head.TButton",
                    command=self._pick_folder).pack(side="right", padx=8)
-        ttk.Entry(inner, textvariable=self.folder, style="Head.TEntry",
-                  font=FONT_SM).pack(side="right", fill="x", expand=True,
-                                     padx=(0, 6))
+        fe = ttk.Entry(inner, textvariable=self.folder, style="Head.TEntry", font=FONT_SM)
+        fe.pack(side="right", fill="x", expand=True, padx=(0, 6))
+        # Szűk ablakban az útnak csak a VÉGE fér ki: az látsszon (a munkamappa
+        # neve), ne a mindig egyforma „C:\Users\…” eleje.
+        for ev in ("<Configure>", "<FocusOut>"):
+            fe.bind(ev, lambda e: e.widget.xview_moveto(1.0), add="+")
+        self.folder.trace_add("write", lambda *a: self.after_idle(
+            lambda: fe.xview_moveto(1.0)))
+        self.folder_entry = fe
         ttk.Label(inner, text="MUNKAMAPPA", style="HeadMuted.TLabel").pack(
             side="right", padx=(0, 10))
         line = tk.Canvas(head, height=3, highlightthickness=0, bg=UI["card"])
@@ -8971,7 +9895,29 @@ class App(tk.Tk):
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
 
+        # Alapértelmezett dolgozó, közvetlenül a munkamappa alatt, a fülsor jobb
+        # végén: az Összeállító és az Arckép dolgozóválasztója, valamint a
+        # Szerkesztés, Összefűzés és Raszterizálás fájllistája ezt veszi át — nem kell
+        # fülenként újra kiválasztani. Az Iktató NEM: annak épp az a dolga, hogy a
+        # köteget több dolgozó között ossza szét. A fejlécbe nem fért: 960 px-es
+        # ablakban a munkamappa mezője kiszorult volna (kepek-pdf-terv.md 19.3).
+        self._worker = ""                  # az érvényes (feloldott) dolgozói mappa neve
+        self.worker = tk.StringVar(value="")
+        wk = ttk.Frame(self)
+        ttk.Label(wk, text="ALAPÉRTELMEZETT DOLGOZÓ", style="Dim.TLabel").pack(
+            side="left", padx=(0, 8))
+        self.worker_cb = ttk.Combobox(wk, textvariable=self.worker, width=20,
+                                      postcommand=self._worker_values)
+        self.worker_cb.pack(side="left")
+        for ev in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
+            self.worker_cb.bind(ev, self._worker_commit)
+        wk.place(in_=self.nb, relx=1.0, x=-14, y=7, anchor="ne")
+        wk.lift()
+        self.worker_bar = wk
+
         decorate(self)                   # ikonok és elsődleges stílus a gombokra
+        w = recall("dolgozo", "")
+        self._worker = "" if w == NO_WORKER else w   # a refresh_all ellenőrzi
         self.refresh_all()
         self.after(300, self._check_deps)
 
@@ -8994,8 +9940,71 @@ class App(tk.Tk):
             self.refresh_all()
 
     def refresh_all(self):
+        folder = self.folder.get()
+        try:
+            dirs = worker_dirs(folder)
+        except OSError:
+            dirs = []
+        if self._worker not in dirs:          # másik munkamappa: a dolgozó nem él tovább
+            self._worker = ""
+        if self.worker.get() != self._worker:
+            self.worker.set(self._worker)
         for tab in self.tabs.values():
-            tab.set_folder(self.folder.get())
+            tab.set_folder(folder)
+        for tab in self.tabs.values():        # frissítéskor csak az üres választóba
+            if hasattr(tab, "set_worker"):
+                tab.set_worker(self._worker, force=False)
+
+    # -- alapértelmezett dolgozó --
+    def worker_name(self) -> str:
+        return self._worker
+
+    def list_target(self):
+        """Hol keressenek a fájllisták: a kiválasztott dolgozó mappájában (a két
+        alkönyvtárával együtt), vagy ha nincs, a munkamappában. -> (mappa, almappák)"""
+        f = self.folder.get()
+        if self._worker:
+            d = os.path.join(f, self._worker)
+            if os.path.isdir(d):
+                return d, WORK_DIRS
+        return f, ()
+
+    def _worker_values(self):
+        """A legördülő: a beírt részletre szűkítve (mint a fülek WorkerPickere)."""
+        try:
+            dirs = worker_dirs(self.folder.get())
+        except OSError:
+            dirs = []
+        txt = self.worker.get().strip()
+        who, hits = resolve_worker("" if txt == NO_WORKER else txt, dirs)
+        self.worker_cb.configure(values=[NO_WORKER] + (dirs if who else hits))
+
+    def _worker_commit(self, _e=None):
+        txt = self.worker.get().strip()
+        if txt in ("", NO_WORKER):
+            name = ""
+        else:
+            try:
+                dirs = worker_dirs(self.folder.get())
+            except OSError:
+                dirs = []
+            name, hits = resolve_worker(txt, dirs)
+            if not name:
+                self.status(f"Dolgozó: {len(hits)} találat — pontosíts" if hits
+                            else f"Nincs ilyen dolgozói mappa: „{txt}”")
+                self.worker.set(self._worker)
+                return
+        self.worker.set(name)
+        if name == self._worker:
+            return
+        self._worker = name
+        remember("dolgozo", name or NO_WORKER)
+        for tab in self.tabs.values():        # váltáskor minden fülön átveszik
+            if hasattr(tab, "set_worker"):
+                tab.set_worker(name, force=True)
+        self.status(f"Alapértelmezett dolgozó: {name} — az Összeállító, az Arckép és a "
+                    "fájllisták ezt használják (az Iktató nem)." if name else
+                    "Nincs alapértelmezett dolgozó: a fájllisták a munkamappát mutatják.")
 
     def active_tab(self):
         """A látható fül — az Eszközök alfüléig lemegy (gyorsbillentyűk!)."""
@@ -10159,6 +11168,50 @@ def _selftest() -> int:
     ck("ugyanaz a bekezdés Calibrivel átmegy",
        para_font_error(p5, {"family": "Calibri", "bold": True}) == "")
     d4.close()
+
+    print("ÉLŐ SZÖVEG (szerkeszto-terv.md 21.)")
+    # A mentés (subset_fonts) a betűt „Calibri Regular” néven teszi vissza: a saját
+    # mentett iratunk bekezdését is fel kell ismerni.
+    ck("mentés utáni betűnév: „X+Calibri Bold Italic” → Calibri",
+       span_style({"font": "ABCDEF+Calibri Bold Italic", "flags": 18})
+       == ("Calibri", True, True))
+    ck("…de a családnév része marad: Times New Roman",
+       span_style({"font": "Times New Roman Bold", "flags": 16})[0] == "Times New Roman")
+    ck("ugyanaz a betűobjektum jön vissza (gyorsítótár: élő formázás)",
+       edit_font("Helvetica", True) is edit_font("Helvetica", True))
+    d5 = pymupdf.open()
+    g5 = d5.new_page(width=595, height=842)
+    t5 = PlacedText(0, 100, 200, "Kőműves Győző", "Helvetica", 12)
+    b5 = placed_bbox(t5)
+    ck("befoglaló: az alapvonal köré, a szöveg szélességével",
+       b5.y0 < 200 < b5.y1 and abs(b5.width - edit_font("Helvetica").text_length(
+           "Kőműves Győző", 12)) < 0.01, b5)
+    ck("üres szövegnek is van kijelölhető szélessége",
+       placed_bbox(PlacedText(0, 0, 50, "")).width > 0)
+    t5u = copy.copy(t5)
+    t5u.underline = True
+    ck("aláhúzással lejjebb ér", placed_bbox(t5u).y1 > b5.y1 - 0.01)
+    pix5, org5 = placed_pixmap(t5, 2.0)
+    ck("előnézet: átlátszó kép, a befoglaló méretén",
+       pix5.alpha and abs(pix5.width - (b5.width + 2) * 2) <= 2
+       and abs(org5[0] - (b5.x0 - 1)) < 1e-6, (pix5.width, pix5.alpha, org5))
+    ck("az előnézet a lapot nem érinti", g5.get_text() == "")
+    t6 = PlacedText(0, 300, 400, "második", "Helvetica", 10, bold=True,
+                    color=(1.0, 0.0, 0.0))
+    bake_placed(d5, [t5u, t6, PlacedText(5, 1, 1, "nem létező lap")])
+    sp5 = {s["text"]: s for b in g5.get_text("dict")["blocks"] for ln in b.get("lines", [])
+           for s in ln["spans"]}
+    k5 = sp5.get("Kőműves Győző")
+    ck("mentéskor a lapra kerül, a helyén", k5 is not None and
+       abs(k5["origin"][0] - 100) < 0.01 and abs(k5["origin"][1] - 200) < 0.01, list(sp5))
+    ck("félkövér és piros", "második" in sp5 and sp5["második"]["flags"] & 16
+       and sp5["második"]["color"] == 0xFF0000, sp5.get("második"))
+    ck("az aláhúzás vonalként", any(it[0] == "l" for g in g5.get_drawings() for it in g["items"]))
+    ck("hiányzó karakter jelzése", placed_missing(
+        PlacedText(0, 0, 0, "a中", "Helvetica")) == "中")
+    d5.close()
+    ck("lista a dolgozó két alkönyvtárával (relatív úttal)",
+       list_files_in(script_dir(), (".py",), ("nincs-ilyen",)) == list_files(script_dir(), (".py",)))
 
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")

@@ -9,7 +9,8 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
-és a TAJ-szabályoké `szerkeszto-terv.md`, 14–19. — **új döntést a
+és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. (a bővítési javaslatok: 22.), a
+közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
 
@@ -21,8 +22,10 @@ python pdf-muhely.py --test       # csak az önteszt (gyors, ablak nélkül)
 ```
 
 Kódváltozás után mindig futtasd; GUI-t érintő változásnál a `test/gui.py`-t is
-bővítsd. A GUI-teszt a `script_dir`-t ideiglenes mappára irányítja — a valódi
-beállításfájlokhoz tesztből ne nyúlj.
+bővítsd. Nagyított (125–200%-os) Windows-kijelző utánzása:
+`PDF_MUHELY_SKALA=1.5 python test/gui.py` (`kepek-pdf-terv.md` 19.2). A GUI-teszt
+a `script_dir`-t ideiglenes mappára irányítja — a valódi beállításfájlokhoz
+tesztből ne nyúlj.
 
 **A megjelenést egyik teszt sem méri.** Ha a felülethez nyúlsz, nézd meg:
 

@@ -1387,3 +1387,106 @@ beégetve — így a következő névváltoztatás nem töri el a teszteket.
 ### 18.4 Ellenőrzés
 
 Önteszt **260/260** (új: „NÉVSORREND: A DOKTÍPUS ELÖL”, 5 ellenőrzés), GUI 179/179.
+
+---
+
+## 19. Felületi javítások (2026-10-14): görgetősáv, nagyított kijelző, alapértelmezett dolgozó
+
+### 19.1 A görgetősáv 1×1 képpontot kért
+
+A bejelentés: a Szerkesztés fülön nagyítva nem jelenik meg oldalsó csúszka, függőlegesen
+csak görgővel, vízszintesen sehogy sem lehet mozogni. A görgetősávok **megvoltak** a
+kódban — csak láthatatlanul. Mérve: mindkét `ttk.Scrollbar` **1×1 képpontot** kért.
+
+**Ok.** A téma 9-slice képelemei `width=1, height=1`-gyel készülnek (13.8: a kép széles,
+a widget a *tartalmához* igazodjon). A görgetősávnak viszont nincs tartalma: így a
+vastagsága is 1 képpont lett. Ahol a geometriakezelő kifeszítette (`scroll_panel`:
+`sticky="nsew"` + `minsize`), ott látszott — ezért nem tűnt fel —, ahol nem (Szerkesztés
+és Arckép vászna: `sticky="ns"`), ott nem.
+
+**Javítás a témában, egy helyen:** a vályú (`Scrollbar.trough`) a vastagságát kéri
+(`SB_THICK = 12`). Ez minden görgetősávot rendbe tesz, a jövőbelieket is. A
+Szerkesztés vászna ezen felül: Shift+görgő vízszintesen, középső gombbal húzva szabad
+mozgatás, a Ctrl+görgő a kurzor alatti pont körül nagyít (eddig a lap tetejére ugrott)
+— részletek: `szerkeszto-terv.md` 21.4.
+
+### 19.2 Nagyított kijelző: a feliratok vége levágódott
+
+A bejelentés: nagyobb felbontáson (Windows-nagyítással) az oldalsó menü feliratai
+levágódnak — „Szöveg és X”-ből az X fele, „Kitakarás”-ból az s fele látszik.
+
+**Ok** (a 16.5 sejtése, most a bal panelen is): az app **GDI-skálázással** fut
+(`SetProcessDpiAwarenessContext(-5)`). A Tk a szöveget a logikai (96 DPI-s) betűvel
+*méri*, a Windows a valódi felbontás betűjével *rajzolja* — 125–200%-on ez néhány
+százalékkal szélesebb. A rádiógomb, a jelölő és a címke pontosan a kimért szélességet
+kapja: a szöveg vége lecsúszik. A gombnál nem látszik, mert ott a felirat középen ül,
+két oldalt 10 képpont paddinggel.
+
+**Mit nem csináltunk, és miért:** teljes DPI-tudatosság (Per-Monitor v2) mellett a Tk a
+szöveget jól mérné, de **minden** pixelméret (oldalpanelek, csempék, téma-képek, ikonok)
+skálázatlan maradna — a 150%-os betű a 100%-os panelbe préselődne. Ez a 13.7-es döntés
+újranyitása lenne, a teljes felület átméretezésével.
+
+**A javítás (`TextSlack`, osztályszintű `<Configure>`-kötés):**
+
+- induláskor lemérjük a valódi nagyítást (`screen_scale()`: a szálat egy pillanatra
+  DPI-tudatosra állítva `GetDpiForSystem`); **100%-on semmi nem változik**;
+- nagyított kijelzőn minden `TLabel`, `TCheckbutton`, `TRadiobutton` jobb oldali
+  ráhagyást kap: a **kimért szövegszélesség 8%-a** (`TEXT_SLACK`) + 2 képpont, a stílus
+  saját paddingjéhez adva — arányos, mert a különbség is arányos a szöveg hosszával;
+- **csak az kapja, amit a geometriakezelő nem feszít ki** (`pack fill=x` / `grid
+  sticky=ew`): a kifeszítettnek van helye, ott a ráhagyás csak a sort szélesítené;
+- a kódban párnázott feliratot (a fejléc `DPI_SLACK`-je) nem bántja; a
+  textvariable-ös címkénél az új szövegre újraszámol (a `<Configure>` szövegváltáskor
+  is jön); a keretek címe (`TLabelframe.Label`) stílusszintű 16 képpontot kap;
+- a fix szélességű oldalpanelek (`scroll_panel`) ugyanennyivel szélesebbek, különben a
+  megnőtt sorok (a négy igazítás-rádiógomb a bekezdéspanelen) a panel szélén
+  csúsznának le — ezt a mérés fogta meg (94 px kellett, 88 jutott);
+- a Szerkesztés eszközválasztó rádiógombjai ráadásul `fill="x"`-szel a panel teljes
+  szélességét kapják.
+
+**Próba fejlesztés közben:** `PDF_MUHELY_SKALA=1.5` felülírja a mért nagyítást (a GUI-teszt
+így is lefut: 150%-on is minden ellenőrzés zöld). **Amit nem tudtam igazolni:** a
+fejlesztőgép 100%-on fut, a GDI-túlrajzolás mértékét (a 8%-ot) valódi 150%-os
+Windowson érdemes ránézni — `python tools/ui-kep.py 5 szerkesztes.png`.
+
+Ami nagyított kijelzőn **marad**: a képeket (bélyegkép, lapelőnézet) a Windows továbbra
+is felnagyítja, ezért kissé lágyabbak (13.7 óta ismert, a GDI-skálázás ára).
+
+### 19.3 Alapértelmezett dolgozó, a munkamappa alatt
+
+A kérés: a munkamappa mellett lehessen kiválasztani az alapértelmezett dolgozót is,
+hogy a modulokban ne kelljen újra kiválasztani — **az Iktatóra ne vonatkozzon**, annak
+épp az a dolga, hogy a köteget több dolgozó között ossza szét.
+
+**Hely:** a fő fülsor jobb vége, közvetlenül a munkamappa sora alatt
+(„ALAPÉRTELMEZETT DOLGOZÓ [▾]”). A fejlécbe nem fért: 960 px-es ablakban a
+munkamappa mezője teljesen kiszorult (felületfotón mérve); a fülsor jobb oldala minden
+ablakméretben üres. A GUI-teszt 940 px-en méri, hogy fület nem takar.
+
+**Viselkedés:**
+
+| hol | mit kap |
+|---|---|
+| Összeállító, Arckép | a dolgozóválasztójuk (`WorkerPicker`) |
+| Arckép | a két fájllista a választott dolgozó mappáját mutatja, **mindkét alkönyvtárral** — a nyomtatvány és az arckép a `01_Elokeszitett`-ben él; a lista eddig a munkamappa gyökerét mutatta |
+| Szerkesztés, Összefűzés, Raszterizálás | a fájllista a dolgozó mappája (`01_…\…`, `02_…\…` relatív névvel), a keret címe a nevét is mutatja |
+| Iktató, Áttekintő | **semmi** |
+
+- **Váltáskor** minden fül átveszi; **frissítéskor** (Frissítés gomb, mentés után) csak
+  az üres választóba kerül — a fülön kézzel választott dolgozó megmarad.
+- A mező a fülek választójához hasonlóan **részletre** is feloldódik („kiss an” → Kiss
+  Anna); ismeretlen névnél az előző marad, és az állapotsor szól. A „— nincs —” elem
+  törli: a listák újra a munkamappát mutatják.
+- A választás megmarad a következő indításra (`emlekezet.json`, `dolgozo` kulcs);
+  másik munkamappára váltva, ha ott nincs ilyen dolgozó, magától törlődik.
+- A fejléc munkamappa-mezője szűk ablakban az út **végét** mutatja (a mappa nevét),
+  nem a mindig egyforma `C:\Users\…` elejét.
+
+### 19.4 Ellenőrzés
+
+GUI **240/241** (Linuxon, Xvfb alatt; az egy bukás a Windows-ablakrégiós mérés, ami ott
+nem futtatható — ez eddig is így volt). Új szakaszok: „ALAPÉRTELMEZETT DOLGOZÓ
+(A MUNKAMAPPA ALATT)” (11), „NAGYÍTOTT KIJELZŐ” (7), a fülsor-ütközés a „MINDEN FÜL” szakaszban,
+a görgetősáv a „SZERKESZTŐ: GÖRGETŐSÁV, NAGYÍTÁS, LAPOZÁS”-ban. `PDF_MUHELY_SKALA=1.5`
+mellett ugyanez az eredmény.
