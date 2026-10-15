@@ -18,6 +18,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | Eszközök → Arckép elhelyezés | fénykép **körülvágása** és ráhelyezése egy PDF-nyomtatványra, majd iktatás a feltölthetőbe |
 | Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, **húzható, élőben formázható új szöveg**, **többsoros szövegdoboz**, X, **bekezdés-formázás**, **űrlapmezők** (DocGen-sablon), kitakarás — és az egész iratra: **keresés és csere** előnézettel, **személyes adatok kitakarása** (TAJ, adóazonosító, útlevél…), **fejléc, lábléc, oldalszám, bélyeg, vízjel**, **űrlap kitöltése és beégetése**, **szövegfelismerés** (OCR) a szkennelt iratokra |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
+| Eszközök → MD → DOCX | **Markdown-fájlból szerkeszthető Word-irat** (.md → .docx) |
 
 A program **megjegyzi** az utoljára használt munkamappát, az alapértelmezett
 dolgozót, a mellékletek mappáját és az Iktatóban választott doktípust
@@ -161,6 +162,25 @@ az élő szövegé és a valós idejű formázásé a 21., a pdfrw és más proj
 a 22., a szövegdoboz, a keresés-csere, a személyes adat, a fejléc-bélyeg, az űrlap és
 a szövegfelismerés a 23.
 
+## MD → DOCX: Markdownból Word-irat
+
+Az **Eszközök → MD → DOCX** alfülön egy `.md` fájlból szerkeszthető `.docx` lesz
+(pl. egy AI-val írt vagy tervdokumentum-szöveg kollégának, beadásra). A lista a
+munkamappát (vagy az alapértelmezett dolgozó mappáját) mutatja; másik mappából a
+**Tallózás…** hozza. Az **Átalakítás és mentés…** a forrás mellé, azonos néven ajánlja
+fel a mentést; a kész iratot megnyitja (kikapcsolható).
+
+Átkerül: címsorok (`#` és aláhúzásos), bekezdések, **félkövér**, *dőlt*, ~~áthúzott~~,
+`kód` és kódblokk, felsorolás és számozott lista (beágyazva is, a számozás listánként
+újraindul), feladatlista (☐ / ☒), táblázat (oszlopigazítással, kiemelt fejléccel),
+idézet, vízszintes vonal, kattintható link. A Word **saját stílusait** kapja
+(Címsor 1…, Felsorolás…, Idézet), így a kész irat a Wordben tovább formázható; A4,
+2,5 cm-es margó, Calibri 11, magyar helyesírás-ellenőrzés. Kép **nem** kerül át: a
+helyén `[kép: …]` jelölő áll. Az YAML-előfej és a `<!-- megjegyzés -->` kimarad.
+
+Kell hozzá a **python-docx** (`pip install python-docx`); nélküle a program elindul,
+csak ez az alfül szól. Döntések: `szerkeszto-terv.md` 24.
+
 ## A felület
 
 Világos, levegős felület: fejléc (név, verzió, munkamappa) akcentuscsíkkal,
@@ -243,11 +263,13 @@ tévesen kiválasztott munkamappában — mondjuk a Letöltésekben vagy egy ké
 
 ## Telepítés és indítás
 
-Python 3.10+ és PyMuPDF kell (a tkinter a Python része):
+Python 3.10+, PyMuPDF és python-docx kell (a tkinter a Python része):
 
 ```bash
-pip install pymupdf
+pip install pymupdf python-docx
 ```
+
+(A python-docx csak az MD → DOCX alfülhöz kell.)
 
 ```bash
 python pdf-muhely.py

@@ -1908,6 +1908,524 @@ class RasterTab(ttk.Frame):
         self.app.refresh_all()
 
 
+# ─────────────────────── Eszközök: MD → DOCX ───────────────────────
+# Markdown-fájlból szerkeszthető Word-irat (szerkeszto-terv.md 24.). A Markdownt saját,
+# kicsi elemző olvassa (címsor, bekezdés, félkövér/dőlt/áthúzott, kód, lista beágyazva,
+# táblázat, idézet, vízszintes vonal, link); a .docx-et a python-docx írja, a Word
+# saját stílusaival (Heading 1…, List Bullet…), hogy a kész irat tovább szerkeszthető
+# legyen. Kép nem kerül át: a helyén „[kép: …]” jelölő áll.
+MD_EXT = (".md", ".markdown")
+MD_FONT, MD_SIZE, MD_MONO = "Calibri", 11, "Consolas"
+
+_MD_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_MD_HEAD = re.compile(r"^ {0,3}(#{1,6})(?:\s+(.*?))?\s*$")
+_MD_HR = re.compile(r"^ {0,3}([-*_])(?:\s*\1){2,}\s*$")
+_MD_ITEM = re.compile(r"^(\s*)([-*+]|\d{1,9}[.)])(\s+|$)(.*)$")
+_MD_QUOTE = re.compile(r"^ {0,3}> ?(.*)$")
+_MD_TSEP = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+_MD_SETEXT = re.compile(r"^ {0,3}(=+|-+)\s*$")
+_MD_INLINE = re.compile(
+    r"\\(?P<esc>[\\`*_{}\[\]()#+\-.!|~<>])"
+    r"|(?P<tick>`+)(?P<code>.+?)(?P=tick)"
+    r"|!\[(?P<alt>[^\]]*)\]\([^)]*\)"
+    r"|\[(?P<ltxt>(?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?(?P<url>[^)\s>]*)>?(?:\s+\"[^\"]*\")?\s*\)"
+    r"|<(?P<auto>(?:https?://|mailto:)[^>\s]+)>"
+    r"|(?P<bare>https?://[^\s<>()]*[^\s<>().,;:!?'\"])"
+    r"|\*\*\*(?P<bi>\S(?:.*?\S)??)\*\*\*"
+    r"|(?<!\w)___(?P<bi2>\S(?:.*?\S)??)___(?!\w)"
+    r"|\*\*(?P<b>\S(?:.*?\S)??)\*\*"
+    r"|(?<!\w)__(?P<b2>\S(?:.*?\S)??)__(?!\w)"
+    r"|~~(?P<s>\S(?:.*?\S)??)~~"
+    # Dőlt: a belsejében félkövér is lehet (*… **x** …*); a záró * nem egy ** fele.
+    r"|\*(?P<i>[^\s*](?:\*\*.+?\*\*|[^*])*?(?<!\s))\*(?!\*)"
+    r"|(?<!\w)_(?P<i2>[^\s_](?:.*?[^\s_])??)_(?!\w)"
+    r"|(?P<br><br\s*/?>)", re.IGNORECASE)
+
+
+def md_inline(text: str, fmt: dict = None) -> list:
+    """Sorközi jelölés -> [(szöveg, formátum)]. A formátum kulcsai: b, i, s (áthúzott),
+    code, link (URL), img (kép helye). A sortörés „\\n” a szövegben."""
+    fmt = fmt or {}
+    out, pos = [], 0
+    for m in _MD_INLINE.finditer(text):
+        if m.start() > pos:
+            out.append((text[pos:m.start()], fmt))
+        pos = m.end()
+        g = m.groupdict()
+        if g["esc"] is not None:
+            out.append((g["esc"], fmt))
+        elif g["tick"]:
+            out.append((g["code"].strip() or g["code"], {**fmt, "code": True}))
+        elif g["alt"] is not None:
+            out.append((f"[kép: {g['alt'] or 'kép'}]", {**fmt, "img": True}))
+        elif g["ltxt"] is not None:
+            out += md_inline(g["ltxt"], {**fmt, "link": g["url"]})
+        elif g["auto"] or g["bare"]:
+            u = g["auto"] or g["bare"]
+            out.append((u[7:] if u.startswith("mailto:") else u, {**fmt, "link": u}))
+        elif g["bi"] or g["bi2"]:
+            out += md_inline(g["bi"] or g["bi2"], {**fmt, "b": True, "i": True})
+        elif g["b"] or g["b2"]:
+            out += md_inline(g["b"] or g["b2"], {**fmt, "b": True})
+        elif g["s"]:
+            out += md_inline(g["s"], {**fmt, "s": True})
+        elif g["i"] or g["i2"]:
+            out += md_inline(g["i"] or g["i2"], {**fmt, "i": True})
+        else:
+            out.append(("\n", fmt))
+    if pos < len(text):
+        out.append((text[pos:], fmt))
+    return out
+
+
+def _md_cells(line: str) -> list:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", s)]
+
+
+def _md_starts_block(line: str) -> bool:
+    """Félbeszakítja-e ez a sor a bekezdést."""
+    return bool(_MD_FENCE.match(line) or _MD_HEAD.match(line) or _MD_HR.match(line)
+                or _MD_QUOTE.match(line) or _MD_ITEM.match(line))
+
+
+def md_blocks(lines: list) -> list:
+    """Sorok -> blokkok:
+      ("h", szint, szöveg) · ("p", szöveg) · ("code", szöveg) · ("hr",)
+      ("quote", blokkok) · ("table", fejléc, igazítások, sorok)
+      ("list", számozott, kezdő, [(szöveg, al-blokkok), …])"""
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        m = _MD_FENCE.match(line)
+        if m:
+            fence, body, i = m.group(1), [], i + 1
+            while i < n and not lines[i].strip().startswith(fence):
+                body.append(lines[i])
+                i += 1
+            out.append(("code", "\n".join(body)))
+            i += 1
+            continue
+        if line.startswith(("    ", "\t")):            # behúzott kódblokk
+            body = []
+            while i < n and (lines[i].startswith(("    ", "\t")) or not lines[i].strip()):
+                body.append(lines[i][4:] if lines[i].startswith("    ") else lines[i][1:])
+                i += 1
+            out.append(("code", "\n".join(body).rstrip("\n")))
+            continue
+        m = _MD_HEAD.match(line)
+        if m:
+            out.append(("h", len(m.group(1)), re.sub(r"\s+#+$", "", m.group(2) or "")))
+            i += 1
+            continue
+        if _MD_HR.match(line):
+            out.append(("hr",))
+            i += 1
+            continue
+        if _MD_QUOTE.match(line):
+            body = []
+            while i < n and lines[i].strip():
+                q = _MD_QUOTE.match(lines[i])
+                body.append(q.group(1) if q else lines[i])
+                i += 1
+            out.append(("quote", md_blocks(body)))
+            continue
+        if "|" in line and i + 1 < n and _MD_TSEP.match(lines[i + 1]) and "-" in lines[i + 1]:
+            head = _md_cells(line)
+            aligns = []
+            for c in _md_cells(lines[i + 1]):
+                aligns.append("center" if c.startswith(":") and c.endswith(":") else
+                              "right" if c.endswith(":") else "left")
+            rows, i = [], i + 2
+            while i < n and lines[i].strip() and "|" in lines[i]:
+                rows.append(_md_cells(lines[i]))
+                i += 1
+            out.append(("table", head, aligns, rows))
+            continue
+        m = _MD_ITEM.match(line)
+        if m:
+            i = _md_list(lines, i, out)
+            continue
+        para, i = [line], i + 1                    # bekezdés
+        while i < n and lines[i].strip() and not _md_starts_block(lines[i]) \
+                and not _MD_SETEXT.match(lines[i]):
+            para.append(lines[i])
+            i += 1
+        if i < n and _MD_SETEXT.match(lines[i]) and len(para) and lines[i].strip():
+            level = 1 if lines[i].strip()[0] == "=" else 2
+            out.append(("h", level, " ".join(p.strip() for p in para)))
+            i += 1
+            continue
+        text = ""
+        for p in para:                              # két szóköz / \ a sor végén: sortörés
+            hard = p.endswith("  ") or p.rstrip().endswith("\\")
+            p = p.strip()
+            if p.endswith("\\"):
+                p = p[:-1]
+            text += p + ("\n" if hard else " ")
+        out.append(("p", text.strip()))
+    return out
+
+
+def _md_list(lines: list, i: int, out: list) -> int:
+    """Egy lista a(z) i. sortól; a tételeket rekurzívan bontja (beágyazott lista,
+    több bekezdés). -> a lista utáni sor indexe."""
+    m = _MD_ITEM.match(lines[i])
+    ordered = m.group(2)[0].isdigit()
+    start = int(m.group(2)[:-1]) if ordered else 1
+    indent = len(m.group(1).expandtabs(4))
+    items, n = [], len(lines)
+    while i < n:
+        m = _MD_ITEM.match(lines[i])
+        if not m or len(m.group(1).expandtabs(4)) != indent \
+                or m.group(2)[0].isdigit() != ordered:
+            break
+        content = indent + len(m.group(2)) + max(1, min(len(m.group(3)), 4))
+        body, i = [m.group(4)], i + 1
+        while i < n:
+            ln = lines[i]
+            lead = len(ln.expandtabs(4)) - len(ln.expandtabs(4).lstrip())
+            if not ln.strip():
+                # Üres sor után csak a behúzott folytatás tartozik a tételhez.
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n and len(lines[j].expandtabs(4)) - len(lines[j].expandtabs(4).lstrip()) >= content:
+                    body.append("")
+                    i += 1
+                    continue
+                break
+            if lead >= content or (lead > indent and _MD_ITEM.match(ln)):
+                body.append(ln.expandtabs(4)[min(lead, content):])
+            elif not _md_starts_block(ln) and body[-1].strip():
+                body.append(ln.strip())             # „lusta” folytatósor
+            else:
+                break
+            i += 1
+        sub = md_blocks(body)
+        text = sub.pop(0)[1] if sub and sub[0][0] == "p" else ""
+        items.append((text, sub))
+        while i < n and not lines[i].strip():       # üres sor a tételek között
+            j = i
+            while j < n and not lines[j].strip():
+                j += 1
+            mm = _MD_ITEM.match(lines[j]) if j < n else None
+            # Üres sor után az „1.” új számozott listát kezd (a CommonMark szerint
+            # folytatná, de a szerző ilyenkor újrakezdést ír).
+            if mm and len(mm.group(1).expandtabs(4)) == indent \
+                    and not (ordered and mm.group(2)[:-1] == "1"):
+                i = j
+            break
+    out.append(("list", ordered, start, items))
+    return i
+
+
+def md_read(path: str) -> str:
+    """Markdown-fájl szövege: UTF-8 (BOM-mal is), különben a Windows régi kódlapja."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1250", errors="replace")
+
+
+# A Word a pPr/rPr gyerekeinek SORRENDJÉRE szigorú (sémasorrend): a végére fűzött
+# w:shd után álló w:tabs vagy w:jc már „olvashatatlan tartalom”. Ezért a beszúrás az
+# első, sémában utána következő elem elé történik.
+_MD_PPR_AFTER_SHD = (
+    "w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+    "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+    "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+    "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+    "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr",
+    "w:pPrChange")
+_MD_RPR_AFTER_SHD = ("w:fitText", "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang",
+                     "w:eastAsianLayout", "w:specVanish", "w:oMath")
+
+
+def _md_put(parent, el, after: tuple):
+    """`el` a `parent`-be, az `after` elemei közül az első meglévő elé."""
+    parent.insert_element_before(el, *after)
+
+
+def _md_runs(par, runs):
+    """A sorközi darabok futamokként; a link valódi hivatkozás (w:hyperlink)."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+    for text, fmt in runs:
+        if not text:
+            continue
+        url = fmt.get("link") or ""
+        web = url.startswith(("http://", "https://", "mailto:"))
+        r = par.add_run()
+        for k, part in enumerate(text.split("\n")):
+            if k:
+                r.add_break()
+            if part:
+                r.add_text(part)
+        f = r.font
+        f.bold = fmt.get("b") or None
+        f.italic = fmt.get("i") or fmt.get("img") or None
+        f.strike = fmt.get("s") or None
+        if fmt.get("code"):
+            f.name = MD_MONO
+            f.size = Pt(MD_SIZE - 1)
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:val"), "clear")
+            shd.set(qn("w:fill"), "F2F2F2")
+            _md_put(r._r.get_or_add_rPr(), shd, _MD_RPR_AFTER_SHD)
+        if fmt.get("img"):
+            f.color.rgb = RGBColor(0x80, 0x80, 0x80)
+        if web:
+            f.color.rgb = RGBColor(0x05, 0x63, 0xC1)
+            f.underline = True
+            rid = par.part.relate_to(url, RT.HYPERLINK, is_external=True)
+            link = OxmlElement("w:hyperlink")
+            link.set(qn("r:id"), rid)
+            r._r.addprevious(link)
+            link.append(r._r)
+
+
+def _md_shade(par, fill="F2F2F2"):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:fill"), fill)
+    _md_put(par._p.get_or_add_pPr(), shd, _MD_PPR_AFTER_SHD)
+
+
+def _md_hr(par):
+    """Vízszintes vonal: a bekezdés alsó szegélye."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    bdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    for k, v in (("val", "single"), ("sz", "6"), ("space", "1"), ("color", "A6A6A6")):
+        bottom.set(qn(f"w:{k}"), v)
+    bdr.append(bottom)
+    _md_put(par._p.get_or_add_pPr(), bdr, ("w:shd",) + _MD_PPR_AFTER_SHD)
+
+
+def _md_numbering(doc, style: str, start: int) -> int:
+    """Új számozás a stílus listájára — minden számozott lista 1-től (vagy a
+    Markdownban megadott számtól) indul, nem folytatja az előzőt."""
+    numbering = doc.part.numbering_part.element
+    num_id = doc.styles[style].element.pPr.numPr.numId.val
+    abstract = numbering.num_having_numId(num_id).abstractNumId.val
+    num = numbering.add_num(abstract)
+    num.add_lvlOverride(ilvl=0).add_startOverride(start)
+    return num.numId
+
+
+def _md_write(doc, blocks, depth: int = 0, quote: bool = False):
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+    sfx = "" if depth <= 1 else f" {min(depth, 3)}"
+    for b in blocks:
+        kind = b[0]
+        if kind == "h":
+            _md_runs(doc.add_paragraph(style=f"Heading {b[1]}"), md_inline(b[2]))
+        elif kind == "p":
+            style = "Quote" if quote else (f"List Continue{sfx}" if depth else None)
+            _md_runs(doc.add_paragraph(style=style), md_inline(b[1]))
+        elif kind == "code":
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(6)
+            _md_shade(p)
+            r = p.add_run()
+            r.font.name, r.font.size = MD_MONO, Pt(MD_SIZE - 1.5)
+            for k, ln in enumerate(b[1].split("\n")):
+                if k:
+                    r.add_break()
+                r.add_text(ln)
+        elif kind == "hr":
+            _md_hr(doc.add_paragraph())
+        elif kind == "quote":
+            _md_write(doc, b[1], depth, quote=True)
+        elif kind == "table":
+            head, aligns, rows = b[1], b[2], b[3]
+            cols = len(head)
+            t = doc.add_table(rows=1 + len(rows), cols=cols)
+            t.style = "Table Grid"
+            al = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
+                  "right": WD_ALIGN_PARAGRAPH.RIGHT}
+            for ri, row in enumerate([head] + rows):
+                for ci in range(cols):
+                    cell = t.cell(ri, ci)
+                    p = cell.paragraphs[0]
+                    p.alignment = al[aligns[ci] if ci < len(aligns) else "left"]
+                    txt = row[ci] if ci < len(row) else ""
+                    _md_runs(p, md_inline(txt, {"b": True} if ri == 0 else None))
+                    if ri == 0:
+                        _md_shade(cell.paragraphs[0], "E7E6E6")
+            doc.add_paragraph()                     # a következő bekezdés ne tapadjon rá
+        elif kind == "list":
+            ordered, start, items = b[1], b[2], b[3]
+            lvl = min(depth + 1, 3)
+            style = ("List Number" if ordered else "List Bullet") + ("" if lvl == 1 else f" {lvl}")
+            num_id = _md_numbering(doc, style, start) if ordered else None
+            for text, sub in items:
+                p = doc.add_paragraph(style=style)
+                if num_id is not None:
+                    numpr = p._p.get_or_add_pPr().get_or_add_numPr()
+                    numpr.get_or_add_ilvl().val = 0
+                    numpr.get_or_add_numId().val = num_id
+                m = re.match(r"\[([ xX])\]\s+", text)  # feladatlista: ☐ / ☒
+                if m:
+                    text = ("☒ " if m.group(1) != " " else "☐ ") + text[m.end():]
+                _md_runs(p, md_inline(text))
+                _md_write(doc, sub, depth + 1, quote)
+
+
+def md_to_docx(md_text: str, dst: str) -> dict:
+    """Markdown-szöveg -> .docx. -> számlálók a visszajelzéshez (címsor, táblázat, kép)."""
+    import docx
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt
+    text = re.sub(r"<!--.*?-->", "", md_text.replace("\r\n", "\n").replace("\r", "\n"),
+                  flags=re.S)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)   # XML-ben tiltott vezérlőjel
+    m = re.match(r"---\n.*?\n---\n", text, re.S)     # YAML-előfej: nem tartalom
+    if m:
+        text = text[m.end():]
+    blocks = md_blocks(text.split("\n"))
+
+    doc = docx.Document()
+    sec = doc.sections[0]                           # A4, 2,5 cm-es margó (nem Letter)
+    sec.page_width, sec.page_height = Cm(21), Cm(29.7)
+    for side in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
+        setattr(sec, side, Cm(2.5))
+    normal = doc.styles["Normal"]
+    normal.font.name, normal.font.size = MD_FONT, Pt(MD_SIZE)
+    rpr = normal.element.get_or_add_rPr()
+    fonts = rpr.find(qn("w:rFonts"))
+    for k in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+        fonts.set(qn(k), MD_FONT)
+    lang = OxmlElement("w:lang")                    # magyar helyesírás-ellenőrzés
+    lang.set(qn("w:val"), "hu-HU")
+    _md_put(rpr, lang, ("w:eastAsianLayout", "w:specVanish", "w:oMath"))
+
+    _md_write(doc, blocks)
+    title = next((b[2] for b in blocks if b[0] == "h"), "")
+    doc.core_properties.title = "".join(t for t, _ in md_inline(title))
+    doc.save(dst)
+
+    stat = {"h": 0, "table": 0, "list": 0, "img": 0}
+
+    def count(bs):
+        for b in bs:
+            if b[0] in stat:
+                stat[b[0]] += 1
+            if b[0] == "quote":
+                count(b[1])
+            if b[0] == "list":
+                for _, sub in b[3]:
+                    count(sub)
+    count(blocks)
+    stat["img"] = len(re.findall(r"!\[[^\]]*\]\(", text))
+    return stat
+
+
+def docx_available() -> bool:
+    try:
+        import docx  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class MdDocxTab(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.path = None
+        self.open_after = tk.BooleanVar(value=True)
+        self._build()
+
+    def _build(self):
+        top = ttk.Frame(self)
+        top.pack(fill="both", expand=True, padx=10, pady=10)
+        self.files = FileList(top, "Átalakítandó Markdown-fájl (.md)", MD_EXT, self._pick,
+                              height=8, memory_key="md_mappa")
+        self.files.pack(fill="both", expand=True)
+        self.lbl = ttk.Label(top, text="(nincs kiválasztva)", foreground="#555")
+        self.lbl.pack(anchor="w", pady=(6, 0))
+        ttk.Label(top, foreground="#555", justify="left", text=(
+            "Átkerül: címsorok, bekezdések, félkövér / dőlt / áthúzott, kód, listák "
+            "(beágyazva is), táblázatok, idézet, vízszintes vonal, linkek.\n"
+            "A képek helyén „[kép: …]” jelölő áll. A Word saját stílusait kapja "
+            "(Címsor 1…, Felsorolás…), A4-es lapon.")).pack(anchor="w", pady=(4, 0))
+        if not docx_available():
+            ttk.Label(top, foreground="#b00020", text=(
+                "A python-docx nincs telepítve — parancssorból: pip install python-docx"
+            )).pack(anchor="w", pady=(6, 0))
+        row = ttk.Frame(top)
+        row.pack(fill="x", pady=6)
+        ttk.Checkbutton(row, text="Megnyitás mentés után",
+                        variable=self.open_after).pack(side="left")
+        self.btn = ttk.Button(row, text="Átalakítás és mentés…", command=self._run)
+        self.btn.pack(side="right")
+
+    def set_folder(self, folder):
+        self.files.set_folder(folder)
+
+    def set_worker(self, name, force=False):
+        self.files.set_folder(*self.app.list_target())
+
+    def _pick(self, path):
+        self.path = path
+        self.lbl.configure(text=os.path.basename(path))
+
+    def _run(self, dst=None):
+        if not self.path:
+            messagebox.showwarning("Nincs fájl", "Válassz ki egy Markdown-fájlt.")
+            return
+        if not docx_available():
+            messagebox.showerror("Hiányzó csomag", "A Word-irat írásához kell a python-docx.\n\n"
+                                 "Telepítés parancssorból:\n  pip install python-docx")
+            return
+        stem = os.path.splitext(os.path.basename(self.path))[0]
+        dst = dst or filedialog.asksaveasfilename(
+            title="Mentés másként", initialdir=os.path.dirname(self.path),
+            initialfile=f"{stem}.docx", defaultextension=".docx",
+            filetypes=[("Word-irat", "*.docx")])
+        if not dst:
+            return
+        try:
+            self.app.status("Átalakítás…")
+            stat = md_to_docx(md_read(self.path), dst)
+        except PermissionError:
+            messagebox.showerror("Nem írható", f"{dst}\n\nNyitva van a Wordben? Zárd be, "
+                                 "és próbáld újra.")
+            self.app.status("Hiba.")
+            return
+        except Exception as e:
+            traceback.print_exc()
+            messagebox.showerror("Hiba", f"{type(e).__name__}: {e}")
+            self.app.status("Hiba.")
+            return
+        note = f"{stat['h']} címsor, {stat['list']} lista, {stat['table']} táblázat"
+        if stat["img"]:
+            note += f" · {stat['img']} kép csak jelölőként"
+        self.app.refresh_all()                      # előbb: a frissítés is állapotot ír
+        self.app.status(f"Kész: {os.path.basename(dst)} — {note}")
+        if self.open_after.get():
+            open_path(dst)
+        return dst
+
+
 # ─────────────────────── Eszközök: szerkesztés (PDF-szerkesztő) ───────────────────────
 # Általános szerkesztő kész PDF-ekhez (szerkeszto-terv.md 16.): szöveg átírása, új
 # szöveg és X, űrlapmezők (a DocGen PDF-sablonjához), kitakarás. Szöveg mindig
@@ -12816,11 +13334,13 @@ class App(tk.Tk):
             "Szerkesztés": EditorTab(self.tools, self),
             "Összefűzés": MergeTab(self.tools, self),
             "Raszterizálás": RasterTab(self.tools, self),
+            "MD → DOCX": MdDocxTab(self.tools, self),
         }
         for i, name in enumerate(("Összeállító", "Iktató", "Áttekintő"), 1):
             self.nb.add(self.tabs[name], text=f"{i} · {name}")
         self.nb.add(self.tools, text="Eszközök")
-        for name in ("Arckép elhelyezés", "Szerkesztés", "Összefűzés", "Raszterizálás"):
+        for name in ("Arckép elhelyezés", "Szerkesztés", "Összefűzés", "Raszterizálás",
+                     "MD → DOCX"):
             self.tools.add(self.tabs[name], text=name)
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
@@ -14364,6 +14884,58 @@ def _selftest() -> int:
         ck("a magyar nyelvi fájl megvan (tessdata\\hun.traineddata)", False, script_dir())
     d13.close()
     scan_d.close()
+
+    print("MD → DOCX")
+    il = md_inline("**fél** *dőlt* snake_case_nev `a*b*` [x](https://e.hu) \\*")
+    ck("sorközi: félkövér, dőlt, kód, link, escape; a szó belseji _ marad",
+       [(t.strip(), sorted(f)) for t, f in il if t.strip()] == [
+           ("fél", ["b"]), ("dőlt", ["i"]), ("snake_case_nev", []), ("a*b*", ["code"]),
+           ("x", ["link"]), ("*", [])], il)
+    il = md_inline("*a **b** c*")
+    ck("dőltben félkövér", [(t, sorted(f)) for t, f in il] ==
+       [("a ", ["i"]), ("b", ["b", "i"]), (" c", ["i"])], il)
+    il = md_inline("**⚠** = x. **⌄** = y")
+    ck("egybetűs félkövér nem nyúlik át a következőig",
+       [t for t, f in il if f.get("b")] == ["⚠", "⌄"], il)
+    bl = md_blocks(["Cím", "===", "", "- a", "  - b", "    1. c", "- d", "  lusta", "",
+                    "3. x", "4. y", "", "1. új", "", "| A | B |", "|:-|-:|", "| 1 | 2 |"])
+    ck("címsor (aláhúzásos), beágyazott lista, lusta folytatás",
+       bl[0] == ("h", 1, "Cím") and bl[1][0] == "list" and bl[1][3][1][0] == "d lusta"
+       and bl[1][3][0][1][0][3][0][1][0][:3] == ("list", True, 1), bl[:2])
+    ck("a számozott lista a megadott számtól indul, az „1.” újat kezd",
+       bl[2][:3] == ("list", True, 3) and len(bl[2][3]) == 2 and bl[3][:3] == ("list", True, 1),
+       bl[2:4])
+    ck("táblázat igazítással", bl[4] == ("table", ["A", "B"], ["left", "right"], [["1", "2"]]),
+       bl[4])
+    if docx_available():
+        import docx
+        with tempfile.TemporaryDirectory() as td:
+            dst = os.path.join(td, "próba.docx")
+            st = md_to_docx("---\na: b\n---\n# Árvíztűrő tükörfúrógép\n\n1. egy\n2. kettő\n\n"
+                            "1. újra\n\n```\nkód  sor\n```\n\n| a | b |\n|---|---|\n| ő | ű |\n\n"
+                            "[link](https://example.com) ![k](x.png)\n", dst)
+            d = docx.Document(dst)
+            ps = d.paragraphs
+            nums = [p._p.pPr.numPr.numId.val for p in ps if p.style.name == "List Number"]
+            ck("ékezetes címsor Heading 1-ként, az YAML-előfej kimarad",
+               ps[0].style.name == "Heading 1" and ps[0].text == "Árvíztűrő tükörfúrógép",
+               [(p.style.name, p.text) for p in ps[:2]])
+            ck("két számozott lista, két külön számozással",
+               len(nums) == 3 and nums[0] == nums[1] != nums[2], nums)
+            ck("a kód szóközei megmaradnak, Consolas betűvel",
+               any(p.text == "kód  sor" and p.runs[0].font.name == MD_MONO for p in ps))
+            ck("táblázat fejléccel", len(d.tables) == 1 and d.tables[0].cell(1, 1).text == "ű"
+               and d.tables[0].cell(0, 0).paragraphs[0].runs[0].font.bold)
+            ck("a link valódi hivatkozás", any(
+                r.reltype.endswith("/hyperlink") and r.target_ref == "https://example.com"
+                for r in d.part.rels.values()))
+            ck("A4-es lap, magyar nyelv",
+               abs(d.sections[0].page_width.cm - 21) < 0.01
+               and 'w:val="hu-HU"' in d.styles["Normal"].element.xml)
+            ck("számlálók: címsor, lista, táblázat, kép",
+               st == {"h": 1, "table": 1, "list": 2, "img": 1}, st)
+    else:
+        ck("a python-docx telepítve van (pip install python-docx)", False)
 
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")

@@ -2001,6 +2001,19 @@ try:
     ck("a Raszterizálás fájllistája képet is elfogad",
        ".jpg" in rt.files.exts and ".pdf" in rt.files.exts, rt.files.exts)
 
+    mt = app.tabs["MD → DOCX"]
+    ck("az MD → DOCX az Eszközök alfüle", str(mt) in app.tools.tabs())
+    md_src = os.path.join(TMP, "jegyzet.md")
+    with open(md_src, "w", encoding="utf-8") as f:
+        f.write("# Árvíztűrő\n\n- egy\n- **kettő**\n")
+    mt.open_after.set(True)
+    mt._pick(md_src)
+    md_dst = mt._run(os.path.join(TMP, "jegyzet.docx"))
+    ck("az MD → DOCX ment, és megnyitja a kész iratot",
+       md_dst and os.path.getsize(md_dst) > 0 and opened and opened[-1] == md_dst,
+       (md_dst, opened[-1:]))
+    ck("az állapotsor összegez", "1 címsor, 1 lista" in app._status.get(), app._status.get())
+
     ck("a fejléc verzió-dátum felirata ráhagyással rajzolódik (GDI-skálázás)",
        pm.DPI_SLACK > 0)
 

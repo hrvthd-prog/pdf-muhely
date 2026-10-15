@@ -9,7 +9,8 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 Áttekintő). Használat: `README.md`. A döntések indoklása: `kepek-pdf-terv.md`,
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
-és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. és 23. (a bővítési javaslatok: 22.), a
+és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. és 23. (a bővítési javaslatok: 22.,
+az MD → DOCX konvertáló: 24.), a
 közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
@@ -22,7 +23,7 @@ témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 - **VPS (Ubuntu):** a `python3` ott 3.13, tkinter nélkül — a repó `.venv`-je
   kell (Python 3.12 + tkinter + pymupdf): `source .venv/bin/activate`, majd
   `xvfb-run -a python test/run-all.py`. Újraépítés:
-  `python3.12 -m venv --without-pip .venv && python3.13 -m pip --python .venv/bin/python install pymupdf==1.26.7`.
+  `python3.12 -m venv --without-pip .venv && python3.13 -m pip --python .venv/bin/python install pymupdf==1.26.7 python-docx==1.2.0`.
 - **Linuxon ismert, platformfüggő bukások** (2026-10-15, alapállapot): nincs
   Calibri (önteszt 1, GUI 1), `ctypes.windll` (GUI 1), időzítésérzékeny
   tömörítés-alatti akadás (GUI 1). A `frissítő` kihagyja magát; a

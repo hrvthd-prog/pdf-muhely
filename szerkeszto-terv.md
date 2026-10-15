@@ -1204,3 +1204,62 @@ ESZKÖZCSEMPÉK, SZÖVEGDOBOZ, KERESÉS ÉS CSERE, SZEMÉLYES ADAT, FEJLÉC/LÁB
 ŰRLAP KITÖLTÉSE, SZÖVEGFELISMERÉS (a külön folyamatos futás a végéig). 100% és 150%
 skálán is. Felületfotók eszközönként (1280×740 és 960×650); az új `python
 tools/ui-kep.py 7 kep.png <eszköz>` ugyanezt a mintairatot fényképezi.
+
+## 24. MD → DOCX konvertáló (2026-10-15)
+
+A kérés: „a PDF Műhelybe építs egy konvertálót .md-ről .docx-re”. Egyeztetve: vegyes
+Markdown (címsor, lista beágyazva, táblázat, kód, idézet, link — kép nélkül), az
+Eszközök alatt új alfül, és **jöhet a python-docx**.
+
+### 24.1 Döntések
+
+- **python-docx igen, Markdown-könyvtár nem.** A .docx-hez a python-docx kell (a
+  felhasználó jóváhagyta), a Markdownhoz viszont saját, ~200 soros elemző van
+  (`md_blocks`, `_md_list`, `md_inline`): egy második új függőség (markdown, mistune)
+  HTML-t vagy AST-t adna, amit úgyis le kellene fordítani Word-elemekre. A python-docx
+  **lustán** töltődik (a függvényeken belül): nélküle a Műhely elindul, csak az alfül
+  szól, hogy `pip install python-docx`.
+- **A Word saját stílusai** (Heading 1…, List Bullet 1–3, List Number 1–3, List
+  Continue, Quote, Table Grid), nem kézi formázás: a kész iratban a címsorok a
+  navigációs ablakban és a tartalomjegyzékben is megjelennek, a lista a Word listája.
+- **A számozás listánként újraindul.** A python-docx `List Number` stílusa egyetlen
+  számozást használ, így a második lista 4-gyel folytatná. Minden számozott lista új
+  `w:num`-ot kap ugyanarra az absztrakt számozásra, `startOverride`-dal — így a
+  Markdownban megadott kezdőszám („3.”) is megmarad.
+- **Üres sor után az „1.” új listát kezd.** A CommonMark szerint ugyanaz a lista
+  folytatódna, de aki üres sor után 1-gyel kezd, újrakezdést ír.
+- **A sémasorrend kötelező.** A Word a `w:pPr`/`w:rPr` gyerekeinek sorrendjére
+  szigorú; a végére fűzött `w:shd` (kódháttér) vagy `w:pBdr` (vízszintes vonal) után
+  álló `w:jc` már „olvashatatlan tartalom”. `_md_put` az első, sémában utána jövő elem
+  elé szúr.
+- **A link valódi hivatkozás** (`w:hyperlink` + külső kapcsolat), csak `http(s)` és
+  `mailto` esetén; a belső (`#…`) és a relatív fájl-link sima szöveg marad.
+- **A4, 2,5 cm-es margó, Calibri 11, magyar nyelv** (`w:lang hu-HU`): a python-docx
+  alapsablonja Letter méretű és angol.
+- **Szó belseji `_` nem dőlt** (`snake_case_nev`), és a `*` csak szóköz nélkül
+  tapadva jelöl (`2 * 3` marad). Dőltben félkövér (`*… **x** …*`) is jó.
+- A kép helyén `[kép: alt]` szürke, dőlt jelölő; az állapotsor kiírja, hány kép maradt
+  ki. Az YAML-előfej, a `<!-- … -->` és az XML-ben tiltott vezérlőjelek kimaradnak.
+
+### 24.2 Szándékos egyszerűsítések
+
+- Nincs kép, lábjegyzet, HTML-blokk (a nyers HTML szövegként marad; csak a `<br>` lesz
+  sortörés), definíciós lista, hivatkozásstílusú link (`[x][1]`).
+- A lista legfeljebb három szintig kap saját stílust (a Word alapsablonjában ennyi
+  van); a mélyebb szint a harmadikon marad.
+- A táblázat cellái nem tördelnek Markdown-blokkot (lista a cellában szövegként
+  marad).
+
+### 24.3 Ellenőrzés
+
+Önteszt: új MD → DOCX szakasz — sorközi jelölések (escape, kód, link, szó belseji _,
+dőltben félkövér, egybetűs félkövér), blokkok (aláhúzásos címsor, beágyazott és lusta
+lista, számozás kezdőszáma és újraindítása, táblázat-igazítás), és a kész .docx
+visszaolvasva (Heading 1, két külön számozás, Consolas kód a szóközökkel, táblázat
+félkövér fejléccel, hyperlink-kapcsolat, A4, hu-HU, számlálók). GUI: az alfül az
+Eszközök alatt, ment, megnyitja, az állapotsor összegez.
+Kézzel, a VPS-en: a DocGen és a Műhely mind a 18 `.md` fájlja hibátlanul átalakul
+(SESSIONS.md: 1,7 s); a kimenet az OOXML-sémán (ISO 29500) átmegy — egyetlen
+eltérés a python-docx alapsablonjának `w:zoom` eleme, amit a Word elfogad; és a
+kimenetben nem maradt Markdown-jel. **A Wordben megnyitott képet itt nem lehetett
+megnézni** (a VPS-en nincs Word / LibreOffice).
