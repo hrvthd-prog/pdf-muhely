@@ -14,6 +14,20 @@ közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új dönt�
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.
 
+## Hol fut?
+
+- **Élesben a felhasználó céges Windows-gépén**, a dolgozói iratok is ott
+  vannak. Fejlesztőgépen (otthoni Windows, VPS `/root/pdf-muhely`, felhős
+  session) ne keress iratot.
+- **VPS (Ubuntu):** a `python3` ott 3.13, tkinter nélkül — a repó `.venv`-je
+  kell (Python 3.12 + tkinter + pymupdf): `source .venv/bin/activate`, majd
+  `xvfb-run -a python test/run-all.py`. Újraépítés:
+  `python3.12 -m venv --without-pip .venv && python3.13 -m pip --python .venv/bin/python install pymupdf==1.26.7`.
+- **Linuxon ismert, platformfüggő bukások** (2026-10-15, alapállapot): nincs
+  Calibri (önteszt 1, GUI 1), `ctypes.windll` (GUI 1), időzítésérzékeny
+  tömörítés-alatti akadás (GUI 1). A `frissítő` kihagyja magát; a
+  `tools/ui-kep.py` Windows-only, a megjelenést ott nem lehet lefényképezni.
+
 ## Tesztek
 
 ```bash
@@ -53,7 +67,8 @@ buktatók: `kepek-pdf-terv.md` 13.7.
   kézzel ne szerkeszd. Friss klónban egyszer:
   `git config core.hooksPath tools/hooks` és `git config push.followTags true`.
 - A `tools/frissit.vbs` **UTF-16 LE BOM, CRLF** — másként elromlanak az ékezetek.
-  A hookok LF-esek (`.gitattributes`), CRLF-fel némán nem futnának.
+  A hookok LF-esek (`.gitattributes`), CRLF-fel némán nem futnának; és
+  futtathatók (`100755`) — `644`-gyel Linuxon némán kimaradnak.
 
 ## Git
 

@@ -10,5 +10,7 @@ if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] || [ -f "$gi
   exit 0
 fi
 
-python tools/verzio.py --leptet || exit 1
+# Linuxon (VPS, felhő) gyakran csak python3 van; a verzio.py csak stdlib.
+PY=python; command -v python >/dev/null 2>&1 || PY=python3
+"$PY" tools/verzio.py --leptet || exit 1
 git add verzio.json
