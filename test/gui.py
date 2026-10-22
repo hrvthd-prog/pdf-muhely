@@ -2014,6 +2014,32 @@ try:
        (md_dst, opened[-1:]))
     ck("az állapotsor összegez", "1 címsor, 1 lista" in app._status.get(), app._status.get())
 
+    # DOCX-tisztítás: a lap az Eszközök alatt, a lista szűr (zárolófájl nincs), a gomb helyben tisztít.
+    dt = app.tabs["DOCX-tisztítás"]
+    dtd = os.path.join(TMP, "docx-teszt")
+    os.makedirs(dtd, exist_ok=True)
+    P_ = "http://schemas.openxmlformats.org/package/2006/relationships"
+    with pm.zipfile.ZipFile(os.path.join(dtd, "Irat.docx"), "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("_rels/.rels", f'<Relationships xmlns="{P_}"><Relationship Id="rId1" '
+                   'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                   'Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/'
+                   'package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>')
+        z.writestr("docProps/core.xml", "<cp:coreProperties><dc:creator>Szerző</dc:creator></cp:coreProperties>")
+        z.writestr("word/document.xml", "<w:document><w:t>szöveg</w:t></w:document>")
+    open(os.path.join(dtd, "~$Irat.docx"), "wb").write(b"zar")
+    dt.set_folder(dtd)
+    ck("a DOCX-tisztítás az Eszközök alatt van, a Word zárolófájlját nem listázza",
+       dt.master is app.tools and dt.lb.get(0, "end") == ("Irat.docx",), dt.lb.get(0, "end"))
+    dt.lb.selection_set(0, "end")
+    msgs.clear()
+    dt._run()
+    with pm.zipfile.ZipFile(os.path.join(dtd, "Irat.docx")) as z:
+        ck("a Metaadatok törlése gomb helyben tisztít, a szöveg megmarad",
+           not any(n.startswith("docProps/") for n in z.namelist())
+           and "szöveg".encode() in z.read("word/document.xml"), z.namelist())
+    ck("a napló jelzi az eredményt", "1/1 fájl megtisztítva" in dt.log.get("1.0", "end"), msgs)
+
     ck("a fejléc verzió-dátum felirata ráhagyással rajzolódik (GDI-skálázás)",
        pm.DPI_SLACK > 0)
 

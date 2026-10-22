@@ -10,6 +10,7 @@ működést méri, a megjelenést nem.
     python tools/ui-kep.py 6 bekezdes.png        # 6: Szerkesztés → Bekezdés formázása
     python tools/ui-kep.py 7 kereses.png search  # 7: Szerkesztés egy eszközzel, mintairaton:
                                                  #    box, search, pii, decor, form, ocr
+    python tools/ui-kep.py 8 docx.png            # 8: Eszközök → DOCX-tisztítás, futás után
 
 A valódi beállításfájlokhoz nem nyúl: a script_dir-t ideiglenes mappára irányítja.
 """
@@ -110,6 +111,22 @@ if tab_i == 5:                                  # Eszközök: Szerkesztés, mez�
     ed.open_file(sp)
     ed.mode.set("field")
     ed._mode_changed()
+if tab_i == 8:                                  # Eszközök: DOCX-tisztítás, egy futás után
+    pm.messagebox.askyesno = lambda *a, **k: True
+    dd = os.path.join(root, "Kiss Anna", pm.DIR_PREP)
+    for nm in ("Előzetes megállapodás", "Meghatalmazás"):
+        with pm.zipfile.ZipFile(os.path.join(dd, f"Kiss Anna {nm}.docx"), "w") as z:
+            z.writestr("[Content_Types].xml", "<Types/>")
+            z.writestr("_rels/.rels", "<Relationships/>")
+            z.writestr("docProps/core.xml", "<cp:coreProperties/>")
+            z.writestr("word/document.xml", "<w:document><w:ins w:author='X'/></w:document>")
+    dt = app.tabs["DOCX-tisztítás"]
+    app.worker.set("Kiss Anna")
+    app._worker_commit()
+    app.show(dt)
+    app.update()
+    dt.lb.selection_set(0, "end")
+    dt._run()
 if tab_i == 6:                                  # Szerkesztés: Bekezdés formázása
     d = P.open()
     pg = d.new_page(width=595, height=842)

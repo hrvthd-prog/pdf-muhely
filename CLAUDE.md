@@ -10,7 +10,7 @@ testvére: a nyomtatás–aláírás–szkennelés utáni lépések (Összeáll�
 11. fejezet (a dolgozónkénti két alkönyvtár: 12. fejezet), az Összeállítóé (a volt
 Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-szerkesztőé
 és a TAJ-szabályoké `szerkeszto-terv.md`, 14–21. és 23. (a bővítési javaslatok: 22.,
-az MD → DOCX konvertáló: 24.), a
+az MD → DOCX konvertáló: 24., a DOCX-tisztítás: 25.), a
 közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
 `DocGen/TERV-mappaszerkezet.md`.

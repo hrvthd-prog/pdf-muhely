@@ -1263,3 +1263,53 @@ Kézzel, a VPS-en: a DocGen és a Műhely mind a 18 `.md` fájlja hibátlanul á
 eltérés a python-docx alapsablonjának `w:zoom` eleme, amit a Word elfogad; és a
 kimenetben nem maradt Markdown-jel. **A Wordben megnyitott képet itt nem lehetett
 megnézni** (a VPS-en nincs Word / LibreOffice).
+
+
+## 25. DOCX-tisztítás (2026-10-22): metaadat és eredet-nyom törlése Word-fájlból
+
+A kérés: a `.docx`-ből minden metaadat törlődjön; sehol se látsszon, hogy a szerző vagy az
+utolsó módosító a felhasználó volt, és hogy Pythonból generálták; a dokumentum többi
+része változatlan. Új eszköz: *Eszközök → DOCX-tisztítás* (`DocxTab`), kódja
+`scrub_docx` / `docx_clean_file` / `docx_cli`.
+
+### 25.1 Mit töröl, és miért pont azt
+
+| Hely | Mi van ott | Teendő |
+|---|---|---|
+| `docProps\core.xml`, `app.xml`, `custom.xml`, `thumbnail.*` | szerző, utolsó módosító, program (`python-docx`, „Microsoft Macintosh Word”), cég, dátumok, bélyegkép | a rész, a kapcsolata és a tartalomtípusa törlődik (nem üres tartalommal marad: az üres rész is mutatná, hogy volt) |
+| `word\people.xml` | a szerzők neve | törlés, kapcsolatostul |
+| `w:author`, `w:initials`, `w:date` a törzsben, megjegyzésekben, láblécben | követett módosítások, megjegyzések szerzője | a szerző a Word saját jelölésére (`Author`) cserélődik, a kezdőbetű és a dátum elmarad; **csak címkén belül** — a szövegben álló idézet nem változik |
+| `w:attachedTemplate` + `settings.xml.rels` | a sablon útvonala (`C:\Users\<név>\…`) | az elem és a kapcsolat törlődik (különben lógó `r:id` maradna) |
+| `word\media\*.jpg`, `*.png` | EXIF/XMP/IPTC/megjegyzés, PNG szöveges és `eXIf` chunkok (GPS, fényképező, szerző) | veszteségmentes szegmens-kidobás, a képpontok érintetlenek; az ICC-profil, a JFIF és az Adobe-jelző marad (színhez kell); az Exif-ből **csak a tájolás** marad, ha nem az alap |
+| XML-fejlécek | `lxml`: `<?xml version='1.0' …?>` + `\n`; a Word: `"…"` + `\r\n` | a Word formájára írva |
+| ZIP-fejlécek | `zipfile`: a pillanat ideje, külső attribútum `0o600<<16`, jelzőbit 0, készítő-verzió 20 | a Word-é: `1980-01-01`, `0`, `6`, `45` (valódi Word-fájlokon mérve) |
+
+### 25.2 Amihez szándékosan nem nyúl
+
+- **rsid-azonosítók** (`w:rsidR…`): szerkesztési menetek véletlen számai, senkit nem
+  azonosítanak — és hiányuk épp a gépi generálás jele volna.
+- **`customXml\`, `word\embeddings\`, helyi útvonalra mutató hivatkozás**: tartalom is
+  lehet (adatkötött vezérlő, beágyazott táblázat, link) — törlésük megváltoztatná a
+  dokumentumot. A felület `FIGYELEM:` sorral jelzi. A python-docx alapsablonjának
+  `customXml\item1.xml`-je üres forráslista, a Word is írja.
+- **Jelszóval titkosított `.docx`** (OLE-tároló, nem ZIP): hibával áll meg, nem tisztít.
+- A fájlrendszer adatai (NTFS-tulajdonos, módosítási idő) és a **Wordben utólag mentett**
+  példány: a Word a saját felhasználónevét újra beírja (README).
+
+### 25.3 Kiírás
+
+Alapból **helyben**, az eredeti felülírásával (előbb megerősítés): a tisztított fájl ugyanaz
+a dokumentum, a metaadat pedig épp az, amit nem akarunk megőrizni — az `előző példány`
+mentés (`MARK_BACKUP`) a szerzőt a mappában tartaná, onnan pedig feltöltésre kerülhetne.
+Kiírás előtt `docx_leaks` ellenőrzi, hogy nem maradt-e nyom, a kimenet ép ZIP-e (`testzip`);
+a fájl `.part` néven készül és atomi átnevezéssel kerül a helyére (mint `write_pdf_verified`).
+A CLI `--docx-tisztit be [ki]` a generáló szkript végére is beköthető.
+
+### 25.4 Ellenőrzés
+
+Önteszt „DOCX METAADAT-TISZTÍTÁS”: kézzel épített, szennyezett csomagon (szerző, követett
+módosítás, megjegyzés, `people`, sablon, EXIF-es JPEG tájolással, szöveges PNG, `customXml`,
+beágyazott fájl, helyi link) — a törzs **bájtra** a várt (csak a szerző/dátum és a fejléc
+más), a képek képpontjai azonosak, a második futás azonos kimenetet ad; valódi
+python-docx-irat is (ha a modul fent van): nincs benne a név, a „python-docx” és a
+„Macintosh Word”, a python-docx újra megnyitja, a többi rész azonos.

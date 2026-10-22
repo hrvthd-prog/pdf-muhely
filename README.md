@@ -19,6 +19,7 @@ alfülein vannak (döntés: `kepek-pdf-terv.md` 13.2).
 | Eszközök → Szerkesztés | kész PDF **szerkesztése**: szöveg átírása, **húzható, élőben formázható új szöveg**, **többsoros szövegdoboz**, X, **bekezdés-formázás**, **űrlapmezők** (DocGen-sablon), kitakarás — és az egész iratra: **keresés és csere** előnézettel, **személyes adatok kitakarása** (TAJ, adóazonosító, útlevél…), **fejléc, lábléc, oldalszám, bélyeg, vízjel**, **űrlap kitöltése és beégetése**, **szövegfelismerés** (OCR) a szkennelt iratokra |
 | Eszközök → Összefűzés, Raszterizálás | eseti PDF-műveletek |
 | Eszközök → MD → DOCX | **Markdown-fájlból szerkeszthető Word-irat** (.md → .docx) |
+| Eszközök → DOCX-tisztítás | Word-dokumentumokból a **szerző, az utolsó módosító és minden eredet-nyom törlése** (lásd lent) |
 
 A program **megjegyzi** az utoljára használt munkamappát, az alapértelmezett
 dolgozót, a mellékletek mappáját és az Iktatóban választott doktípust
@@ -49,6 +50,35 @@ alkalmazható). A **Teljes kép, alaphelyzet** mindkettőt visszavonja.
 A kép fájlja soha nem változik. A vágás veszteségmentes (a lap cropboxa);
 a fényerő/kontraszt viszont újrakódolja a képet (JPEG Q92, a beágyazott kép
 valódi felbontásán), ezért csak akkor fut le, ha tényleg állítottál rajta.
+
+## DOCX-tisztítás: metaadat és eredet-nyom törlése
+
+*Eszközök → DOCX-tisztítás*: jelöld ki a `.docx`-eket → **Metaadatok törlése…**. A
+fájl **helyben, az eredeti felülírásával** tisztul (előbb rákérdez; a megnyitott Word-fájl
+nem írható — azt zárd be). Törli:
+
+- a szerzőt, az utolsó módosítót, a címet, a megjegyzést, a létrehozó programot
+  (`python-docx`, „Microsoft Word” stb.), a cég- és sablonadatot, a bélyegképet (`docProps\`);
+- a követett módosítások és megjegyzések szerzőjét, kezdőbetűit, dátumát (a szöveg marad);
+- a sablon útvonalát (abban a gép felhasználóneve szokott lenni);
+- a beágyazott JPEG/PNG képek EXIF/XMP/IPTC/szöveges adatát (GPS, fényképező, szerző) —
+  a képpontok azonosak, a fotó tájolása megmarad;
+- a ZIP-csomag és az XML-fejlécek Python-ra valló nyomát (időbélyeg, jogok, idézőjelek).
+
+A szöveg, a formázás, a stílusok, a képek képpontjai és minden más rész **bájtra
+azonos**. Amit tartalomnak is vehetünk (`customXml\`, beágyazott fájl, helyi útvonalra
+mutató hivatkozás), azt nem törli, hanem figyelmeztet rá.
+
+Szkriptből (pl. a generáló Python-program végén) is hívható; kiírás nélkül helyben tisztít:
+
+```bash
+python pdf-muhely.py --docx-tisztit be.docx [ki.docx]
+```
+
+Fájlrendszer-szintű adatot (az NTFS „tulajdonos”-át, a fájl módosítási idejét) nem érint.
+Ha a megtisztított fájlt utána Wordben megnyitod és mented, a Word a saját felhasználónevedet
+újra beírja — ezt a Word *Fájl → Beállítások → Adatkezelési központ → Személyes adatok
+eltávolítása mentéskor* jelölőnégyzete tiltja le. Döntések: `szerkeszto-terv.md` 24.
 
 ## Szerkesztés: kész PDF javítása, DocGen-sablon készítése
 

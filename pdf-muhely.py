@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 PDF Műhely – egyesített offline eszköztár.
-Fülek: Arckép elhelyezés | Összefűzés | Összeállító | Raszterizálás | Iktató |
-       Áttekintő
+Fülek: Arckép elhelyezés | Összefűzés | Összeállító | Raszterizálás | DOCX-tisztítás |
+       Iktató | Áttekintő
 Függőség: pymupdf (a tkinter a Python része). Semmilyen hálózati műveletet nem végez.
 
 Öntesztek GUI nélkül:  python pdf-muhely.py --test
 """
 
 import os
+import io
 import re
 import tempfile
 import csv
@@ -17,6 +18,9 @@ import sys
 import hashlib
 import json
 import math
+import posixpath
+import struct
+import zipfile
 import queue
 import shutil
 import ctypes
@@ -2424,6 +2428,361 @@ class MdDocxTab(ttk.Frame):
         if self.open_after.get():
             open_path(dst)
         return dst
+
+
+# ───────────────────────── Eszközök: DOCX metaadat-tisztítás ─────────────────────────
+# A .docx ZIP-csomag. A szerző, az utolsó módosító, a létrehozó program és a
+# bélyegkép a docProps\ alatt él; a követett módosítások és megjegyzések szerzője a
+# törzsben; a képek EXIF/XMP-je a word\media alatt; a ZIP-bejegyzések időbélyege és
+# az XML-fejlécek formája pedig elárulja a létrehozó programot. Mindezt töröljük,
+# a többi rész (szöveg, stílus, kép képpontjai) bájtra azonos marad (szerkeszto-terv.md 25.).
+# ponytail: az rsid-azonosítókat (szerkesztési menetek véletlen számai) nem bántjuk:
+# nem azonosítanak senkit, és hiányuk épp a gépi generálás jele volna.
+
+# Ilyen típusú kapcsolat célrésze személyes/eredet-adatot hordoz -> a kapcsolat és a rész is megy.
+DOCX_DROP_RELS = ("/core-properties", "/extended-properties", "/custom-properties",
+                  "/thumbnail", "/people", "/attachedTemplate")
+DOCX_ZIP_TIME = (1980, 1, 1, 0, 0, 0)       # a Word is ezt írja minden bejegyzésre
+WORD_PROLOG = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+_LXML_PROLOG = re.compile(rb"\A<\?xml version='1\.0' encoding='UTF-8' standalone='yes'\?>\r?\n?")
+_REL_TAG = re.compile(rb"<Relationship\b[^>]*?/>")
+_OVERRIDE_TAG = re.compile(rb'<Override\b[^>]*?\bPartName="/([^"]*)"[^>]*?/>')
+_ANY_TAG = re.compile(rb"<[^<>]*>")
+_LOCAL_LINK = re.compile(r"(?i)^(file:|[a-z]:[\\/]|\\\\)")
+_PNG_META = (b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME")
+
+
+def _xml_attr(tag: bytes, name: bytes) -> str:
+    m = re.search(rb"\b" + name + rb'\s*=\s*"([^"]*)"', tag)
+    return m.group(1).decode("utf-8", "replace") if m else ""
+
+
+def _exif_orientation(exif: bytes) -> int:
+    """Az Exif-blokk tájolás-címkéje (1–8), vagy 1, ha nincs / sérült."""
+    try:
+        t = exif[6:]
+        e = "<" if t[:2] == b"II" else ">"
+        ifd = struct.unpack_from(e + "I", t, 4)[0]
+        for k in range(struct.unpack_from(e + "H", t, ifd)[0]):
+            tag, _typ, _n, val = struct.unpack_from(e + "HHIH", t, ifd + 2 + 12 * k)
+            if tag == 0x0112 and 1 <= val <= 8:
+                return val
+    except (struct.error, IndexError):
+        pass
+    return 1
+
+
+def _strip_jpeg(b: bytes) -> bytes:
+    """Veszteségmentes: kidobja az Exif/XMP/IPTC/megjegyzés szegmenseket, a
+    képpontok érintetlenek. Marad a JFIF, az ICC-profil és az Adobe-jelző (a
+    színkezeléshez kell); az Exif-ből csak a tájolás, ha nem az alap — enélkül a
+    megfordított fotót a nézegető elforgatva mutatná."""
+    if b[:2] != b"\xff\xd8":
+        return b
+    segs, i, orient = [], 2, 1
+    while i + 4 <= len(b) and b[i] == 0xFF and b[i + 1] not in (0xDA, 0xD9):
+        m, n = b[i + 1], struct.unpack_from(">H", b, i + 2)[0]
+        if m in (0x01, 0xFF) or 0xD0 <= m <= 0xD7 or n < 2 or i + 2 + n > len(b):
+            return b                                     # szokatlan szerkezethez nem nyúlunk
+        seg = b[i:i + 2 + n]
+        body = seg[4:]
+        if m == 0xE1 and body[:4] == b"Exif":
+            orient = _exif_orientation(body)
+        elif (m in (0xE0, 0xE2, 0xEE) and body[:5] in (b"JFIF\0", b"Adobe") or
+              m == 0xE2 and body[:11] == b"ICC_PROFILE" or
+              not (0xE0 <= m <= 0xEF or m == 0xFE)):
+            segs.append(seg)
+        i += 2 + n
+    if orient != 1:
+        tiff = b"MM\0*\0\0\0\x08" + struct.pack(">HHHIHH", 1, 0x0112, 3, 1, orient, 0) + b"\0\0\0\0"
+        keep = b"Exif\0\0" + tiff
+        segs.insert(1 if segs and segs[0][1] == 0xE0 else 0,
+                    b"\xff\xe1" + struct.pack(">H", 2 + len(keep)) + keep)
+    return b"\xff\xd8" + b"".join(segs) + b[i:]
+
+
+def _strip_png(b: bytes) -> bytes:
+    """Veszteségmentes: a szöveges, Exif- és időbélyeg-chunkok kimaradnak."""
+    if b[:8] != b"\x89PNG\r\n\x1a\n":
+        return b
+    out, i = [b[:8]], 8
+    while i + 12 <= len(b):
+        n = struct.unpack_from(">I", b, i)[0]
+        if b[i + 4:i + 8] not in _PNG_META:
+            out.append(b[i:i + 12 + n])
+        i += 12 + n
+    return b"".join(out) if i == len(b) else b          # sérült szerkezethez nem nyúlunk
+
+
+def _strip_image(name: str, b: bytes) -> bytes:
+    low = name.lower()
+    if low.endswith((".jpg", ".jpeg")):
+        return _strip_jpeg(b)
+    return _strip_png(b) if low.endswith(".png") else b
+
+
+def _anon_tag(m):
+    t = m.group(0)
+    if b"w:author=" not in t and b"w:initials=" not in t and b"w:date=" not in t:
+        return t
+    t = re.sub(rb"""(\s)w:author=(?:"[^"]*"|'[^']*')""", rb'\1w:author="Author"', t)   # a Word saját jelölése
+    return re.sub(rb"""\s+w:(?:initials|date)=(?:"[^"]*"|'[^']*')""", b"", t)
+
+
+def _zip_like_word(z: bytes) -> bytes:
+    """A zipfile a külső attribútumot mindig 0o600<<16-ra, a jelzőbiteket 0-ra írja —
+    ez a Python-ZIP ujjlenyomata. A Word 0-t, 6-ot és 45-ös készítő-verziót ír (valódi
+    Word-fájlokon mérve); csak fejlécmezőket írunk át, az adat és a CRC érintetlen."""
+    b = bytearray(z)
+    eocd = z.rindex(b"PK")
+    count, cd = struct.unpack_from("<H", b, eocd + 10)[0], struct.unpack_from("<I", b, eocd + 16)[0]
+    for _ in range(count):
+        if b[cd:cd + 4] != b"PK":
+            return z
+        flags = struct.unpack_from("<H", b, cd + 8)[0]
+        if flags & 0x08:                                  # adatleíró: nem a mi esetünk
+            return z
+        nl, el, cl = struct.unpack_from("<HHH", b, cd + 28)
+        lho = struct.unpack_from("<I", b, cd + 42)[0]
+        new = (flags & 0x800) | 6                          # a UTF-8 névjelző marad
+        struct.pack_into("<H", b, cd + 4, 45)
+        struct.pack_into("<H", b, cd + 8, new)
+        struct.pack_into("<I", b, cd + 38, 0)
+        struct.pack_into("<H", b, lho + 6, new)
+        cd += 46 + nl + el + cl
+    return bytes(b)
+
+
+def scrub_docx(data: bytes):
+    """A .docx bájtjai -> (tiszta bájtok, elvégzett tételek, figyelmeztetések).
+    A figyelmeztetés olyat jelent, ami tartalom is lehet, ezért marad: customXml,
+    beágyazott fájl, helyi útvonalra mutató hivatkozás."""
+    try:
+        zin = zipfile.ZipFile(io.BytesIO(data))
+        parts = {i.filename: zin.read(i) for i in zin.infolist()}
+    except zipfile.BadZipFile:
+        raise ValueError("Nem Word-dokumentum (.docx): nem ZIP-csomag.") from None
+    if "[Content_Types].xml" not in parts or "word/document.xml" not in parts:
+        raise ValueError("Nem Word-dokumentum (.docx): hiányzik a word/document.xml.")
+    done, warns = [], []
+
+    drop = {n for n in parts if n.startswith("docProps/")}
+    for name in [n for n in parts if n.endswith(".rels")]:
+        base = posixpath.dirname(posixpath.dirname(name))      # a .rels forrásának mappája
+
+        def rel(m):
+            tag = m.group(0)
+            if _xml_attr(tag, b"Type").endswith(DOCX_DROP_RELS):
+                tgt = _xml_attr(tag, b"Target")
+                if _xml_attr(tag, b"TargetMode") != "External":
+                    drop.add(tgt[1:] if tgt.startswith("/")
+                             else posixpath.normpath(posixpath.join(base, tgt)))
+                return b""
+            if _xml_attr(tag, b"TargetMode") == "External" and \
+                    _LOCAL_LINK.match(_xml_attr(tag, b"Target")):
+                warns.append(f"{name}: helyi útvonalra mutató hivatkozás")
+            return tag
+        parts[name] = _REL_TAG.sub(rel, parts[name])
+    if "word/settings.xml" in parts:                 # a sablon útvonala a felhasználó nevét viheti
+        parts["word/settings.xml"] = re.sub(rb"<w:attachedTemplate\b[^>]*/>", b"",
+                                            parts["word/settings.xml"])
+    for n in sorted(drop & parts.keys()):
+        done.append(f"{n} törölve")
+    parts["[Content_Types].xml"] = _OVERRIDE_TAG.sub(
+        lambda m: b"" if m.group(1).decode("utf-8", "replace") in drop else m.group(0),
+        parts["[Content_Types].xml"])
+
+    anon = 0
+    for n, b in parts.items():
+        if n.startswith("word/") and n.endswith(".xml") and \
+                (b"w:author=" in b or b"w:initials=" in b or b"w:date=" in b):
+            new = _ANY_TAG.sub(_anon_tag, b)
+            anon += new != b
+            parts[n] = new
+        elif n.startswith("word/media/"):
+            new = _strip_image(n, b)
+            if new != b:
+                parts[n] = new
+                done.append(f"{n}: képi metaadat törölve")
+    if anon:
+        done.append(f"követett módosítások és megjegyzések szerzője törölve ({anon} részben)")
+
+    heads = 0
+    for n, b in parts.items():
+        if n.endswith((".xml", ".rels")) and _LXML_PROLOG.match(b):
+            parts[n] = _LXML_PROLOG.sub(lambda _: WORD_PROLOG, b, count=1)
+            heads += 1
+    if heads:
+        done.append(f"XML-fejléc a Word formájára írva ({heads} részben)")
+
+    if any(n.startswith("customXml/") for n in parts):
+        warns.append("customXml-rész van (szerzői adatot hordozhat) — nem töröltem")
+    if any(n.startswith("word/embeddings/") for n in parts):
+        warns.append("beágyazott fájl van (saját metaadata lehet) — nem töröltem")
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in parts.items():
+            if n in drop:
+                continue
+            zi = zipfile.ZipInfo(n, DOCX_ZIP_TIME)       # időbélyeg, jogok, készítő-rendszer: Word-szerű
+            zi.compress_type, zi.create_system, zi.compress_level = zipfile.ZIP_DEFLATED, 0, 1
+            z.writestr(zi, b)
+    done.append("ZIP-bejegyzések időbélyege egységesítve")
+    return _zip_like_word(out.getvalue()), done, warns
+
+
+def docx_leaks(data: bytes) -> list:
+    """Ami a tisztítás után sem lehet a csomagban — a kiírás és az önteszt ellenőrzése."""
+    out = []
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for i in z.infolist():
+            n, b = i.filename, z.read(i)
+            if n.startswith("docProps/") or n == "word/people.xml":
+                out.append(f"{n}: megmaradt")
+            if i.date_time != DOCX_ZIP_TIME or i.external_attr:
+                out.append(f"{n}: ZIP-nyom {i.date_time} {i.external_attr}")
+            if n.endswith((".xml", ".rels")):
+                if b.startswith(b"<?xml version='"):
+                    out.append(f"{n}: lxml-fejléc")
+                if any(re.search(rb"""\sw:author=(?!"Author")|\sw:initials=""", t)
+                       for t in _ANY_TAG.findall(b)):           # csak címkén belül, a szövegben nem
+                    out.append(f"{n}: szerző")
+                if b"python-docx" in b or b"attachedTemplate" in b:
+                    out.append(f"{n}: eredet-nyom")
+            elif n.startswith("word/media/") and _strip_image(n, b) != b:
+                out.append(f"{n}: képi metaadat")
+    return out
+
+
+def docx_clean_file(src: str, dst: str = ""):
+    """`src` tisztítása `dst`-be (nélküle: helyben). Kiírás előtt ellenőrzi, hogy
+    a kimenet ép ZIP és nem maradt benne metaadat. -> (tételek, figyelmeztetések)"""
+    with open(src, "rb") as f:
+        new, done, warns = scrub_docx(f.read())
+    left = docx_leaks(new)
+    if left:
+        raise IOError("A tisztítás után is maradt metaadat: " + "; ".join(left[:3]))
+    dst = dst or src
+    tmp = dst + ".part"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(new)
+        with zipfile.ZipFile(tmp) as z:
+            if z.testzip():
+                raise IOError("A kiírt .docx sérült.")
+        os.replace(tmp, dst)
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise
+    return done, warns
+
+
+def docx_cli(argv) -> int:
+    """`--docx-tisztit <be.docx> [ki.docx]` — kiírás nélkül helyben tisztít.
+    Szkriptből (pl. a generáló Python-programból) is hívható."""
+    try:
+        done, warns = docx_clean_file(argv[0], argv[1] if len(argv) > 1 else "")
+    except Exception as e:
+        print(f"HIBA {type(e).__name__}: {e}", flush=True)
+        return 1
+    print("\n".join(["KESZ"] + [f"  {d}" for d in done] + [f"  FIGYELEM: {w}" for w in warns]),
+          flush=True)
+    return 0
+
+
+class DocxTab(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.folder, self.subdirs = script_dir(), ()
+        self._build()
+
+    def _build(self):
+        top = ttk.Frame(self)
+        top.pack(fill="both", expand=True, padx=10, pady=10)
+        box = ttk.LabelFrame(top, text="Tisztítandó Word-dokumentumok (.docx)")
+        box.pack(fill="both", expand=True)
+        inner = ttk.Frame(box)
+        inner.pack(fill="both", expand=True, padx=6, pady=6)
+        self.lb = tk.Listbox(inner, selectmode="extended", exportselection=False, height=8)
+        sb = ttk.Scrollbar(inner, orient="vertical", command=self.lb.yview)
+        self.lb.configure(yscrollcommand=sb.set)
+        self.lb.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        r = ttk.Frame(box)
+        r.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(r, text="Frissítés", command=self.refresh).pack(side="left")
+        ttk.Button(r, text="Mind kijelöl",
+                   command=lambda: self.lb.selection_set(0, tk.END)).pack(side="left", padx=4)
+
+        ttk.Label(top, justify="left", foreground="#555", text=(
+            "Törli a szerzőt és az utolsó módosítót, a létrehozó programot (docProps), a "
+            "bélyegképet,\na követett módosítások és megjegyzések szerzőjét, a képek "
+            "EXIF-jét, és a ZIP/XML-nyomokat.\nA dokumentum többi része változatlan. "
+            "A fájl HELYBEN, az eredeti felülírásával tisztul.")).pack(anchor="w", pady=(8, 0))
+        opt = ttk.Frame(top)
+        opt.pack(fill="x", pady=8)
+        ttk.Button(opt, text="Metaadatok törlése…", command=self._run).pack(side="right")
+        self.log = tk.Text(top, height=10, wrap="none", state="disabled", bg="#f7f7f7")
+        self.log.pack(fill="both", expand=True)
+
+    def set_folder(self, folder, subdirs=()):
+        self.folder, self.subdirs = folder, tuple(subdirs)
+        self.refresh()
+
+    def set_worker(self, name, force=False):
+        self.set_folder(*self.app.list_target())
+
+    def refresh(self):
+        self.lb.delete(0, tk.END)
+        for f in list_files_in(self.folder, (".docx",), self.subdirs):
+            if not is_noise(f):                                # a Word zárolófájlja nem irat
+                self.lb.insert(tk.END, f)
+
+    def _write_log(self, txt):
+        self.log.configure(state="normal")
+        self.log.insert(tk.END, txt + "\n")
+        self.log.see(tk.END)
+        self.log.configure(state="disabled")
+        self.update_idletasks()
+
+    def _run(self):
+        names = [self.lb.get(i) for i in self.lb.curselection()]
+        if not names:
+            messagebox.showwarning("Nincs kijelölve fájl", "Jelölj ki legalább egy .docx-et.")
+            return
+        if not messagebox.askyesno(
+                "Metaadatok törlése",
+                f"{len(names)} fájl metaadata törlődik, a fájlok HELYBEN felülíródnak.\n"
+                "A szöveg és a formázás nem változik, de a szerző-adat nem állítható vissza.\n\n"
+                "Folytatod?"):
+            return
+        self.log.configure(state="normal")
+        self.log.delete("1.0", tk.END)
+        self.log.configure(state="disabled")
+        ok = 0
+        for n in names:
+            try:
+                done, warns = docx_clean_file(os.path.join(self.folder, n))
+            except Exception as e:                  # zárolt (megnyitott) vagy nem .docx fájl
+                self._write_log(f"✗ {n}: {type(e).__name__}: {e}")
+                continue
+            ok += 1
+            self._write_log(f"✓ {n}")
+            for d in done:
+                self._write_log(f"    {d}")
+            for w in warns:
+                self._write_log(f"    FIGYELEM: {w}")
+        self._write_log(f"\n{ok}/{len(names)} fájl megtisztítva.")
+        self.app.status(f"DOCX-metaadat törölve: {ok}/{len(names)} fájl")
+        if ok < len(names):
+            messagebox.showwarning("Hiba", "Nem minden fájl sikerült — lásd a naplót.\n"
+                                           "(Megnyitott Word-fájlt előbb zárd be.)")
 
 
 # ─────────────────────── Eszközök: szerkesztés (PDF-szerkesztő) ───────────────────────
@@ -12758,6 +13117,7 @@ BTN_LOOK = {
     "Címke a szövegből": ("tag", 0), "Szétosztás": ("split", 0),
     "Mentés szövegfájlba": ("save", 0), "Körülvág": ("crop", 1),
     "Alkalmaz": ("check", 1), "Mégsem": ("close", 0), "Bezárás": ("close", 0),
+    "Metaadatok törlése": ("trash", 1),
 }
 
 
@@ -13335,12 +13695,13 @@ class App(tk.Tk):
             "Összefűzés": MergeTab(self.tools, self),
             "Raszterizálás": RasterTab(self.tools, self),
             "MD → DOCX": MdDocxTab(self.tools, self),
+            "DOCX-tisztítás": DocxTab(self.tools, self),
         }
         for i, name in enumerate(("Összeállító", "Iktató", "Áttekintő"), 1):
             self.nb.add(self.tabs[name], text=f"{i} · {name}")
         self.nb.add(self.tools, text="Eszközök")
         for name in ("Arckép elhelyezés", "Szerkesztés", "Összefűzés", "Raszterizálás",
-                     "MD → DOCX"):
+                     "MD → DOCX", "DOCX-tisztítás"):
             self.tools.add(self.tabs[name], text=name)
         self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.tools.bind("<<NotebookTabChanged>>", self._tab_changed)
@@ -14937,6 +15298,207 @@ def _selftest() -> int:
     else:
         ck("a python-docx telepítve van (pip install python-docx)", False)
 
+    # ── DOCX metaadat-tisztítás (szerkeszto-terv.md 25.) ──
+    print("DOCX METAADAT-TISZTÍTÁS")
+    import zlib
+    ME = "Horváth Dániel"
+    MEB = ME.encode("utf-8")
+    pix_d = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 24, 16), False)
+    pix_d.set_rect(pix_d.irect, (200, 30, 30))
+    jpg_clean = pix_d.tobytes("jpeg")
+    png_clean = pix_d.tobytes("png")
+
+    def seg(marker, body):
+        return b"\xff" + bytes([marker]) + struct.pack(">H", 2 + len(body)) + body
+    artist = MEB + b"\0"
+    tiff = (b"II*\0\x08\0\0\0" + struct.pack("<H", 2) +
+            struct.pack("<HHIHH", 0x0112, 3, 1, 6, 0) +             # tájolás: 6 (elforgatott fotó)
+            struct.pack("<HHII", 0x013B, 2, len(artist), 8 + 2 + 24 + 4) + b"\0\0\0\0" + artist)
+    jpg_dirty = (jpg_clean[:2] + seg(0xE1, b"Exif\0\0" + tiff) +
+                 seg(0xE1, b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta Creator='" + MEB + b"'/>") +
+                 seg(0xED, b"Photoshop 3.0\0" + MEB) + seg(0xFE, MEB) + jpg_clean[2:])
+    text_chunk = b"tEXt" + b"Author\0" + MEB
+    p_idat = png_clean.index(b"IDAT") - 4
+    png_dirty = (png_clean[:p_idat] + struct.pack(">I", len(text_chunk) - 4) + text_chunk +
+                 struct.pack(">I", zlib.crc32(text_chunk)) + png_clean[p_idat:])
+
+    LX = "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>\n"
+    R = "http://schemas.openxmlformats.org/"
+    OD = R + "officeDocument/2006/relationships/"
+
+    def rels(*items):
+        return (LX + '<Relationships xmlns="' + R + 'package/2006/relationships">' +
+                "".join(f'<Relationship Id="rId{i}" Type="{t}" Target="{g}"{x}/>'
+                        for i, (t, g, x) in enumerate(items, 1)) + "</Relationships>").encode("utf-8")
+    EXT = ' TargetMode="External"'
+    ctype = lambda p, t: f'<Override PartName="/{p}" ContentType="{t}"/>'
+    CT = (LX + '<Types xmlns="' + R + 'package/2006/content-types">'
+          '<Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="png" ContentType="image/png"/>'
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          ctype("docProps/core.xml", "application/vnd.openxmlformats-package.core-properties+xml") +
+          ctype("docProps/app.xml", "application/vnd.openxmlformats-officedocument.extended-properties+xml") +
+          ctype("word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml") +
+          ctype("word/comments.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml") +
+          ctype("word/people.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml") +
+          "</Types>").encode("utf-8")
+    NS = f'xmlns:w="{R}wordprocessingml/2006/main" xmlns:r="{OD[:-1]}"'
+    TEXT = "Árvíztűrő tükörfúrógép"
+    INS = f'<w:ins w:id="1" w:author="{ME}" w:date="2026-10-01T10:00:00Z"><w:r><w:t>beszúrt</w:t></w:r></w:ins>'
+    INS_CLEAN = '<w:ins w:id="1" w:author="Author"><w:r><w:t>beszúrt</w:t></w:r></w:ins>'
+    BODY = (f'<w:body><w:p><w:r><w:t>{TEXT}</w:t></w:r></w:p>'
+            '<w:p><w:r><w:t>w:author="Szoveg" w:date="2026"</w:t></w:r>%s</w:p><w:sectPr/></w:body>')
+    doc_dirty = (LX + f"<w:document {NS}>" + BODY % INS + "</w:document>").encode("utf-8")
+    doc_want = (WORD_PROLOG.decode() + f"<w:document {NS}>" + BODY % INS_CLEAN +
+                "</w:document>").encode("utf-8")
+    PARTS = {
+        "[Content_Types].xml": CT,
+        "_rels/.rels": rels((OD + "officeDocument", "word/document.xml", ""),
+                            (R + "package/2006/relationships/metadata/core-properties", "docProps/core.xml", ""),
+                            (OD + "extended-properties", "docProps/app.xml", ""),
+                            (R + "package/2006/relationships/metadata/thumbnail", "docProps/thumbnail.jpeg", "")),
+        "docProps/core.xml": f"<cp:coreProperties><dc:creator>{ME}</dc:creator>"
+                             f"<cp:lastModifiedBy>{ME}</cp:lastModifiedBy></cp:coreProperties>".encode("utf-8"),
+        "docProps/app.xml": b"<Properties><Application>Microsoft Office Word</Application></Properties>",
+        "docProps/thumbnail.jpeg": jpg_dirty,
+        "word/document.xml": doc_dirty,
+        "word/_rels/document.xml.rels": rels(
+            (OD + "comments", "comments.xml", ""),
+            ("http://schemas.microsoft.com/office/2011/relationships/people", "people.xml", ""),
+            (OD + "settings", "settings.xml", ""),
+            (OD + "image", "media/foto.jpg", ""), (OD + "image", "media/logo.png", ""),
+            (OD + "hyperlink", "file:///C:/Users/hrvth/Desktop/x.pdf", EXT)),
+        "word/comments.xml": (f'<w:comments {NS}><w:comment w:id="0" w:author="{ME}" '
+                              'w:date="2026-10-01T10:00:00Z" w:initials="HD"><w:p><w:r><w:t>Megj</w:t></w:r></w:p>'
+                              '</w:comment></w:comments>').encode("utf-8"),
+        "word/people.xml": f'<w15:people><w15:person w15:author="{ME}"/></w15:people>'.encode("utf-8"),
+        "word/settings.xml": f'<w:settings {NS}><w:zoom w:percent="100"/><w:attachedTemplate r:id="rId1"/></w:settings>'.encode("utf-8"),
+        "word/_rels/settings.xml.rels": rels((OD + "attachedTemplate",
+                                              "file:///C:/Users/hrvth/AppData/Roaming/Normal.dotm", EXT)),
+        "word/media/foto.jpg": jpg_dirty, "word/media/logo.png": png_dirty,
+        "customXml/item1.xml": b"<b:Sources/>", "word/embeddings/x.bin": b"BIN",
+    }
+
+    def build(parts):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for n, b in parts.items():
+                zi = zipfile.ZipInfo(n, (2026, 10, 1, 9, 30, 0))
+                zi.external_attr = 0o600 << 16
+                z.writestr(zi, b)
+        return buf.getvalue()
+    dirty = build(PARTS)
+    ck("a szennyezett minta tényleg szennyezett (az ellenőrző észreveszi)",
+       len(docx_leaks(dirty)) >= 8, docx_leaks(dirty)[:4])
+    clean, done, warns = scrub_docx(dirty)
+    zc = zipfile.ZipFile(io.BytesIO(clean))
+    names = zc.namelist()
+    ck("nincs benne metaadat (docProps, people, szerző, időbélyeg, fejléc, kép)",
+       docx_leaks(clean) == [], docx_leaks(clean))
+    ck("a szerző neve sehol sincs a csomagban (kicsomagolva sem)",
+       not any(MEB in zc.read(n) for n in names))
+    ck("a docProps, a people és a kapcsolataik, tartalomtípusaik eltűntek",
+       not any(n.startswith("docProps/") or n.endswith("people.xml") for n in names)
+       and all(x not in zc.read("_rels/.rels") + zc.read("[Content_Types].xml") +
+               zc.read("word/_rels/document.xml.rels")
+               for x in (b"docProps", b"people", b"thumbnail")))
+    ck("a törzs: csak a szerző és a dátum változott, a szöveg és a szerkezet nem",
+       zc.read("word/document.xml") == doc_want, zc.read("word/document.xml")[:200])
+    ck("idézőjeles szöveg (w:author=\"…\" a szövegben) érintetlen",
+       b'<w:t>w:author="Szoveg" w:date="2026"</w:t>' in zc.read("word/document.xml"))
+    ck("a megjegyzés szövege megmarad, szerzője, kezdőbetűi, dátuma nem",
+       b"Megj" in zc.read("word/comments.xml") and b'w:author="Author"' in zc.read("word/comments.xml")
+       and b"initials" not in zc.read("word/comments.xml") and b"w:date" not in zc.read("word/comments.xml"))
+    ck("a sablon-hivatkozás (a gép felhasználóneve) és az elem is eltűnt",
+       b"attachedTemplate" not in zc.read("word/settings.xml")
+       and b"Normal.dotm" not in zc.read("word/_rels/settings.xml.rels")
+       and b'<w:zoom w:percent="100"/>' in zc.read("word/settings.xml"))
+    ck("a többi rész bájtra azonos (customXml, beágyazott fájl)",
+       zc.read("customXml/item1.xml") == b"<b:Sources/>" and zc.read("word/embeddings/x.bin") == b"BIN")
+    ck("a Word-féle XML-fejléc, a ZIP-időbélyeg és -jogok, a rész-sorrend",
+       zc.read("word/document.xml").startswith(WORD_PROLOG)
+       and zc.read("word/_rels/document.xml.rels").startswith(WORD_PROLOG)
+       and {i.date_time for i in zc.infolist()} == {DOCX_ZIP_TIME}
+       and {(i.external_attr, i.flag_bits, i.create_version, i.create_system)
+            for i in zc.infolist()} == {(0, 6, 45, 0)}
+       and zc.testzip() is None and names[0] == "[Content_Types].xml")
+    fj = zc.read("word/media/foto.jpg")
+    k = fj.index(b"\xff\xe1")
+    exif = fj[k + 4:k + 2 + struct.unpack(">H", fj[k + 2:k + 4])[0]]
+    ck("JPEG: a képpontok azonosak, EXIF/XMP/IPTC/megjegyzés nincs, csak a tájolás marad",
+       pymupdf.Pixmap(fj).samples == pymupdf.Pixmap(jpg_dirty).samples
+       and _exif_orientation(exif) == 6 and len(exif) < 40 and fj.count(b"\xff\xe1") == 1
+       and MEB not in fj and b"xmp" not in fj.lower() and b"Photoshop" not in fj)
+    ck("PNG: a képpontok azonosak, a szöveges chunk nincs",
+       pymupdf.Pixmap(zc.read("word/media/logo.png")).samples == pymupdf.Pixmap(png_clean).samples
+       and b"tEXt" not in zc.read("word/media/logo.png"))
+    ck("figyelmeztet: customXml, beágyazott fájl, helyi hivatkozás",
+       len(warns) == 3 and any("customXml" in w for w in warns)
+       and any("beágyazott" in w for w in warns) and any("helyi" in w for w in warns), warns)
+    ck("második futás ugyanazt adja (idempotens)", scrub_docx(clean)[0] == clean)
+    ck("aposztrófos attribútum is: szerző csere, kezdőbetű és dátum törlés",
+       _ANY_TAG.sub(_anon_tag, b"<w:ins w:author='X' w:date='d' w:initials='Y'/>")
+       == b'<w:ins w:author="Author"/>')
+    for label, bad_in in (("nem ZIP", b"nem zip"), ("ZIP, de nem docx", build({"[Content_Types].xml": CT}))):
+        try:
+            scrub_docx(bad_in)
+            ck(f"{label} bemenet hibát ad", False)
+        except ValueError:
+            ck(f"{label} bemenet hibát ad", True)
+
+    with tempfile.TemporaryDirectory() as td:
+        f_in = os.path.join(td, "Dániel irat.docx")                 # ékezetes útvonal
+        with open(f_in, "wb") as f:
+            f.write(dirty)
+        d1, _w1 = docx_clean_file(f_in)
+        with open(f_in, "rb") as f:
+            ck("helyben tisztít, ép csomagot ír, nem marad .part",
+               docx_leaks(f.read()) == [] and not os.path.exists(f_in + ".part"), d1[:2])
+        f_out = os.path.join(td, "ki.docx")
+        with open(f_in, "wb") as f:
+            f.write(dirty)
+        docx_clean_file(f_in, f_out)
+        with open(f_in, "rb") as f1, open(f_out, "rb") as f2:
+            ck("ki-fájllal az eredeti érintetlen marad", f1.read() == dirty and docx_leaks(f2.read()) == [])
+        bad = os.path.join(td, "rossz.docx")
+        with open(bad, "wb") as f:
+            f.write(b"nem zip")
+        ck("hibás fájlnál a CLI 1-et ad, az eredeti marad, nincs .part",
+           docx_cli([bad]) == 1 and open(bad, "rb").read() == b"nem zip"
+           and not os.path.exists(bad + ".part"))
+        ck("a CLI siker esetén 0", docx_cli([f_in]) == 0)
+
+    try:
+        import docx as pydocx
+    except ImportError:
+        pydocx = None
+    if pydocx:                                   # az éles eset: python-docx által generált irat
+        with tempfile.TemporaryDirectory() as td:
+            g = os.path.join(td, "gen.docx")
+            gd = pydocx.Document()
+            gd.add_paragraph(TEXT)
+            gd.add_picture(io.BytesIO(png_dirty))
+            gd.core_properties.author = gd.core_properties.last_modified_by = ME
+            gd.save(g)
+            with open(g, "rb") as f:
+                gen = f.read()
+            c2, _d, _w = scrub_docx(gen)
+            z0, z2 = zipfile.ZipFile(io.BytesIO(gen)), zipfile.ZipFile(io.BytesIO(c2))
+            ck("python-docx irat: nincs metaadat, szerző, 'python-docx' vagy Macintosh Word nyom",
+               docx_leaks(c2) == [] and not any(
+                   x in z2.read(n) for n in z2.namelist() for x in (MEB, b"python-docx", b"Macintosh")))
+            c_path = os.path.join(td, "tiszta.docx")
+            with open(c_path, "wb") as f:
+                f.write(c2)
+            rd = pydocx.Document(c_path)
+            ck("a tisztított irat a python-docx-ben is megnyílik: szöveg és kép megvan",
+               rd.paragraphs[0].text == TEXT and len(rd.inline_shapes) == 1,
+               [p.text for p in rd.paragraphs])
+            same = [n for n in z0.namelist() if n in z2.namelist() and n.startswith("word/")
+                    and n.endswith(".xml") and n != "word/settings.xml"]
+            ck("a stílusok, téma, számozás, törzs tartalma azonos (csak az XML-fejléc más)",
+               all(_LXML_PROLOG.sub(b"", z0.read(n)) == z2.read(n)[len(WORD_PROLOG):] for n in same), same)
+
     print()
     print(f"=== {sum(res)}/{len(res)} teszt sikeres ===")
     return 0 if all(res) else 1
@@ -14946,6 +15508,9 @@ if __name__ == "__main__":
     if "--tomorit" in sys.argv:          # külön folyamatban futó tömörítés
         i = sys.argv.index("--tomorit")
         sys.exit(shrink_cli(sys.argv[i + 1:]))
+    if "--docx-tisztit" in sys.argv:     # .docx metaadat-törlés szkriptből
+        i = sys.argv.index("--docx-tisztit")
+        sys.exit(docx_cli(sys.argv[i + 1:]))
     if "--ocr" in sys.argv:              # külön folyamatban futó szövegfelismerés
         i = sys.argv.index("--ocr")
         sys.exit(ocr_cli(sys.argv[i + 1:]))
