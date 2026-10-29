@@ -508,6 +508,30 @@ Három dolog derült ki menet közben, és mindhárom javítást igényelt a ter
 - Nincs általános 01/02 célválasztó az iktatásban — csak a formanyomtatvány jelölője. Egy ott hagyott kapcsoló csendben kivenné az iratot a beadhatóságból.
 - Nincs docx-metaadat és nincs iktatáskori bélyegzés (12.7).
 
+### 12.11 A DocGen 09_OIF_kerelmek szerkezete (2026-10-29)
+
+A DocGen kimeneti mappája átalakult (DocGen: `plans/TERV-kimenet-es-ugyek.md` 3.):
+a dolgozói mappák a `01_Hosszabbitasok\<ÉÉÉÉ.HH>\` és a `02_Kiadasok\` alatt
+vannak, négy almappával (`01_Elokeszitett`, `02_Feltoltheto`, `03_Beerkezett`,
+`04_TAJ`). A felhasználó kérte, hogy a Műhely is ehhez igazodjon.
+
+**Döntés: a dolgozó azonosítója a munkamappához képesti relatív út.** A
+`worker_dirs` a 09_OIF_kerelmek gyökerénél (felismerés: van `01_Hosszabbitasok`
+vagy `02_Kiadasok`) `01_Hosszabbitasok\2026.11\Kiss Anna` alakú utakat ad. Minden
+hívó `os.path.join(parent, who)`-val dolgozik, így az Iktató, az Összeállító, az
+Arckép, a Szerkesztés és az Áttekintő változatlan kóddal megtalálja a mappát.
+Ahol a NÉV kell — a fájlnév (`target_name`) és a bélyeg (`stamp_keywords`, az
+idegen-bélyeg vizsgálat) —, ott az új `dolgozo_nev()` adja: a mappa a hónappal
+együtt vándorol, a név nem, tehát a bélyegbe nem kerülhet út. A `resolve_worker`
+pontos egyezése a névre is illeszt. A régi, egyszintű munkamappa változatlan.
+
+**A `03_Beerkezett` és a `04_TAJ` kimarad** (`KEZI_DIRS`, a `walk_files` kihagyja):
+a 03-ba csak kézzel kerül irat, a 04 a DocGen TAJ-irata. E nélkül a Rendezés a
+„besorolatlan” 03-as iratokat (pl. szálláshely-igazolás) a 01/02-be mozgatta
+volna. Következmény: ami csak a 03-ban van, az az Áttekintőben nem látszik —
+a mátrix a feltölthetőséget méri, és az onnan még a 02-be kerül.
+`ponytail:` ha a 03 tartalmát is látni kell, egy saját cellajel („B”) a bővítés útja.
+
 ## 13. Egyszerűbb felület, körülvágás, emlékezet (2026-10-01)
 
 ### 13.1 Hibajavítás: a fotó nélküli formanyomtatvány a feltölthetőbe ment

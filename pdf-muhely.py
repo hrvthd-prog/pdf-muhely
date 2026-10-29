@@ -147,13 +147,21 @@ STAMP_KEY = "pdf-muhely"
 STAMP_FIELDS = (STAMP_KEY, "dolgozo", "tipus", "szabaly", "hely", "datum")
 
 
+def dolgozo_nev(who: str) -> str:
+    """A dolgozó NEVE a mappaútjából. A DocGen 09_OIF_kerelmek szerkezetében a
+    dolgozó relatív úttal azonosított (02_Kiadasok\\Kiss Anna, lásd worker_dirs);
+    a fájlnévbe és a bélyegbe viszont csak a név kerülhet — a mappa a hónappal
+    együtt vándorol, a név nem."""
+    return re.split(r"[\\/]", (who or "").strip())[-1]
+
+
 def stamp_keywords(who: str, doc_type: str, rule_id: str = "", sub: str = "",
                    old: str = "") -> str:
     """A bélyeg szövege. A más eredetű kulcsszavak megmaradnak — a DocGen-bélyeg
     is (azt a producer és a keywords együtt hordozza, has_docgen_stamp)."""
     def clean(v):
         return re.sub(r"[;=]", " ", str(v or "")).strip()
-    parts = [f"{STAMP_KEY}=1", f"dolgozo={clean(who)}", f"tipus={clean(doc_type)}"]
+    parts = [f"{STAMP_KEY}=1", f"dolgozo={clean(dolgozo_nev(who))}", f"tipus={clean(doc_type)}"]
     if rule_id:
         parts.append(f"szabaly={clean(rule_id)}")
     if sub:
@@ -7684,6 +7692,16 @@ MEMORY_FILE = "emlekezet.json"             # utoljára használt útvonalak, dok
 DIR_PREP = "01_Elokeszitett"    # nyomtatásra/aláírásra váró irat, arckép, docx
 DIR_UP   = "02_Feltoltheto"     # szkennelt, aláírt, korlát alatti végleges PDF
 WORK_DIRS = (DIR_PREP, DIR_UP)
+# A DocGen 09_OIF_kerelmek szerkezetének két további dolgozói almappája (DocGen:
+# plans/TERV-kimenet-es-ugyek.md 3.). A 03-ba csak KÉZZEL kerül irat (döntések,
+# igazolások), a 04-be a DocGen TAJ-iratai: az Áttekintő nem olvassa őket, és a
+# Rendezés/átnevezés sem nyúl hozzájuk (walk_files kihagyja).
+DIR_IN    = "03_Beerkezett"
+DIR_TAJ   = "04_TAJ"
+KEZI_DIRS = (DIR_IN, DIR_TAJ)
+# A dolgozói mappák két szakasza a 09_OIF_kerelmek alatt (worker_dirs).
+OIF_HOSSZ = "01_Hosszabbitasok"     # <ÉÉÉÉ.HH>\<Név>
+OIF_KIAD  = "02_Kiadasok"           # <Név>
 
 TILE_W, TILE_H, GAP = 150, 52, 10
 CACHE_MAX = 12
@@ -7837,7 +7855,7 @@ def target_name(dir_name: str, doc_type: str, suffix: str = SUFFIX,
         Tartózkodási engedély formanyomtatvány — Kiss Anna (aláírt, fotóval ellátva).pdf
     """
     marks = [m.strip() for m in (suffix, MARK_PHOTO if photo else "") if m and m.strip()]
-    stem = NAME_SEP.join(p for p in (doc_type.strip(), dir_name.strip()) if p)
+    stem = NAME_SEP.join(p for p in (doc_type.strip(), dolgozo_nev(dir_name)) if p)
     if marks:
         stem += " (" + ", ".join(marks) + ")"
     stem = re.sub(r"\s+", " ", stem)
@@ -7949,9 +7967,25 @@ def extract_page(path: str, pageno: int) -> bytes:
 
 def worker_dirs(parent: str) -> list:
     """A munkamappa dolgozói mappái (a ponttal kezdődők nélkül), magyar sorrendben.
+
+    Ha a munkamappa a DocGen 09_OIF_kerelmek mappája, a dolgozók mélyebben vannak:
+    01_Hosszabbitasok\\<ÉÉÉÉ.HH>\\<Név> és 02_Kiadasok\\<Név>. Ilyenkor a munkamappához
+    képesti relatív utat adjuk: minden hívó os.path.join(parent, who)-val dolgozik,
+    így változatlanul működik; a fájlnévbe és a bélyegbe a dolgozo_nev() viszi a nevet.
     OSError-t dob, ha a mappa nem olvasható."""
-    return hu_sorted([d for d in os.listdir(parent)
-                      if os.path.isdir(os.path.join(parent, d)) and not d.startswith(".")])
+    def alk(d):
+        return hu_sorted([x for x in os.listdir(d)
+                          if os.path.isdir(os.path.join(d, x)) and not x.startswith(".")])
+    hossz, kiad = os.path.join(parent, OIF_HOSSZ), os.path.join(parent, OIF_KIAD)
+    if not (os.path.isdir(hossz) or os.path.isdir(kiad)):
+        return alk(parent)
+    out = []
+    if os.path.isdir(hossz):
+        for h in alk(hossz):
+            out += [os.path.join(OIF_HOSSZ, h, n) for n in alk(os.path.join(hossz, h))]
+    if os.path.isdir(kiad):
+        out += [os.path.join(OIF_KIAD, n) for n in alk(kiad)]
+    return out
 
 
 # ── csempeelrendezés ────────────────────────────────────────────────────────
@@ -9565,7 +9599,7 @@ def walk_files(root: str, depth: int) -> list:
         if d > depth:
             dirnames[:] = []
             continue
-        dirnames[:] = [x for x in dirnames if not x.startswith(".")]
+        dirnames[:] = [x for x in dirnames if not x.startswith(".") and x not in KEZI_DIRS]
         for f in filenames:
             out.append(f if rel == "." else os.path.join(rel, f))
     return out
@@ -9579,7 +9613,7 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
         # A 01/02 a szabványos szerkezet, nem „extra almappa” — csak a többit jelezzük.
         row.subdirs = sum(1 for e in os.scandir(folder)
                           if e.is_dir() and not e.name.startswith(".")
-                          and e.name not in WORK_DIRS)
+                          and e.name not in WORK_DIRS + KEZI_DIRS)
     except OSError as e:
         row.error = str(e)
         return row
@@ -9607,7 +9641,7 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
             # nyitjuk meg a PDF-et — a felismert nevűeknél nincs rá ok (13.5).
             st_info = read_stamp(os.path.join(folder, rel))
             if st_info:
-                if strip_accents(st_info.get("dolgozo", "")) != strip_accents(name):
+                if strip_accents(st_info.get("dolgozo", "")) != strip_accents(dolgozo_nev(name)):
                     row.foreign.append((rel, st_info.get("dolgozo") or "?"))
                 rule = next((r for r in rules if r.id == st_info.get("szabaly")), None)
                 if rule is None and st_info.get("tipus"):
@@ -9634,11 +9668,7 @@ def scan_person(folder: str, name: str, rules: list, depth: int) -> PersonRow:
 
 
 def scan(parent: str, rules: list, depth: int = 1) -> list:
-    rows = []
-    with os.scandir(parent) as it:
-        for entry in it:
-            if entry.is_dir() and not entry.name.startswith("."):
-                rows.append(scan_person(entry.path, entry.name, rules, depth))
+    rows = [scan_person(os.path.join(parent, w), w, rules, depth) for w in worker_dirs(parent)]
     return sorted(rows, key=lambda r: _sort_key(r.name))
 
 
@@ -9885,7 +9915,7 @@ def audit_folder(parent: str, rules: list, depth: int = 2, on_step=None) -> dict
                 else:
                     res["unknown"].append((who, rel))
             else:
-                if strip_accents(st.get("dolgozo", "")) != strip_accents(who):
+                if strip_accents(st.get("dolgozo", "")) != strip_accents(dolgozo_nev(who)):
                     res["foreign"].append((who, rel, st.get("dolgozo") or "?"))
                 if rule is not None and st.get("szabaly") and st["szabaly"] != rule.id:
                     res["mismatch"].append((who, rel, st.get("tipus") or "?", rule.name))
@@ -11760,7 +11790,8 @@ def resolve_worker(text: str, dirs: list):
     if not f:
         return None, list(dirs)
     hits = [d for d in dirs if f in strip_accents(d)]
-    exact = [d for d in hits if strip_accents(d) == f]
+    # A 09_OIF_kerelmek szerkezetében d relatív út: a név a pontos egyezés alapja.
+    exact = [d for d in hits if f in (strip_accents(d), strip_accents(dolgozo_nev(d)))]
     one = exact if len(exact) == 1 else hits if len(hits) == 1 else []
     return (one[0] if one else None), hits
 
@@ -14131,6 +14162,37 @@ def _selftest() -> int:
        os.path.join("X", "Kiss Anna"))
     ck("worker_root: a dolgozó mappája önmaga",
        worker_root(os.path.join("X", "Kiss Anna")) == os.path.join("X", "Kiss Anna"))
+
+    print("09_OIF_KERELMEK SZERKEZET (DocGen)")
+    with tempfile.TemporaryDirectory() as td:
+        john = os.path.join(td, OIF_HOSSZ, "2026.11", "John Doe")
+        jane = os.path.join(td, OIF_KIAD, "Jane Doe")
+        for w in (john, jane):
+            for d in WORK_DIRS + KEZI_DIRS:
+                os.makedirs(os.path.join(w, d))
+        os.makedirs(os.path.join(td, "03_Bejelentesek", "01_Munkaviszony_megszunes"))
+        dirs = worker_dirs(td)
+        ck("worker_dirs: a két szakasz dolgozói, relatív úttal (a bejelentések nem)",
+           dirs == [os.path.join(OIF_HOSSZ, "2026.11", "John Doe"),
+                    os.path.join(OIF_KIAD, "Jane Doe")], dirs)
+        ck("resolve_worker: a névre pontosan talál",
+           resolve_worker("jane doe", dirs)[0] == os.path.join(OIF_KIAD, "Jane Doe"))
+        ck("target_name: a fájlnévbe csak a név kerül",
+           target_name(dirs[0], "Útlevél", "") == "Útlevél — John Doe.pdf")
+        ck("bélyeg: a dolgozó a név, nem a mappaút",
+           "dolgozo=John Doe;" in stamp_keywords(dirs[0], "Útlevél"))
+        open(os.path.join(john, DIR_IN, "Szálláshely-igazolás — John Doe.pdf"), "w").close()
+        open(os.path.join(john, DIR_TAJ, "TAJ-meghatalmazás — John Doe.pdf"), "w").close()
+        open(os.path.join(john, DIR_UP, "Útlevél — John Doe.pdf"), "w").close()
+        rows = scan(td, RULES, 1)
+        rj = next((x for x in rows if x.name == dirs[0]), None)
+        ck("scan: a 09_OIF_kerelmek mindkét dolgozója sor", len(rows) == 2 and rj is not None,
+           [x.name for x in rows])
+        ck("scan: az útlevél a 02-ben kész", rj.docs["utlevel"].cell == "F", rj.docs["utlevel"].cell)
+        ck("scan: a 03/04 irata nem besorolatlan, a 03/04 nem extra almappa",
+           not rj.unsorted and rj.subdirs == 0, (rj.unsorted, rj.subdirs))
+        ck("Rendezés: a 03_Beerkezett és a 04_TAJ iratához nem nyúl",
+           migracio_terv(john, RULES) == [], migracio_terv(john, RULES))
 
     print("RENDEZÉS (MIGRÁCIÓ)")
     with tempfile.TemporaryDirectory() as td:

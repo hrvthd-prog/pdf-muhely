@@ -256,6 +256,24 @@ Az **Arckép elhelyezés** fül eredménye mindig a `02_Feltoltheto`-be megy: a 
 A mappák a **Rendezés…** gombbal hozhatók létre minden dolgozónál egyszerre
 (Áttekintő), és iktatáskor magukból is létrejönnek.
 
+### A DocGen 09_OIF_kerelmek szerkezete
+
+Munkamappának a DocGen kimeneti mappája, a **`09_OIF_kerelmek`** is választható.
+Ott a dolgozók egy szinttel (hosszabbításnál kettővel) mélyebben vannak:
+
+```
+09_OIF_kerelmek\
+  01_Hosszabbitasok\<ÉÉÉÉ.HH>\<Dolgozó Név>\01_Elokeszitett … 04_TAJ
+  02_Kiadasok\<Dolgozó Név>\01_Elokeszitett … 04_TAJ
+  03_Bejelentesek\…                     ← nem dolgozói mappák
+```
+
+A program ezt magától felismeri: a dolgozóválasztókban és az Áttekintőben a
+dolgozó az útjával szerepel (`02_Kiadasok\Kiss Anna`), a fájlnévbe és a bélyegbe
+viszont csak a neve kerül. A **`03_Beerkezett`** (kézzel ide tett döntések,
+igazolások) és a **`04_TAJ`** (a DocGen TAJ-iratai) tartalmát az Áttekintő nem
+olvassa, és a Rendezés, az átnevezés sem nyúl hozzá.
+
 ### Rendezés: a régi, lapos szerkezet besorolása
 
 Ugyanaz a **Rendezés…** párbeszéd sorolja be a gyökérben hagyott fájlokat.
