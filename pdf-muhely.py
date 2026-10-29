@@ -3046,7 +3046,7 @@ def erase_area(page, rect):
 
 
 def add_field(page, rect, name: str, check: bool = False):
-    """Űrlapmező a DocGen PDF-sablonjához: a név a DocGen-jelölő (DocGen/TERV-pdf-
+    """Űrlapmező a DocGen PDF-sablonjához: a név a DocGen-jelölő (DocGen/plans/TERV-pdf-
     nyomtatvany.md 11.). Keret és háttér nélkül, automatikus betűmérettel."""
     w = pymupdf.Widget()
     w.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX if check else pymupdf.PDF_WIDGET_TYPE_TEXT
@@ -3076,7 +3076,7 @@ def get_upper(doc) -> bool:
 
 def set_upper(doc, on: bool):
     """A jelölő a /Keywords-ben, a többi kulcsszó (bélyeg, DocGen-jel) megmarad. A DocGen
-    ennek láttán minden értéket nagybetűvel ír (DocGen/TERV-pdf-nyomtatvany.md 12.)."""
+    ennek láttán minden értéket nagybetűvel ír (DocGen/plans/TERV-pdf-nyomtatvany.md 12.)."""
     t = [x for x in _kw_tokens(doc) if x != UPPER_KW] + ([UPPER_KW] if on else [])
     m = dict(doc.metadata or {})
     m["keywords"] = ";".join(t)
@@ -9187,7 +9187,7 @@ DEFAULT_RULES = [
     Rule("munkalt", "Hat havi munkáltatói jövedelemigazolás", "Munk",
          [], ["munkaltatoi"], False, False),
     # A DocGen tölti ki (NEAK NYT.52), aláírás nélkül kész, egyenesen a 02-be megy
-    # (DocGen/TERV-pdf-nyomtatvany.md). .docx-e nincs, mégis „generated”: a jelző
+    # (DocGen/plans/TERV-pdf-nyomtatvany.md). .docx-e nincs, mégis „generated”: a jelző
     # itt azt dönti el, hogy szkennelt irat-e (akkor kerül az Összeállító
     # palettájára) — ez soha nem az. Az „aláírt” utótag csak kézi iktatásnál
     # számítana, és ezt az iratot senki nem iktatja kézzel.

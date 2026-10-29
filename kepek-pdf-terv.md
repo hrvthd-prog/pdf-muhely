@@ -469,7 +469,7 @@ Ezért a bélyeg **egyetlen dolgot dönt el**: generált-e a PDF vagy szkennelt 
 F1    konstansok, célmappa, makedirs, hely-alapú E/F cella, mappalétrehozó gomb
       → ellenőrzés: --test zöld; kézi kör egy próbadolgozón (iktatás → F,
         DocGen-fájl → E, gyökérben hagyott PDF → ~)
-F4.5  DocGen: fs-service felújítás (DocGen/TERV-mappaszerkezet.md)   ← blokkoló
+F4.5  DocGen: fs-service felújítás (DocGen/plans/TERV-mappaszerkezet.md)   ← blokkoló
 F5    DocGen: célmappa 01_Elokeszitett + bélyeg a generált PDF-en
 F2    migrációs előnézet + mozgatás (a bélyegre épül)
       → ellenőrzés: migracio_terv önteszt; éles futtatás előnézetből

@@ -294,7 +294,7 @@ nyomtatványt rendszeresen, sok dolgozónak töltitek ki.
 1 oldal, A4, Word 2007-ből készült; nincs AcroForm, XFA, titkosítás, forgatás.
 A táblázat vonalaiból minden cella (a betűnkéntiek is) pontosan kiszámolható,
 és a 10 jelölőnégyzet külön keretes téglalap. A próbakitöltés minden cellába
-pontosan esett. Részletek: `DocGen/TERV-pdf-nyomtatvany.md`, 0.1.
+pontosan esett. Részletek: `DocGen/plans/TERV-pdf-nyomtatvany.md`, 0.1.
 
 ### 14.3 Döntés: DocGen, és a Műhelyben nem épül kitöltő
 
@@ -318,7 +318,7 @@ elrontja az ő/ű-t) addig is érvényes minden PyMuPDF-es szövegírásra.
   Rendezés `01`-be sorolná. A bélyeg formátuma ettől két repó közös szerződése:
   változtatni csak mindkét oldalon együtt szabad.
 - Ha az Áttekintőben is látszania kell, új szabály kell a `DEFAULT_RULES`-ba
-  (nyitott kérdés, `DocGen/TERV-pdf-nyomtatvany.md` 6. fejezet).
+  (nyitott kérdés, `DocGen/plans/TERV-pdf-nyomtatvany.md` 6. fejezet).
 
 ---
 
@@ -400,7 +400,7 @@ A felhasználó: a fejlesztés legyen **általános** — a DocGen a PDF-nyomtat
 kitöltését célozza, a Műhely **általános PDF-szerkesztést**. A szerkesztő
 képességei (a felhasználó választása): **szöveg átírása, új szöveg és X,
 űrlapmezők elhelyezése, kitakarás**. A DocGen-sablon formátuma kitölthető PDF,
-a mező neve a DocGen-jelölő (`DocGen/TERV-pdf-nyomtatvany.md` 11.) — a Műhely
+a mező neve a DocGen-jelölő (`DocGen/plans/TERV-pdf-nyomtatvany.md` 11.) — a Műhely
 szerkesztője ezért mezőt is tud rakni bármely PDF-re. A 15.4 terjedelme ezzel
 kibővült és megvalósult.
 
@@ -507,7 +507,7 @@ típusnál nincs görgetősáv. Önteszt 202/202, GUI 138/138.
 
 ## 18. A TAJ-igénylés másik két irata (2026-10-05)
 
-A DocGen két új sablont kapott a TAJ-igényléshez (`DocGen/TERV-pdf-nyomtatvany.md`
+A DocGen két új sablont kapott a TAJ-igényléshez (`DocGen/plans/TERV-pdf-nyomtatvany.md`
 12.): a NEAK **NYT.53** igénylőlapot és egy saját, kétnyelvű **TAJ-meghatalmazást**.
 Mindkettő a Szerkesztés fül függvényeivel készült, kattintási pontokból; a
 cellaillesztés a NYT.53 egyenetlen cellasorait is pontosan adta.

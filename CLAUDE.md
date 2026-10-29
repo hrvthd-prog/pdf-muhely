@@ -13,7 +13,8 @@ Szétvágás és Képek → PDF) `szetvago-terv.md`, 14–15. fejezet, a PDF-sze
 az MD → DOCX konvertáló: 24., a DOCX-tisztítás: 25.), a
 közös felületi döntéseké `kepek-pdf-terv.md` 13.7 és 19. — **új döntést a
 témához tartozó fájlba írj**. A két alkönyvtár DocGen-oldali párja:
-`DocGen/TERV-mappaszerkezet.md`.
+`DocGen/plans/TERV-mappaszerkezet.md`; a 09_OIF_kerelmek szerkezete:
+`DocGen/plans/TERV-kimenet-es-ugyek.md` (Műhely-oldal: `kepek-pdf-terv.md` 12.11).
 
 ## Hol fut?
 
